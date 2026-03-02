@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .DS_Store
 PTUs/
+*.lif
+*.ptu
+*.xlsx
+*.log
+*.tif
+*.tiff

@@ -9,3 +9,4 @@ __version__ = "0.1.3"
 # 0.3.0 -> ROI stiching + fitting 
 # 0.4.0 -> batch processing of multiple ROIs or FOVs
 # 0.5.0 -> tbd
+# Need to add Phasor once added to the codebase, and update version to 1.0. And added some tests.

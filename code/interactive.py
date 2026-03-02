@@ -41,7 +41,7 @@ def single_FOV_flim_fit_inquire():
         if irf_xlsxq == 'y':
             # Use IRF from the same XLSX
             use_xlsx_irf = True
-            estimate_irf = 'none'        # not needed
+            estimate_irf = 'none'
             irf_path = None
         else:
             use_xlsx_irf = False

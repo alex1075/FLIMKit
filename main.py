@@ -19,6 +19,6 @@ warnings.filterwarnings("ignore")
 
 def main():
     print('Come back later. Use fit_cli.py instead for FLIM fitting from the command line interface (CLI).')
-
+    
 if __name__ == "__main__":
     main()
