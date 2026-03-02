@@ -210,3 +210,23 @@ def filter_photons_with_mask_optimized(ptu_path, mask, channel=None, binning=1, 
         print(f"Filtered {total_photons:,} photons in {elapsed:.1f}s")
     
     return stack.astype(np.float32)
+
+def load_npy_flim_cube(npy_path):
+    """Load a FLIM cube from a .npy file."""
+    try:
+        cube = np.load(npy_path)
+        if cube.ndim != 3:
+            raise ValueError(f"Expected 3D array, got shape {cube.shape}")
+        return cube.astype(np.float32)
+    except Exception as e:
+        print(f"Error loading FLIM cube from {npy_path}: {e}")
+        return None
+
+def save_npy_flim_cube(cube, npy_path):
+    """Save a stiched FLIM cube to a .npy file and accompanying metadata."""
+    try:
+        np.save(npy_path, cube.astype(np.float32))
+        print(f"Saved FLIM cube to {npy_path} with shape {cube.shape}")
+    except Exception as e:
+        print(f"Error saving FLIM cube to {npy_path}: {e}")
+        

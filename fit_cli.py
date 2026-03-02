@@ -504,3 +504,6 @@ def single_FOV_flim_fit_cli():
             plot_lifetime_histogram(pixel_maps, args.nexp, args.out)
 
     print("\nDone.\n")
+
+if __name__ == "__main__":
+    single_FOV_flim_fit_cli()    
