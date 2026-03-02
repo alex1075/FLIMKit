@@ -17,7 +17,7 @@ This project contains `main.py`, a Python script for [briefly describe the purpo
 
 1. Clone the repository:
     ```bash
-    git clone https:// TBD
+    git clone https://github.com/alex1075/FLIM_in_Python.git
     ```
 2. Install dependencies:
     ```bash
