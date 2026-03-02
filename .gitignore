@@ -8,3 +8,5 @@ PTUs/
 *.log
 *.tif
 *.tiff
+flim9.py
+*.png

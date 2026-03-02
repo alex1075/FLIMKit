@@ -8,7 +8,7 @@ from .configs import (
     n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message)
 from .PTU.reader import PTUFile
 from .FLIM.fit_tools import find_irf_peak_bin
-from .FLIM.irf_tools import irf_from_scatter_ptu, gaussian_irf_from_fwhm, compare_irfs
+from .FLIM.irf_tools import estimate_irf_from_decay_parametric, irf_from_scatter_ptu, gaussian_irf_from_fwhm, compare_irfs, irf_from_xlsx, irf_from_xlsx_analytical, estimate_irf_from_decay_raw
 from .FLIM.fitters import fit_summed, fit_per_pixel
 from .utils.xlsx_tools import load_xlsx
 from .utils.misc import print_summary
@@ -161,25 +161,84 @@ def _run_flim_fit(args):
         fit_sigma  = False
         fit_bg     = True
 
+
     elif args.irf_xlsx is not None:
-        # ... (identical to original)
-        pass
+        print(f"  IRF: fitting Leica analytical model to: {args.irf_xlsx}")
+        if not Path(args.irf_xlsx).exists():
+            raise FileNotFoundError(f"--irf-xlsx file not found: {args.irf_xlsx}")
+        irf_ref = load_xlsx(args.irf_xlsx, debug=False)
+        if irf_ref['irf_t'] is None or irf_ref['irf_c'] is None:
+            raise ValueError(f"No IRF columns found in --irf-xlsx: {args.irf_xlsx}")
+        irf_prompt, irf_params = irf_from_xlsx_analytical(
+            irf_ref, ptu.n_bins, ptu.tcspc_res, verbose=True)
 
-    elif xlsx is not None and xlsx['irf_t'] is not None and not args.no_xlsx_irf:
-        # ... (original code)
-        pass
+        # The analytical IRF is centred at t0 from the Gaussian fit (~bin 29).
+        # The optimizer consistently finds shift ≈ -1.26 bins because the true
+        # IRF onset is at the steepest-rise bin (~27), not the decay peak (29).
+        # Pre-shift to irf_peak_bin so the free shift starts near 0.
+        irf_current_peak = int(np.argmax(irf_prompt))
+        pre_shift = irf_peak_bin - irf_current_peak
+        if pre_shift != 0:
+            x          = np.arange(ptu.n_bins, dtype=float)
+            irf_prompt = np.interp(x - pre_shift, x, irf_prompt,
+                                   left=0.0, right=0.0)
+            s = irf_prompt.sum()
+            if s > 0:
+                irf_prompt /= s
+            print(f"  Pre-shifted IRF by {pre_shift:+d} bins "
+                  f"(from bin {irf_current_peak} → {irf_peak_bin})")
 
-    elif args.estimate_irf != "none":
-        # ... (original code)
-        pass
-
-    else:
-        # Gaussian paper IRF
-        irf_prompt = gaussian_irf_from_fwhm(
-            ptu.n_bins, ptu.tcspc_res, fwhm_ns, decay_peak_bin)
-        has_tail  = True
+        strategy  = (f"irf_xlsx_analytical ({Path(args.irf_xlsx).name})  "
+                     f"FWHM={irf_params['fwhm_ns']*1000:.1f}ps  "
+                     f"tail_amp={irf_params['tail_amp']:.3f}  "
+                     f"tail_tau={irf_params['tail_tau_ns']:.3f}ns")
+        # IRF shape fully determined by analytical fit — tail & sigma not free
+        has_tail  = False
         fit_sigma = False
         fit_bg    = True
+        print(f"  IRF peak bin after pre-shift = {np.argmax(irf_prompt)}")
+
+    elif xlsx is not None and xlsx['irf_t'] is not None and not args.no_xlsx_irf:
+        # xlsx IRF: sparse rising-edge, tail and sigma needed
+        irf_prompt = irf_from_xlsx(xlsx, ptu.n_bins, ptu.tcspc_res)
+        above      = np.where(irf_prompt >= irf_prompt.max() / 2)[0]
+        fwhm_xlsx  = (above[-1] - above[0]) * ptu.tcspc_res * 1e9 if len(above) > 1 else 0
+        print(f"  IRF: xlsx prompt  peak bin={int(np.argmax(irf_prompt))}  "
+              f"FWHM={fwhm_xlsx:.3f} ns  + tail + σ as free params")
+        strategy  = "xlsx"
+        has_tail  = True
+        fit_sigma = True
+        fit_bg    = True
+
+    elif args.estimate_irf != "none":
+        # Rising-edge estimation: tail and sigma still needed
+        if args.estimate_irf == "raw":
+            irf_prompt = estimate_irf_from_decay_raw(
+                decay, ptu.tcspc_res, ptu.n_bins, n_irf_bins=args.irf_bins)
+            strategy = "estimated_raw"
+        else:
+            irf_prompt = estimate_irf_from_decay_parametric(
+                decay, ptu.tcspc_res, ptu.n_bins,
+                fit_window_width_ns=args.irf_fit_width)
+            strategy = "estimated_parametric"
+        has_tail  = True
+        fit_sigma = True
+        fit_bg    = True
+        print(f"  IRF: {strategy} + tail + σ as free params")
+
+    else:
+        # Gaussian (paper equation): FWHM known, σ fixed at 0.
+        # has_tail=True — real HyD/SPAD IRF is asymmetric (fast rise, slower
+        # fall). A pure symmetric Gaussian cannot fit this. The exponential
+        # tail captures detector afterpulsing / slow component.
+        # Peak position: Leica places its synthetic IRF at the decay maximum,
+        # not at the steepest rise. np.argmax(decay) is correct here.
+        # find_irf_peak_bin() is only useful for measured scatter PTU IRFs.
+        irf_prompt = gaussian_irf_from_fwhm(
+            ptu.n_bins, ptu.tcspc_res, fwhm_ns, decay_peak_bin)
+        has_tail  = True    # asymmetric tail needed for real detector IRF
+        fit_sigma = False   # FWHM is known — no extra broadening
+        fit_bg    = True    # bg free — matches Leica "Tail Offset"
         strategy  = (f"gaussian_paper FWHM={fwhm_ns*1000:.1f}ps "
                      f"peak_bin={decay_peak_bin} (decay maximum)")
         print(f"  IRF: {strategy}")

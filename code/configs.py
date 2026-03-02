@@ -12,7 +12,7 @@ Tau_min = 0.145 # ns - set to 0.145 ns to avoid fitting to the IRF peak (which i
 Tau_max = 45.0 # ns - set to 45 ns to allow fitting of long lifetimes. Can always manually override when running the code.
 
 # Set default fitting mode. Options are "summed", "perPixel", and "both". Override with --mode when running the code.
-D_mode = 'summed'
+D_mode = 'both'
 
 # Default number of exponentials to fit. Options are 1, 2, or 3. Override with --nexp when running the code. 4+ exponentials are not supported as the fitting becomes unstable and unreliable.
 n_exp = 3
