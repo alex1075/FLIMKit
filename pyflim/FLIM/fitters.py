@@ -4,7 +4,7 @@ from scipy.optimize import least_squares, differential_evolution, nnls
 from scipy.stats.distributions import chi2 as chi2_dist
 from ..FLIM.irf_tools import build_full_irf
 from ..FLIM.fit_tools import estimate_bg, find_fit_end, _build_bounds, _pack_p0
-from ..FLIM.models import reconvolution_model, _DECost
+from ..FLIM.models import reconvolution_model, _DECost, _DECostLogTau
 from ..configs import MIN_PHOTONS_PERPIX
 
 def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
@@ -102,17 +102,33 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
     elif optimizer == "de":
         print(f"  Differential evolution: popsize={de_popsize}, "
               f"maxiter={de_maxiter}, workers={workers}")
-        cost_fn = _DECost(tcspc_res, n_bins, irf_prompt, n_exp, bg_fixed,
-                          has_tail, fit_bg, fit_sigma,
-                          fit_start, fit_end, decay_norm, weights)
+
+        # --- Log-tau reparameterisation for DE ---
+        # DE samples uniformly within bounds.  Tau spans ~300× (0.145–45 ns);
+        # uniform sampling over-represents long lifetimes, causing the
+        # optimizer to collapse all taus to the short end.
+        # Searching in log₁₀(τ) gives equal weight per decade.
+        bounds_log = list(bounds)  # copy
+        for i in range(n_exp):
+            lo_tau, hi_tau = bounds[i]
+            bounds_log[i] = (np.log10(lo_tau), np.log10(hi_tau))
+
+        cost_fn = _DECostLogTau(
+            tcspc_res, n_bins, irf_prompt, n_exp, bg_fixed,
+            has_tail, fit_bg, fit_sigma,
+            fit_start, fit_end, decay_norm, weights)
         de_res = differential_evolution(
-            cost_fn, bounds=bounds,
+            cost_fn, bounds=bounds_log,
             maxiter=de_maxiter, popsize=de_popsize,
             workers=workers, seed=42,
             updating='deferred' if workers != 1 else 'immediate',
+            init='sobol',
             disp=False)
-        popt_norm = de_res.x
-        message   = f"DE success={de_res.success}, fun={de_res.fun:.4e}"
+
+        # Convert log₁₀(τ) → τ in the result
+        popt_norm = de_res.x.copy()
+        popt_norm[:n_exp] = 10.0 ** popt_norm[:n_exp]
+        message = f"DE success={de_res.success}, fun={de_res.fun:.4e}"
 
         if polish:
             print("  Running final LM polish...")
@@ -266,6 +282,10 @@ def fit_per_pixel(stack, tcspc_res, n_bins, irf_prompt,
     for i in range(n_exp):
         maps[f"alpha_{i+1}"] = np.full((ny, nx), np.nan)
         maps[f"frac_{i+1}"]  = np.full((ny, nx), np.nan)
+        # Fixed tau (constant across all pixels) for component analysis
+        maps[f"tau_{i+1}"]   = np.full((ny, nx), taus_fixed[i] * 1e9)  # in ns
+        # Alias for save_weighted_tau_images compatibility
+        maps[f"a{i+1}"]      = maps[f"alpha_{i+1}"]
 
     fitted = skipped = 0
     print(f"  Per-pixel fitting: {ny}×{nx}={ny*nx} pixels "

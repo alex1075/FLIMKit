@@ -26,8 +26,8 @@ Optimizer = "de"
 lm_restarts = 8
 
 # Default settings for DE optimizer:
-de_population = 15
-de_maxiter = 1000   
+de_population = 50
+de_maxiter = 10000   
 n_workers = -1 # Use all available CPU cores for DE optimization. Override with --workers when running the code.
 
 # IRF settings:

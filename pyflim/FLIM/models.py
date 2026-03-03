@@ -32,6 +32,21 @@ class _DECost:
                 - self.decay[self.fit_start:self.fit_end])
                / self.weights)
         return np.sum(res**2)
+
+
+class _DECostLogTau(_DECost):
+    """DE cost with tau parameterised in log10 space.
+
+    The first ``n_exp`` elements of *params* are ``log10(tau/s)``.
+    They are converted back to linear tau before calling the
+    reconvolution model.  This gives the DE sampler equal
+    exploration weight across all decades of lifetime.
+    """
+
+    def __call__(self, params):
+        params_lin = np.array(params, dtype=float)
+        params_lin[:self.n_exp] = 10.0 ** params_lin[:self.n_exp]
+        return super().__call__(params_lin)
     
 def reconvolution_model(params, tcspc_res, n_bins, irf_prompt,
                         n_exp, bg_fixed, has_tail, fit_bg, fit_sigma):

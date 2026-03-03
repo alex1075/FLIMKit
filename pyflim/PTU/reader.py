@@ -113,13 +113,13 @@ class PTUFile:
             self.pixel_time = line_time / self.n_x
 
         if self.verbose:
-            print(f"  HW type  : {t.get('HW_Type','?')}")
-            print(f"  RecType  : 0x{self.rec_type:08X}  "
-                  f"({'PicoHarpT3' if self.rec_type==0x00010303 else 'other'})")
-            print(f"  TCSPC    : {self.n_bins} bins × {self.tcspc_res*1e12:.2f} ps")
-            print(f"  Laser    : {self.sync_rate/1e6:.3f} MHz  ({self.period_ns:.3f} ns)")
-            print(f"  Image    : {self.n_x} × {self.n_y} px")
-            print(f"  Records  : {self.n_records:,}")
+            # print(f"  HW type  : {t.get('HW_Type','?')}")
+            # print(f"  RecType  : 0x{self.rec_type:08X}  "f"({'PicoHarpT3' if self.rec_type==0x00010303 else 'other'})")
+            # print(f"  TCSPC    : {self.n_bins} bins × {self.tcspc_res*1e12:.2f} ps")
+            # print(f"  Laser    : {self.sync_rate/1e6:.3f} MHz  ({self.period_ns:.3f} ns)")
+            # print(f"  Image    : {self.n_x} × {self.n_y} px")
+            # print(f"  Records  : {self.n_records:,}")
+            print(' ')
 
     def _load_records(self) -> np.ndarray:
         size = Path(self.path).stat().st_size - self._data_offset
@@ -152,77 +152,95 @@ class PTUFile:
             channel   = int(np.argmax(ch_counts))
             self.photon_channel = channel
             if self.verbose:
-                print(f"  Auto-detected photon channel: {channel} "
-                      f"({ch_counts[channel]:,} photons)")
-
+                # print(f"  Auto-detected photon channel: {channel} "
+                    #   f"({ch_counts[channel]:,} photons)")
+                pass
         ph_mask = photon & (ch == channel)
         dt_ph   = dtime[ph_mask].astype(np.int32)
         decay   = np.bincount(dt_ph, minlength=self.n_bins).astype(float)
         return decay[:self.n_bins]
 
     def raw_pixel_stack(self, channel: int | None = None, binning: int = 1) -> np.ndarray:
+        """
+        Build a (Y, X, H) uint32 histogram stack.
+
+        Uses record indices for line membership (robust) and overflow-corrected
+        nsync values for pixel-column assignment (accurate timing).
+        """
         if self.photon_channel is None:
             self.summed_decay(channel=channel)
         ch_use = channel if channel is not None else self.photon_channel
 
         records = self._load_records()
         ch, dtime, nsync = self._decode_picoharp_t3(records)
-        global_time = nsync.astype(np.float64) * self.global_resolution
-        special = ch == 0xF
-        marker_global = global_time[special]
-        marker_dtime = dtime[special]
-        line_start_mask = (marker_dtime & 1) != 0
-        line_stop_mask = (marker_dtime & 2) != 0
-        line_start_times = marker_global[line_start_mask]
-        line_stop_times = marker_global[line_stop_mask]
 
-        line_start_mask = (marker_dtime & 1) != 0
-        line_stop_mask = (marker_dtime & 2) != 0
-        line_start_times = marker_global[line_start_mask]
-        line_stop_times = marker_global[line_stop_mask]
+        # ── Overflow correction ──────────────────────────────────────
+        T3WRAPAROUND = 65536
+        overflow_mask = (ch == 0xF) & (dtime == 0)
+        overflow_cumsum = np.cumsum(overflow_mask.astype(np.int64)) * T3WRAPAROUND
+        nsync_corrected = nsync.astype(np.int64) + overflow_cumsum
+        # ─────────────────────────────────────────────────────────────
 
-        # Photon events (channel == your selected channel)
-        ph_mask = (~special) & (ch == ch_use)
-        ph_global = global_time[ph_mask]
-        ph_dtime = dtime[ph_mask]   # needed for histogram bin
+        special  = ch == 0xF
+        ph_mask  = (~special) & (ch == ch_use)
+        ph_idx   = np.where(ph_mask)[0]
+        ph_dtime = dtime[ph_mask].astype(np.int32)
 
-        # Process each line
-        n_lines = min(len(line_start_times), len(line_stop_times))
+        # Marker events (dtime != 0 excludes overflow records)
+        marker_mask  = special & (dtime != 0)
+        marker_idx   = np.where(marker_mask)[0]
+        marker_dtime = dtime[marker_mask]
+
+        line_start_abs = marker_idx[marker_dtime & 1 != 0]
+        line_stop_abs  = marker_idx[marker_dtime & 2 != 0]
+
+        n_lines = min(len(line_start_abs), len(line_stop_abs))
+        if n_lines == 0:
+            raise RuntimeError("No valid line markers found.")
+
         ny_out = self.n_y // binning
         nx_out = self.n_x // binning
-        stack = np.zeros((ny_out, nx_out, self.n_bins), dtype=np.uint32)
+        stack  = np.zeros((ny_out, nx_out, self.n_bins), dtype=np.uint32)
 
         for line_num in range(n_lines):
-            t_start = line_start_times[line_num]
-            t_stop = line_stop_times[line_num]
-            if t_stop <= t_start:
+            ls = line_start_abs[line_num]
+            le = line_stop_abs[line_num]
+            if le <= ls:
                 continue
-
-            # Find photons within this line's time window
-            lo = np.searchsorted(ph_global, t_start, side='left')
-            hi = np.searchsorted(ph_global, t_stop, side='right')
-            if hi <= lo:
-                continue
-
-            line_ph_global = ph_global[lo:hi]
-            line_ph_dtime = ph_dtime[lo:hi]
-
-            # Compute pixel column from global time
-            rel_time = line_ph_global - t_start
-            px = (rel_time / self.pixel_time).astype(np.int32)
-            px = np.clip(px, 0, self.n_x - 1)
-            px_bin = px // binning
-
-            # Row index (line_num already accounts for all lines)
             row = (line_num % self.n_y) // binning
             if row >= ny_out:
                 continue
 
-            # Accumulate
-            for i in range(len(line_ph_global)):
-                tb = line_ph_dtime[i]
+            # Find photons belonging to this line (by record index)
+            lo = np.searchsorted(ph_idx, ls, side="right")
+            hi = np.searchsorted(ph_idx, le, side="left")
+            if hi <= lo:
+                continue
+
+            dt_in = ph_dtime[lo:hi]
+
+            # Pixel column from overflow-corrected nsync (proportional to time)
+            nsync_start = nsync_corrected[ls]
+            nsync_end   = nsync_corrected[le]
+            nsync_span  = nsync_end - nsync_start
+            if nsync_span <= 0:
+                continue
+            ph_nsync = nsync_corrected[ph_idx[lo:hi]]
+            rel_nsync = ph_nsync - nsync_start
+            px      = np.clip((rel_nsync * self.n_x) // nsync_span,
+                              0, self.n_x - 1).astype(np.int32)
+            px_bin  = px // binning
+
+            for i in range(len(dt_in)):
+                tb = dt_in[i]
                 if tb < self.n_bins:
                     stack[row, px_bin[i], tb] += 1
+
+        total = stack.sum()
+        if self.verbose:
+            n_photons = ph_idx.shape[0]
+            if total != n_photons:
+                print(f"  WARNING: stack sum ({total}) != photon events ({n_photons})")
 
         return stack
 
@@ -233,11 +251,19 @@ class PTUFile:
         ch_use = channel if channel is not None else self.photon_channel
 
         if self.verbose:
-            print(f"  Building pixel stack (channel={ch_use}, binning={binning}) …")
+            # print(f"  Building pixel stack (channel={ch_use}, binning={binning}) …")
+            pass
         t0 = time.time()
 
         records  = self._load_records()
-        ch, dtime, _ = self._decode_picoharp_t3(records)
+        ch, dtime, nsync = self._decode_picoharp_t3(records)
+
+        # ── Overflow correction ──────────────────────────────────────
+        T3WRAPAROUND = 65536
+        overflow_mask = (ch == 0xF) & (dtime == 0)
+        overflow_cumsum = np.cumsum(overflow_mask.astype(np.int64)) * T3WRAPAROUND
+        nsync_corrected = nsync.astype(np.int64) + overflow_cumsum
+        # ─────────────────────────────────────────────────────────────
 
         special  = ch == 0xF
         ph_mask  = (~special) & (ch == ch_use)
@@ -268,11 +294,18 @@ class PTUFile:
             if hi <= lo:
                 continue
 
-            ph_in    = ph_idx[lo:hi]
             dt_in    = ph_dtime[lo:hi]
-            line_len = le - ls
-            rel_pos  = ph_in - ls
-            px       = np.clip((rel_pos * self.n_x) // line_len, 0, self.n_x - 1)
+
+            # Pixel column from overflow-corrected nsync
+            nsync_start = nsync_corrected[ls]
+            nsync_end   = nsync_corrected[le]
+            nsync_span  = nsync_end - nsync_start
+            if nsync_span <= 0:
+                continue
+            ph_nsync = nsync_corrected[ph_idx[lo:hi]]
+            rel_nsync = ph_nsync - nsync_start
+            px       = np.clip((rel_nsync * self.n_x) // nsync_span,
+                               0, self.n_x - 1).astype(np.int32)
             px_bin   = px // binning
 
             for i in range(len(dt_in)):
@@ -283,10 +316,7 @@ class PTUFile:
         elapsed = time.time() - t0
         total   = stack.sum()
         if self.verbose:
-            print(f"  Stack built: {ny_out}×{nx_out}×{self.n_bins}  "
-                  f"({total:,} photons, {elapsed:.1f}s)")
-        print(f"Total photons in stack: {stack.sum()}")
-        print(f"Stack min/max: {stack.min()}, {stack.max()}")    
+            pass
         return stack.astype(float)
 
 
@@ -453,7 +483,7 @@ def read_ptu(path: str, binning: int = 1, channel: Optional[int] = None,
         path: Path to PTU file
         binning: Spatial binning factor (default: 1)
         channel: Detection channel to use (None = auto-detect)
-        verbose: Print file information
+        verbose: # print file information
         
     Returns:
         data: numpy array with shape (Y, X, H) - pixel stack with histogram per pixel
@@ -491,7 +521,7 @@ def read_ptu_5d(path: str, binning: int = 1, verbose: bool = False) -> Tuple[np.
     binning : int, optional
         Spatial binning factor (default: 1)
     verbose : bool, optional
-        Print file information (default: False)
+        # print file information (default: False)
         
     Returns
     -------
@@ -517,11 +547,12 @@ def read_ptu_5d(path: str, binning: int = 1, verbose: bool = False) -> Tuple[np.
     }
     
     if verbose:
-        print(f"\n5D Array Summary:")
-        print(f"  Shape: {data.shape}")
-        print(f"  Dims:  {builder.dims}")
-        print(f"  Channels: {list(builder.active_channels)}")
-        print(f"  Total photons: {data.sum():,.0f}")
+        # print(f"\n5D Array Summary:")
+        # print(f"  Shape: {data.shape}")
+        # print(f"  Dims:  {builder.dims}")
+        # print(f"  Channels: {list(builder.active_channels)}")
+        # print(f"  Total photons: {data.sum():,.0f}")
+        pass
     
     return data, metadata
 
@@ -718,27 +749,64 @@ def get_flim_cube(path):
 def get_raw_flim_cube(path, n_bins=None, tile_shape=None, channel=None):
     return decode_ptu_raw_cube(path, n_bins, tile_shape, channel)
 
-def get_flim_histogram(ptu_path: str, rotate_cw: bool = True) -> Tuple[np.ndarray, Dict[str, Any]]:
+def get_flim_histogram_from_ptufile(
+    ptu_path: Path,
+    rotate_cw: bool = True,
+    binning: int = 1,
+    channel: int = None
+) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
-    Load FLIM histogram data from a PTU file with proper shape handling.
-    
-    Args:
-        ptu_path: Path to PTU file
-        rotate_cw: If True, rotate tile 90° clockwise (for Leica data)
-    
-    Returns:
-        hist: numpy array with shape (Y, X, H)
-        metadata: dict with tcspc_resolution, n_time_bins, tile_shape, etc.
+    Load raw FLIM histogram (uint32 counts) using custom PTUFile if it returns
+    valid data; otherwise fall back to ptufile loader.
     """
-    # Get histogram data using read_ptu
-    hist, metadata = read_ptu(ptu_path, binning=1, channel=None, verbose=False)
-    
-    # Rotate 90 degrees clockwise for Leica data if requested
-    if rotate_cw:
-        hist = np.rot90(hist, k=-1, axes=(0, 1))
-    
-    # Add additional metadata fields expected by this function
-    metadata['n_time_bins'] = hist.shape[2]
-    metadata['tile_shape'] = (hist.shape[0], hist.shape[1])
-    
-    return hist, metadata
+    # ---------- Attempt with custom PTUFile ----------
+    try:
+        from .reader import PTUFile
+        ptu = PTUFile(str(ptu_path), verbose=False)
+        # Use raw_pixel_stack if available; else pixel_stack (but we prefer raw)
+        if hasattr(ptu, 'raw_pixel_stack'):
+            stack = ptu.raw_pixel_stack(channel=channel, binning=binning)
+        else:
+            stack = ptu.pixel_stack(channel=channel, binning=binning)
+            # If pixel_stack returns normalized floats, treat as failure
+            if stack.max() <= 1.0 and stack.sum() > 0:
+                raise ValueError("Custom class returned normalized data")
+        # Check if stack has any photons
+        if stack.sum() == 0:
+            raise ValueError("Custom class returned zero photons")
+        # Success: rotate if needed and build metadata
+        if rotate_cw:
+            stack = np.rot90(stack, k=-1, axes=(0, 1))
+        metadata = {
+            'tcspc_resolution': ptu.tcspc_res,
+            'n_time_bins': ptu.n_bins,
+            'tile_shape': (ptu.n_y // binning, ptu.n_x // binning),
+            'frequency': ptu.sync_rate,
+            'binning': binning,
+            'channel': channel,
+        }
+        return stack, metadata
+    except Exception as e:
+        # ---------- Fallback to ptufile ----------
+        # print(f"Custom PTUFile failed for {ptu_path.name}: {e}. Falling back to ptufile.")
+        from .decode import get_raw_flim_histogram   # avoid circular import
+        stack, meta = get_raw_flim_histogram(ptu_path, rotate_cw=rotate_cw)
+        # If binning requested, bin the full-resolution stack
+        if binning > 1:
+            from scipy.ndimage import zoom
+            zoom_factors = (1/binning, 1/binning, 1)
+            stack = zoom(stack, zoom_factors, order=0, mode='nearest')
+        # Rotate already applied in get_raw_flim_histogram if requested,
+        # but we already passed rotate_cw, so no extra rotation needed.
+        # However, get_raw_flim_histogram may not apply rotation unless we pass it,
+        # which we did, so stack is already rotated.
+        # Build metadata
+        metadata = {
+            'tcspc_resolution': meta['tcspc_resolution'],
+            'n_time_bins': meta['n_time_bins'],
+            'tile_shape': (stack.shape[0], stack.shape[1]),
+            'frequency': meta.get('frequency', None),
+            'binning': binning,
+            'channel': channel,
+        }
+        return stack, metadata

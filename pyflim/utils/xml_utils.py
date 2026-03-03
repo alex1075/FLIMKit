@@ -25,8 +25,8 @@ def parse_xlif_tile_positions(xlif_path: Path, ptu_basename: str = "R 2") -> Lis
     tile_positions = []
     for tile_elem in tile_scan_info.findall("Tile"):
         field_x = int(tile_elem.attrib.get("FieldX", 0))
-        pos_x = float(tile_elem.attrib.get("PosX", 0)) * 1e6   # meters → microns
-        pos_y = float(tile_elem.attrib.get("PosY", 0)) * 1e6   # meters → microns
+        pos_x = float(tile_elem.attrib.get("PosX", 0))   # meters (raw from XML)
+        pos_y = float(tile_elem.attrib.get("PosY", 0))   # meters (raw from XML)
         filename = f"{ptu_basename}_s{field_x + 1}.ptu"
         tile_positions.append({
             "file": filename,
@@ -46,7 +46,7 @@ def get_pixel_size_from_xlif(xlif_path: Path) -> Tuple[float, int]:
         xlif_path: Path to the XLIF metadata file
     
     Returns:
-        Tuple of (pixel_size_microns, n_pixels)
+        Tuple of (pixel_size_meters, n_pixels)
     """
     tree = ET.parse(xlif_path)
     root = tree.getroot()
@@ -56,24 +56,23 @@ def get_pixel_size_from_xlif(xlif_path: Path) -> Tuple[float, int]:
         n_pixels = int(dim_desc.attrib.get("NumberOfElements", 512))
         length_m = float(dim_desc.attrib.get("Length", 1.5377e-4))
         pixel_size_m = length_m / n_pixels          # meters
-        pixel_size_microns = pixel_size_m * 1e6     # convert to microns
-        return pixel_size_microns, n_pixels
+        return pixel_size_m, n_pixels
     
-    # Fallback defaults (converted to microns)
-    return (1.5377e-4 / 512) * 1e6, 512
+    # Fallback defaults (meters)
+    return 1.5377e-4 / 512, 512
 
 
 def compute_tile_pixel_positions(
     tile_positions: List[Dict[str, Any]],
-    pixel_size_microns: float,
+    pixel_size_m: float,
     tile_size: int
 ) -> Tuple[List[Dict[str, Any]], int, int]:
     """
-    Convert physical tile positions (microns) to pixel coordinates.
+    Convert physical tile positions (meters) to pixel coordinates.
     
     Args:
-        tile_positions: List of tile dicts with pos_x, pos_y in microns
-        pixel_size_microns: Pixel size in microns
+        tile_positions: List of tile dicts with pos_x, pos_y in meters
+        pixel_size_m: Pixel size in meters
         tile_size: Size of each tile in pixels (assumes square tiles)
     
     Returns:
@@ -86,8 +85,8 @@ def compute_tile_pixel_positions(
     min_pos_y = min(pos_y_list)
     
     for t in tile_positions:
-        t["pixel_x"] = int(round((t["pos_x"] - min_pos_x) / pixel_size_microns))
-        t["pixel_y"] = int(round((t["pos_y"] - min_pos_y) / pixel_size_microns))
+        t["pixel_x"] = int(round((t["pos_x"] - min_pos_x) / pixel_size_m))
+        t["pixel_y"] = int(round((t["pos_y"] - min_pos_y) / pixel_size_m))
     
     canvas_width = max(t["pixel_x"] for t in tile_positions) + tile_size
     canvas_height = max(t["pixel_y"] for t in tile_positions) + tile_size

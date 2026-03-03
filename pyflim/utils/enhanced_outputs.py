@@ -120,7 +120,9 @@ def save_weighted_tau_images(
     roi_name: str = "ROI",
     n_exp: int = 2,
     save_intensity: bool = True,
-    save_amplitude: bool = True
+    save_amplitude: bool = True,
+    tau_display_min: float = None,
+    tau_display_max: float = None,
 ):
     """
     Save intensity-weighted and/or amplitude-weighted tau images.
@@ -135,19 +137,8 @@ def save_weighted_tau_images(
         n_exp: Number of exponential components
         save_intensity: Save intensity-weighted tau image
         save_amplitude: Save amplitude-weighted tau image
-    
-    Creates:
-        - {roi_name}_tau_intensity_weighted.tif
-        - {roi_name}_tau_amplitude_weighted.tif
-        - {roi_name}_intensity.tif (optional)
-    
-    Example:
-        >>> save_weighted_tau_images(
-        ...     pixel_maps,
-        ...     Path("results/R_002/"),
-        ...     roi_name="R_002",
-        ...     n_exp=2
-        ... )
+        tau_display_min: Minimum lifetime (ns) for display range (pixels below set to 0)
+        tau_display_max: Maximum lifetime (ns) for display range (pixels above set to 0)
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -163,11 +154,16 @@ def save_weighted_tau_images(
             if amp_key in pixel_maps:
                 intensity += pixel_maps[amp_key]
     
-    # Save intensity image
+    # Save intensity image — scaled to full uint16 range like stitch-only
     if save_intensity:
         intensity_path = output_dir / f"{roi_name}_intensity.tif"
-        tifffile.imwrite(str(intensity_path), intensity.astype(np.float32))
-        print(f"✓ Intensity image saved: {intensity_path}")
+        max_val = intensity.max()
+        if max_val > 0:
+            intensity_scaled = (intensity / max_val * 65535).astype(np.uint16)
+        else:
+            intensity_scaled = np.zeros_like(intensity, dtype=np.uint16)
+        tifffile.imwrite(str(intensity_path), intensity_scaled)
+        print(f"✓ Intensity image saved: {intensity_path} (uint16, max-scaled)")
     
     # Compute intensity-weighted average lifetime
     if save_intensity and n_exp > 1:
@@ -189,11 +185,23 @@ def save_weighted_tau_images(
         tau_intensity_weighted[mask] /= intensity[mask]
         tau_intensity_weighted[~mask] = 0
         
+        # Apply lifetime display range
+        if tau_display_min is not None or tau_display_max is not None:
+            range_mask = np.ones_like(tau_intensity_weighted, dtype=bool)
+            if tau_display_min is not None:
+                range_mask &= (tau_intensity_weighted >= tau_display_min)
+            if tau_display_max is not None:
+                range_mask &= (tau_intensity_weighted <= tau_display_max)
+            tau_intensity_weighted[~range_mask & mask] = 0
+        
         # Save
         tau_int_path = output_dir / f"{roi_name}_tau_intensity_weighted.tif"
         tifffile.imwrite(str(tau_int_path), tau_intensity_weighted)
         print(f"✓ Intensity-weighted tau image saved: {tau_int_path}")
-        print(f"  Range: {tau_intensity_weighted[mask].min():.3f} - {tau_intensity_weighted[mask].max():.3f} ns")
+        if mask.any():
+            print(f"  Range: {tau_intensity_weighted[mask].min():.3f} - {tau_intensity_weighted[mask].max():.3f} ns")
+        else:
+            print(f"  Range: no valid pixels")
     
     # Compute amplitude-weighted average lifetime
     if save_amplitude and n_exp > 1:
@@ -217,11 +225,23 @@ def save_weighted_tau_images(
         tau_amplitude_weighted[mask] /= total_amplitude[mask]
         tau_amplitude_weighted[~mask] = 0
         
+        # Apply lifetime display range
+        if tau_display_min is not None or tau_display_max is not None:
+            range_mask = np.ones_like(tau_amplitude_weighted, dtype=bool)
+            if tau_display_min is not None:
+                range_mask &= (tau_amplitude_weighted >= tau_display_min)
+            if tau_display_max is not None:
+                range_mask &= (tau_amplitude_weighted <= tau_display_max)
+            tau_amplitude_weighted[~range_mask & mask] = 0
+        
         # Save
         tau_amp_path = output_dir / f"{roi_name}_tau_amplitude_weighted.tif"
         tifffile.imwrite(str(tau_amp_path), tau_amplitude_weighted)
         print(f"✓ Amplitude-weighted tau image saved: {tau_amp_path}")
-        print(f"  Range: {tau_amplitude_weighted[mask].min():.3f} - {tau_amplitude_weighted[mask].max():.3f} ns")
+        if mask.any():
+            print(f"  Range: {tau_amplitude_weighted[mask].min():.3f} - {tau_amplitude_weighted[mask].max():.3f} ns")
+        else:
+            print(f"  Range: no valid pixels")
     
     # For single exponential, just save the single tau map
     if n_exp == 1:
@@ -230,7 +250,10 @@ def save_weighted_tau_images(
         tifffile.imwrite(str(tau_path), tau_single.astype(np.float32))
         print(f"✓ Lifetime image saved: {tau_path}")
         mask = tau_single > 0
-        print(f"  Range: {tau_single[mask].min():.3f} - {tau_single[mask].max():.3f} ns")
+        if mask.any():
+            print(f"  Range: {tau_single[mask].min():.3f} - {tau_single[mask].max():.3f} ns")
+        else:
+            print(f"  Range: no valid pixels")
 
 
 def save_individual_tau_maps(

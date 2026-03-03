@@ -202,7 +202,8 @@ def stitch_flim_tiles(
             tiles_skipped += 1
             continue
     
-    # Normalize intensity overlaps
+    # Normalize overlaps — average FLIM counts so overlap regions
+    # have the same per-pixel count level as non-overlap regions
     if verbose:
         print()
         print("Normalizing overlaps...")
@@ -210,14 +211,29 @@ def stitch_flim_tiles(
     mask = weight_canvas > 0
     intensity_canvas[mask] /= weight_canvas[mask]
     
-    # Note: FLIM counts are NOT normalized - we accumulate raw photons
-    # for proper fitting (overlaps naturally have more counts)
+    # Average FLIM histogram cube in overlap regions
+    overlap_mask = weight_canvas > 1
+    n_overlap = int(overlap_mask.sum())
+    if n_overlap > 0:
+        if verbose:
+            print(f"  Averaging {n_overlap:,} overlap pixels "
+                  f"({100*n_overlap/mask.sum():.1f}% of canvas)")
+        for t in range(n_time_bins):
+            plane = flim_canvas[:, :, t].astype(np.float64)
+            plane[overlap_mask] /= weight_canvas[overlap_mask]
+            flim_canvas[:, :, t] = np.round(plane).astype(np.uint32)
     
     # Save outputs
     if verbose:
         print("Saving outputs...")
     
-    tifffile.imwrite(str(output_intensity), intensity_canvas.astype(np.float32))
+    # Scale intensity to full 16-bit range for clean display
+    max_val = intensity_canvas.max()
+    if max_val > 0:
+        intensity_scaled = (intensity_canvas / max_val * 65535).astype(np.uint16)
+    else:
+        intensity_scaled = np.zeros_like(intensity_canvas, dtype=np.uint16)
+    tifffile.imwrite(str(output_intensity), intensity_scaled)
     np.save(str(output_time), time_axis_ns)
     np.save(str(output_weight), weight_canvas)
     

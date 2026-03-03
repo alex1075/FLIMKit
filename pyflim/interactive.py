@@ -20,6 +20,7 @@ from .utils.enhanced_outputs import (
     save_individual_tau_maps,
     create_complete_output_package
 )
+from .image.tools import make_intensity_image, make_cell_mask
 
 def yes_no_question(question):
     """Ask a yes/no question using inquirer and return 'y' or 'n'."""
@@ -83,17 +84,25 @@ def stitch_and_fit_inquire():
     
     # IRF method
     print("\nIRF estimation options:")
-    print("  1. 'file'       - measured IRF image (scatter PTU)")
-    print("  2. 'raw'        - non-parametric IRF from raw decay")
-    print("  3. 'parametric' - fit Gaussian + exponential tail")
-    print("  4. 'gaussian'   - simple Gaussian IRF (fastest)")
+    print("  1. 'irf_xlsx'   - analytical Gaussian+tail fit from XLSX (recommended)")
+    print("  2. 'file'       - measured IRF image (scatter PTU)")
+    print("  3. 'raw'        - non-parametric IRF from raw decay")
+    print("  4. 'parametric' - fit Gaussian + exponential tail")
+    print("  5. 'gaussian'   - simple Gaussian IRF (fastest)")
     method_q = [inquirer.List('method',
                               message="Choose IRF estimation method",
-                              choices=['file', 'raw', 'parametric', 'gaussian'])]
+                              choices=['irf_xlsx', 'file', 'raw', 'parametric', 'gaussian'])]
     estimate_irf = inquirer.prompt(method_q)['method']
     
     irf_path = None
-    if estimate_irf == 'file':
+    irf_xlsx_path = None
+    if estimate_irf == 'irf_xlsx':
+        irf_xlsx_path = input("Enter path to IRF XLSX file: ").strip()
+        if not irf_xlsx_path or not Path(irf_xlsx_path).exists():
+            print("  Warning: XLSX file not found, falling back to Gaussian")
+            estimate_irf = 'gaussian'
+            irf_xlsx_path = None
+    elif estimate_irf == 'file':
         irf_path = input("Enter path to IRF PTU file: ").strip()
         if not irf_path or not Path(irf_path).exists():
             print("  Warning: IRF file not found, falling back to Gaussian")
@@ -115,6 +124,25 @@ def stitch_and_fit_inquire():
     save_individual_q = yes_no_question("Save individual component maps? (tau1, tau2, a1, a2) (default: No)")
     save_individual = (save_individual_q == 'y')
     
+    # Auto-select optimizer: LM for reconstructed ROIs (fast, good with large data)
+    optimizer_choice = 'lm_multistart'
+    print(f"\n[Auto] Using optimizer: lm_multistart (recommended for large reconstructed ROIs)")
+    
+    # Lifetime display range for weighted tau images
+    if fit_per_pixel_mode:
+        tau_range_q = yes_no_question("Set a lifetime display range for tau images? (e.g. 0-5 ns)")
+        if tau_range_q == 'y':
+            tau_min_display = input("  Min lifetime (ns, press Enter for 0): ").strip()
+            tau_max_display = input("  Max lifetime (ns, press Enter for no limit): ").strip()
+            tau_min_display = float(tau_min_display) if tau_min_display else 0.0
+            tau_max_display = float(tau_max_display) if tau_max_display else None
+        else:
+            tau_min_display = None
+            tau_max_display = None
+    else:
+        tau_min_display = None
+        tau_max_display = None
+    
     # Build combined namespace
     args = argparse.Namespace()
     
@@ -127,6 +155,7 @@ def stitch_and_fit_inquire():
     
     # Fitting parameters
     args.irf = irf_path
+    args.irf_xlsx = irf_xlsx_path
     args.estimate_irf = estimate_irf
     args.nexp = nexp
     args.tau_min = Tau_min
@@ -134,7 +163,7 @@ def stitch_and_fit_inquire():
     args.mode = 'both' if fit_per_pixel_mode else 'summed'
     args.binning = binning_factor
     args.min_photons = MIN_PHOTONS_PERPIX
-    args.optimizer = Optimizer
+    args.optimizer = optimizer_choice
     args.restarts = lm_restarts
     args.de_population = de_population
     args.de_maxiter = de_maxiter
@@ -149,6 +178,8 @@ def stitch_and_fit_inquire():
     # Output control flags
     args.save_individual = save_individual
     args.save_weighted = True   # always save weighted tau images
+    args.tau_display_min = tau_min_display
+    args.tau_display_max = tau_max_display
     
     return args
 
@@ -283,7 +314,39 @@ def _run_stitch_and_fit(args):
         fit_sigma = False
         fit_bg = True
         print(f"  IRF: scatter PTU from {args.irf}")
-    
+
+    elif getattr(args, 'irf_xlsx', None) is not None:
+        print(f"  IRF: fitting Leica analytical model to: {args.irf_xlsx}")
+        if not Path(args.irf_xlsx).exists():
+            raise FileNotFoundError(f"IRF XLSX file not found: {args.irf_xlsx}")
+        irf_ref = load_xlsx(args.irf_xlsx, debug=False)
+        if irf_ref['irf_t'] is None or irf_ref['irf_c'] is None:
+            raise ValueError(f"No IRF columns found in XLSX: {args.irf_xlsx}")
+        irf_prompt, irf_params = irf_from_xlsx_analytical(
+            irf_ref, n_bins, tcspc_res, verbose=True)
+
+        # Pre-shift analytical IRF to align with steepest-rise bin
+        irf_current_peak = int(np.argmax(irf_prompt))
+        pre_shift = irf_peak_bin - irf_current_peak
+        if pre_shift != 0:
+            x          = np.arange(n_bins, dtype=float)
+            irf_prompt = np.interp(x - pre_shift, x, irf_prompt,
+                                   left=0.0, right=0.0)
+            s = irf_prompt.sum()
+            if s > 0:
+                irf_prompt /= s
+            print(f"  Pre-shifted IRF by {pre_shift:+d} bins "
+                  f"(from bin {irf_current_peak} → {irf_peak_bin})")
+
+        strategy  = (f"irf_xlsx_analytical ({Path(args.irf_xlsx).name})  "
+                     f"FWHM={irf_params['fwhm_ns']*1000:.1f}ps  "
+                     f"tail_amp={irf_params['tail_amp']:.3f}  "
+                     f"tail_tau={irf_params['tail_tau_ns']:.3f}ns")
+        has_tail  = False
+        fit_sigma = False
+        fit_bg    = True
+        print(f"  IRF peak bin after pre-shift = {np.argmax(irf_prompt)}")
+
     elif args.estimate_irf == "raw":
         from .FLIM.irf_tools import estimate_irf_from_decay_raw
         irf_prompt = estimate_irf_from_decay_raw(
@@ -384,7 +447,9 @@ def _run_stitch_and_fit(args):
                 roi_name=roi_name,
                 n_exp=args.nexp,
                 save_intensity=True,
-                save_amplitude=True
+                save_amplitude=True,
+                tau_display_min=getattr(args, 'tau_display_min', None),
+                tau_display_max=getattr(args, 'tau_display_max', None),
             )
         
         # Save individual component maps if requested
@@ -491,6 +556,10 @@ def single_FOV_flim_fit_inquire():
     args.debug_xlsx = False
     args.print_config = False            # not used in interactive mode
 
+    # Cell mask option
+    mask_q = yes_no_question("Apply cell mask to filter background before fitting?")
+    args.cell_mask = (mask_q == 'y')
+
     return args
 
 
@@ -509,9 +578,28 @@ def _run_flim_fit(args):
     print(f"  IRF FWHM: {fwhm_ns*1000:.2f} ps "
           f"({'from --irf-fwhm' if args.irf_fwhm is not None else 'default: 1 bin'})")
 
+    #  Cell mask (optional) 
+    cell_mask = None
+    if getattr(args, 'cell_mask', False):
+        print(f"\n[1b] Building cell mask")
+        intensity_img = make_intensity_image(args.ptu, rotate_90_cw=False, save_image=False)
+        cell_mask = make_cell_mask(intensity_img, save_mask=True, path=args.out)
+        n_cell_px = int(cell_mask.sum())
+        n_total_px = cell_mask.size
+        print(f"    Cell mask: {n_cell_px:,} / {n_total_px:,} pixels "
+              f"({100*n_cell_px/n_total_px:.1f}% of FOV)")
+
     #  Summed decay 
     print(f"\n[2] Building summed decay (channel={args.channel or 'auto'})")
-    decay    = ptu.summed_decay(channel=args.channel)
+    if cell_mask is not None:
+        # Build decay only from cell pixels
+        stack_for_decay = ptu.raw_pixel_stack(channel=args.channel)  # (Y, X, H)
+        stack_for_decay[~cell_mask] = 0  # zero out background
+        decay = stack_for_decay.sum(axis=(0, 1))  # sum → 1-D histogram
+        del stack_for_decay
+        print(f"    (Using cell-masked photons only)")
+    else:
+        decay = ptu.summed_decay(channel=args.channel)
     irf_peak_bin  = find_irf_peak_bin(decay)
     decay_peak_bin = int(np.argmax(decay))
     print(f"    {decay.sum():,.0f} photons  |  peak={decay.max():,.0f}  "
@@ -650,6 +738,19 @@ def _run_flim_fit(args):
 
         print(f"\n[7] Building pixel stack (binning={args.binning}×{args.binning})")
         stack = ptu.pixel_stack(channel=ptu.photon_channel, binning=args.binning)
+
+        # Apply cell mask to per-pixel stack if requested
+        if cell_mask is not None:
+            # Resize mask if binning changed the spatial dimensions
+            import cv2
+            sy, sx = stack.shape[:2]
+            if cell_mask.shape != (sy, sx):
+                mask_resized = cv2.resize(cell_mask.astype(np.uint8), (sx, sy),
+                                          interpolation=cv2.INTER_NEAREST) > 0
+            else:
+                mask_resized = cell_mask
+            stack[~mask_resized] = 0
+            print(f"    Applied cell mask to pixel stack")
 
         print(f"\n[8] Per-pixel fitting (min_photons={args.min_photons})")
         pixel_maps = fit_per_pixel(

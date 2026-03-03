@@ -52,10 +52,10 @@ python fit_cli.py --help
 
 ## Roadmap
 - [X] Single FOV fitting
-- [ ] Batch processing of multiple FOVs
-- [ ] Reconstruction of multi-tile ROIs
-- [ ] Fitting multi-tile ROIs and exporting tau-fitted images/data
-- [ ] Documentation and examples
+- [X] Batch processing of multiple FOVs
+- [X] Reconstruction of multi-tile ROIs
+- [~] Fitting multi-tile ROIs and exporting tau-fitted images/data
+- [~] Documentation and examples
 - [ ] GUI development for easier use
 - [ ] Phasor analysis implementation
 
