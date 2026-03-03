@@ -12,7 +12,7 @@ For direct calling in the terminal, use 'fit_cli.py' which provides a more strea
 
 ## Requirements
 
-- Python 3.x
+- Python 3.14
 - Numpy
 - Scipy
 - Matplotlib

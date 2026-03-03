@@ -9,9 +9,8 @@ import numpy as np
 import tifffile
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
-from ..utils.misc import (
-    setup_loggers,
-    parse_xlif_tile_positions,
+from ..utils.misc import setup_loggers
+from ..utils.xml_utils import (parse_xlif_tile_positions,
     get_pixel_size_from_xlif,
     compute_tile_pixel_positions,
 )

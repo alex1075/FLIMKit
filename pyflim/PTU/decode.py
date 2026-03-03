@@ -6,7 +6,7 @@ Uses your existing reader.PTUFile class - no external dependencies.
 import numpy as np
 from pathlib import Path
 from typing import Tuple, Dict, Any
-
+from .reader import normalise_flim
 
 def get_flim_histogram_from_ptufile(
     ptu_path: Path,
@@ -35,7 +35,7 @@ def get_flim_histogram_from_ptufile(
     """
     from .reader import PTUFile
     
-    ptu = PTUFile(str(ptu_path), verbose=False)
+    ptu = PTUFile(str(ptu_path))
     
     # Get FLIM histogram (Y, X, H)
     # Your PTUFile.pixel_stack() already handles rotation internally if needed

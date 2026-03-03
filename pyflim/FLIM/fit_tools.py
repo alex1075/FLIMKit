@@ -34,6 +34,28 @@ def estimate_bg(decay: np.ndarray, peak_bin: int, pre_gap: int = 5) -> float:
         return max(float(np.median(region)), 0.0)
     return max(float(np.median(decay[-30:])), 0.0)
 
+def estimate_bg_from_histogram(hist, pre_bins=20):
+    """
+    Estimate background from the first `pre_bins` time bins.
+
+    Parameters
+    ----------
+    hist : np.ndarray
+        3D array of shape (Y, X, H) – photon counts.
+    pre_bins : int, optional
+        Number of initial bins to use.
+
+    Returns
+    -------
+    bg : float
+        Estimated background level (counts per bin).
+    """
+    # Average over all pixels and the first pre_bins bins
+    if hist.ndim == 3:
+        bg_region = hist[..., :pre_bins].mean()
+    else:
+        bg_region = hist[:pre_bins].mean()
+    return float(bg_region)
 
 def find_fit_start(decay: np.ndarray, irf_prompt: np.ndarray,
                    tcspc_res: float, pre_bins: int = 5) -> int:

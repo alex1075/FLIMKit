@@ -14,3 +14,6 @@ flim_tests/
 tests.txt
 *.txt
 share.sh
+.coverage
+htmlcov/
+.pytest_cache/

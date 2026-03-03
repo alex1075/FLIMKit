@@ -14,6 +14,12 @@ from .FLIM.fitters import fit_summed, fit_per_pixel
 from .utils.xlsx_tools import load_xlsx
 from .utils.misc import print_summary
 from .utils.plotting import plot_summed, plot_pixel_maps, plot_lifetime_histogram
+from .utils.enhanced_outputs import (
+    save_fit_summary_txt,
+    save_weighted_tau_images,
+    save_individual_tau_maps,
+    create_complete_output_package
+)
 
 def yes_no_question(question):
     """Ask a yes/no question using inquirer and return 'y' or 'n'."""
