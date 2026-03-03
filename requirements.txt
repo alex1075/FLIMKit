@@ -1,8 +1,0 @@
-inquirer==3.4.1
-liffile==2026.1.22
-matplotlib==3.10.8
-numpy==2.4.2
-opencv_python==4.13.0.90
-pandas==3.0.1
-scipy==1.17.1
-tifffile==2026.1.28

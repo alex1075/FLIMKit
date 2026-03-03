@@ -44,14 +44,16 @@ def stitch_tiles_inquire():
     if not ptu_dir or not Path(ptu_dir).exists():
         raise ValueError(f"PTU directory not found: {ptu_dir}")
     
-    # Output directory
-    output_dir = input("Enter output directory for stitched data: ").strip()
-    if not output_dir:
+    # Output directory – now we automatically create a subdirectory named after the ROI
+    base_output = input("Enter base output directory (a subfolder named after the ROI will be created inside it): ").strip()
+    if not base_output:
         raise ValueError("Output directory is required")
     
     # Extract PTU basename from XLIF filename (e.g., "R 2.xlif" -> "R 2")
     ptu_basename = Path(xlif_path).stem
-    print(f"  Using PTU basename: '{ptu_basename}' (from XLIF filename)")
+    roi_clean = ptu_basename.replace(' ', '_')
+    output_dir = str(Path(base_output) / roi_clean)
+    print(f"  Data will be saved in: {output_dir}")
     
     # Ask about rotation
     rotate_q = yes_no_question("Apply 90° clockwise rotation to tiles? (Recommended for Leica data)")
@@ -74,7 +76,7 @@ def stitch_and_fit_inquire():
     
     # First get stitching parameters
     print("\nStep 1: Tile Stitching Setup")
-    stitch_args = stitch_tiles_inquire()
+    stitch_args = stitch_tiles_inquire()   # this already creates the ROI subdirectory
     
     # Then get fitting parameters
     print("\nStep 2: FLIM Fitting Setup")
@@ -109,13 +111,17 @@ def stitch_and_fit_inquire():
     perpixel_q = yes_no_question("Perform per-pixel fitting? (slower but gives lifetime maps)")
     fit_per_pixel_mode = (perpixel_q == 'y')
     
+    # Ask about saving individual component maps
+    save_individual_q = yes_no_question("Save individual component maps? (tau1, tau2, a1, a2) (default: No)")
+    save_individual = (save_individual_q == 'y')
+    
     # Build combined namespace
     args = argparse.Namespace()
     
     # Stitching parameters
     args.xlif = stitch_args.xlif
     args.ptu_dir = stitch_args.ptu_dir
-    args.output_dir = stitch_args.output_dir
+    args.output_dir = stitch_args.output_dir    # already includes ROI subfolder
     args.ptu_basename = stitch_args.ptu_basename
     args.rotate_tiles = stitch_args.rotate_tiles
     
@@ -139,6 +145,10 @@ def stitch_and_fit_inquire():
     args.irf_bins = IRF_BINS
     args.irf_fit_width = IRF_FIT_WIDTH
     args.no_plots = False
+    
+    # Output control flags
+    args.save_individual = save_individual
+    args.save_weighted = True   # always save weighted tau images
     
     return args
 
@@ -195,6 +205,9 @@ def _run_stitch_and_fit(args):
         raise RuntimeError("No tiles were successfully stitched!")
     
     print(f"\nStitching complete: {stitch_result['tiles_processed']} tiles processed")
+    
+    # Derive ROI name from PTU basename (replace spaces with underscores)
+    roi_name = args.ptu_basename.replace(' ', '_')
     
     # Step 2: Load stitched data
     print(f"\n{'='*60}")
@@ -324,6 +337,20 @@ def _run_stitch_and_fit(args):
     
     print_summary(global_summary, strategy, args.nexp)
     
+    # --- Save fit summary text file ---
+    metadata = {
+        'canvas_shape': stack.shape[:2],
+        'total_photons': int(stack.sum()),
+        'tiles_processed': stitch_result['tiles_processed'],
+    }
+    save_fit_summary_txt(
+        global_summary,
+        Path(args.output_dir) / f"{roi_name}_fit_summary.txt",
+        n_exp=args.nexp,
+        strategy=strategy,
+        metadata=metadata
+    )
+    
     # Plot summed fit
     if not args.no_plots:
         matplotlib.use("Agg")
@@ -336,6 +363,7 @@ def _run_stitch_and_fit(args):
         )
     
     # Per-pixel fitting (if requested)
+    pixel_maps = None
     if args.mode in ("perPixel", "both"):
         print(f"\nBuilding pixel stack (binning={args.binning}×{args.binning})...")
         pixel_stack = ptu.pixel_stack(channel=None, binning=args.binning)
@@ -347,6 +375,26 @@ def _run_stitch_and_fit(args):
             global_popt, args.nexp,
             min_photons=args.min_photons,
         )
+        
+        # Save weighted tau images
+        if getattr(args, 'save_weighted', True):
+            save_weighted_tau_images(
+                pixel_maps,
+                Path(args.output_dir),
+                roi_name=roi_name,
+                n_exp=args.nexp,
+                save_intensity=True,
+                save_amplitude=True
+            )
+        
+        # Save individual component maps if requested
+        if getattr(args, 'save_individual', False):
+            save_individual_tau_maps(
+                pixel_maps,
+                Path(args.output_dir),
+                roi_name=roi_name,
+                n_exp=args.nexp
+            )
         
         if not args.no_plots:
             matplotlib.use("Agg")
@@ -698,7 +746,10 @@ def stitch_tiles(interactive=False):
         )
         ap.add_argument("--xlif", required=True, help="Path to XLIF metadata file")
         ap.add_argument("--ptu-dir", required=True, help="Directory containing PTU tiles")
-        ap.add_argument("--output-dir", required=True, help="Output directory for stitched data")
+        ap.add_argument("--output-dir", required=True, 
+                        help="Output directory for stitched data. "
+                             "To avoid overwriting when processing multiple ROIs, "
+                             "use a separate directory per ROI (e.g., 'results/R_2/').")
         ap.add_argument("--ptu-basename", default=None, help="PTU basename (default: from XLIF filename)")
         ap.add_argument("--rotate-tiles", action="store_true", default=True, 
                        help="Apply 90° CW rotation (default: True)")
@@ -729,7 +780,9 @@ def stitch_and_fit(interactive=False):
         # Stitching args
         ap.add_argument("--xlif", required=True, help="Path to XLIF metadata file")
         ap.add_argument("--ptu-dir", required=True, help="Directory containing PTU tiles")
-        ap.add_argument("--output-dir", required=True, help="Output directory")
+        ap.add_argument("--output-dir", required=True, 
+                        help="Output directory. To avoid overwriting, use a separate "
+                             "directory per ROI (e.g., 'results/R_2/').")
         ap.add_argument("--ptu-basename", default=None, help="PTU basename (default: from XLIF)")
         ap.add_argument("--rotate-tiles", action="store_true", default=True)
         ap.add_argument("--no-rotate", action="store_true")
@@ -756,6 +809,12 @@ def stitch_and_fit(interactive=False):
         ap.add_argument("--irf-fit-width", type=float, default=IRF_FIT_WIDTH)
         ap.add_argument("--no-plots", action="store_true")
         
+        # Output control flags
+        ap.add_argument("--save-individual", action="store_true",
+                        help="Save individual tau/amplitude component maps")
+        ap.add_argument("--no-save-weighted", action="store_true",
+                        help="Disable saving of weighted tau images (default: enabled)")
+        
         args = ap.parse_args()
         
         if args.no_rotate:
@@ -763,5 +822,8 @@ def stitch_and_fit(interactive=False):
         
         if args.ptu_basename is None:
             args.ptu_basename = Path(args.xlif).stem
+        
+        # Set weighted flag opposite of no-save-weighted
+        args.save_weighted = not args.no_save_weighted
         
         _run_stitch_and_fit(args)

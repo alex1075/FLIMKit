@@ -17,3 +17,5 @@ share.sh
 .coverage
 htmlcov/
 .pytest_cache/
+*.lof
+*.xlif
