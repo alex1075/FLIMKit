@@ -1,5 +1,5 @@
 import numpy as np
-from code.FLIM.irf_tools import build_full_irf
+from ..FLIM.irf_tools import build_full_irf
 
 def _exponential_kernel(tcspc_res, n_bins, taus, amps, bg):
     t = np.arange(n_bins, dtype=float) * tcspc_res

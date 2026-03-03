@@ -2,10 +2,10 @@ import time
 import numpy as np
 from scipy.optimize import least_squares, differential_evolution, nnls
 from scipy.stats.distributions import chi2 as chi2_dist
-from code.FLIM.irf_tools import build_full_irf
-from code.FLIM.fit_tools import estimate_bg, find_fit_end, _build_bounds, _pack_p0
-from code.FLIM.models import reconvolution_model, _DECost
-from code.configs import MIN_PHOTONS_PERPIX
+from ..FLIM.irf_tools import build_full_irf
+from ..FLIM.fit_tools import estimate_bg, find_fit_end, _build_bounds, _pack_p0
+from ..FLIM.models import reconvolution_model, _DECost
+from ..configs import MIN_PHOTONS_PERPIX
 
 def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
                has_tail, fit_bg, fit_sigma,

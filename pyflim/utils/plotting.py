@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import LinearSegmentedColormap
-from code.configs import FLIM_CMAP
+from pyflim.configs import FLIM_CMAP
 
 
 def plot_summed(decay, summary, ptu, xlsx, n_exp, strategy, out_prefix,

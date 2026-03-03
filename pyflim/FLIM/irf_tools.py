@@ -2,7 +2,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
-from code.PTU.reader import PTUFile
+from ..PTU.reader import PTUFile
 
 def gaussian_irf_from_fwhm(n_bins: int,
                             tcspc_res: float,

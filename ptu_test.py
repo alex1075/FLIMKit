@@ -8,7 +8,7 @@ This demonstrates that:
 """
 
 import numpy as np
-from code.PTU.reader import PTUFile, PTUArray5D, read_ptu_5d
+from pyflim.PTU.reader import PTUFile, PTUArray5D, read_ptu_5d
 
 
 def test_ptufile_compatibility():

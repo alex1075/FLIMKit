@@ -10,3 +10,7 @@ PTUs/
 *.tiff
 flim9.py
 *.png
+flim_tests/
+tests.txt
+*.txt
+share.sh

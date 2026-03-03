@@ -1,0 +1,761 @@
+import inquirer
+import argparse
+import numpy as np
+from pathlib import Path
+import matplotlib
+from .configs import (
+    n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message)
+from .PTU.reader import PTUFile
+from .PTU.stitch import stitch_flim_tiles, load_flim_for_fitting  
+from .utils.xml_utils import parse_xlif_tile_positions 
+from .FLIM.fit_tools import find_irf_peak_bin
+from .FLIM.irf_tools import irf_from_scatter_ptu, gaussian_irf_from_fwhm, compare_irfs, estimate_irf_from_decay_parametric, estimate_irf_from_decay_raw, irf_from_xlsx, irf_from_xlsx_analytical
+from .FLIM.fitters import fit_summed, fit_per_pixel
+from .utils.xlsx_tools import load_xlsx
+from .utils.misc import print_summary
+from .utils.plotting import plot_summed, plot_pixel_maps, plot_lifetime_histogram
+
+def yes_no_question(question):
+    """Ask a yes/no question using inquirer and return 'y' or 'n'."""
+    questions = [inquirer.List('yesno',
+                               message=question,
+                               choices=['Yes', 'No'])]
+    answer = inquirer.prompt(questions)
+    return 'y' if answer['yesno'] == 'Yes' else 'n'
+
+
+def stitch_tiles_inquire():
+    """Interactive prompt for tile stitching parameters."""
+    print("\n--- ROI Reconstruction: Tile Stitching ---")
+    
+    # XLIF metadata file
+    xlif_path = input("Enter path to XLIF metadata file: ").strip()
+    if not xlif_path or not Path(xlif_path).exists():
+        raise ValueError(f"XLIF file not found: {xlif_path}")
+    
+    # PTU directory
+    ptu_dir = input("Enter directory containing PTU tiles: ").strip()
+    if not ptu_dir or not Path(ptu_dir).exists():
+        raise ValueError(f"PTU directory not found: {ptu_dir}")
+    
+    # Output directory
+    output_dir = input("Enter output directory for stitched data: ").strip()
+    if not output_dir:
+        raise ValueError("Output directory is required")
+    
+    # Extract PTU basename from XLIF filename (e.g., "R 2.xlif" -> "R 2")
+    ptu_basename = Path(xlif_path).stem
+    print(f"  Using PTU basename: '{ptu_basename}' (from XLIF filename)")
+    
+    # Ask about rotation
+    rotate_q = yes_no_question("Apply 90° clockwise rotation to tiles? (Recommended for Leica data)")
+    rotate_tiles = (rotate_q == 'y')
+    
+    # Build namespace
+    args = argparse.Namespace()
+    args.xlif = xlif_path
+    args.ptu_dir = ptu_dir
+    args.output_dir = output_dir
+    args.ptu_basename = ptu_basename
+    args.rotate_tiles = rotate_tiles
+    
+    return args
+
+
+def stitch_and_fit_inquire():
+    """Interactive prompt for combined stitch + fit workflow."""
+    print("\n--- ROI Reconstruction + FLIM Fitting ---")
+    
+    # First get stitching parameters
+    print("\nStep 1: Tile Stitching Setup")
+    stitch_args = stitch_tiles_inquire()
+    
+    # Then get fitting parameters
+    print("\nStep 2: FLIM Fitting Setup")
+    
+    # IRF method
+    print("\nIRF estimation options:")
+    print("  1. 'file'       - measured IRF image (scatter PTU)")
+    print("  2. 'raw'        - non-parametric IRF from raw decay")
+    print("  3. 'parametric' - fit Gaussian + exponential tail")
+    print("  4. 'gaussian'   - simple Gaussian IRF (fastest)")
+    method_q = [inquirer.List('method',
+                              message="Choose IRF estimation method",
+                              choices=['file', 'raw', 'parametric', 'gaussian'])]
+    estimate_irf = inquirer.prompt(method_q)['method']
+    
+    irf_path = None
+    if estimate_irf == 'file':
+        irf_path = input("Enter path to IRF PTU file: ").strip()
+        if not irf_path or not Path(irf_path).exists():
+            print("  Warning: IRF file not found, falling back to Gaussian")
+            estimate_irf = 'gaussian'
+            irf_path = None
+    
+    # Number of exponentials
+    nexp_q = [inquirer.List('nexp',
+                            message="Number of exponential components",
+                            choices=['1', '2', '3'],
+                            default='2')]
+    nexp = int(inquirer.prompt(nexp_q)['nexp'])
+    
+    # Per-pixel fitting
+    perpixel_q = yes_no_question("Perform per-pixel fitting? (slower but gives lifetime maps)")
+    fit_per_pixel_mode = (perpixel_q == 'y')
+    
+    # Build combined namespace
+    args = argparse.Namespace()
+    
+    # Stitching parameters
+    args.xlif = stitch_args.xlif
+    args.ptu_dir = stitch_args.ptu_dir
+    args.output_dir = stitch_args.output_dir
+    args.ptu_basename = stitch_args.ptu_basename
+    args.rotate_tiles = stitch_args.rotate_tiles
+    
+    # Fitting parameters
+    args.irf = irf_path
+    args.estimate_irf = estimate_irf
+    args.nexp = nexp
+    args.tau_min = Tau_min
+    args.tau_max = Tau_max
+    args.mode = 'both' if fit_per_pixel_mode else 'summed'
+    args.binning = binning_factor
+    args.min_photons = MIN_PHOTONS_PERPIX
+    args.optimizer = Optimizer
+    args.restarts = lm_restarts
+    args.de_population = de_population
+    args.de_maxiter = de_maxiter
+    args.workers = n_workers
+    args.no_polish = False
+    args.channel = channels
+    args.irf_fwhm = IRF_FWHM
+    args.irf_bins = IRF_BINS
+    args.irf_fit_width = IRF_FIT_WIDTH
+    args.no_plots = False
+    
+    return args
+
+
+def _run_tile_stitch(args):
+    """Execute tile stitching workflow."""
+    print(f"\n{'='*60}")
+    print(f"  TILE STITCHING")
+    print(f"{'='*60}")
+    
+    result = stitch_flim_tiles(
+        xlif_path=Path(args.xlif),
+        ptu_dir=Path(args.ptu_dir),
+        output_dir=Path(args.output_dir),
+        ptu_basename=args.ptu_basename,
+        rotate_tiles=args.rotate_tiles,
+        verbose=True,
+    )
+    
+    if result['tiles_processed'] == 0:
+        raise RuntimeError("No tiles were successfully stitched!")
+    
+    print(f"\n{'='*60}")
+    print(f"  STITCHING COMPLETE")
+    print(f"{'='*60}")
+    print(f"Processed: {result['tiles_processed']}/{result['tiles_processed'] + result['tiles_skipped']} tiles")
+    print(f"\nOutputs:")
+    print(f"  Intensity: {result['intensity_path']}")
+    print(f"  FLIM data: {result['flim_path']}")
+    print(f"  Time axis: {result['time_axis_path']}")
+    print(f"  Metadata:  {result['metadata_path']}")
+    
+    return result
+
+
+def _run_stitch_and_fit(args):
+    """Execute combined stitch + fit workflow."""
+    
+    # Step 1: Stitch tiles
+    print(f"\n{'='*60}")
+    print(f"  STEP 1: TILE STITCHING")
+    print(f"{'='*60}")
+    
+    stitch_result = stitch_flim_tiles(
+        xlif_path=Path(args.xlif),
+        ptu_dir=Path(args.ptu_dir),
+        output_dir=Path(args.output_dir),
+        ptu_basename=args.ptu_basename,
+        rotate_tiles=args.rotate_tiles,
+        verbose=True,
+    )
+    
+    if stitch_result['tiles_processed'] == 0:
+        raise RuntimeError("No tiles were successfully stitched!")
+    
+    print(f"\nStitching complete: {stitch_result['tiles_processed']} tiles processed")
+    
+    # Step 2: Load stitched data
+    print(f"\n{'='*60}")
+    print(f"  STEP 2: LOADING STITCHED DATA")
+    print(f"{'='*60}")
+    
+    stack, tcspc_res, n_bins = load_flim_for_fitting(
+        Path(args.output_dir),
+        load_to_memory=True  # Load to RAM for faster fitting
+    )
+    
+    print(f"  Loaded: {stack.shape} @ {tcspc_res*1e12:.2f} ps/bin")
+    print(f"  Total photons: {stack.sum():,.0f}")
+    
+    # Step 3: Prepare for fitting (create mock PTU object with necessary attributes)
+    class StitchedData:
+        """Mock PTU object for stitched data."""
+        def __init__(self, stack, tcspc_res, n_bins):
+            self.n_bins = n_bins
+            self.tcspc_res = tcspc_res
+            self.time_ns = np.arange(n_bins) * tcspc_res * 1e9
+            self.photon_channel = None  # Already channel-selected
+            self._stack = stack
+        
+        def summed_decay(self, channel=None):
+            """Return summed decay."""
+            return self._stack.sum(axis=(0, 1))
+        
+        def pixel_stack(self, channel=None, binning=1):
+            """Return pixel stack."""
+            if binning == 1:
+                return self._stack
+            else:
+                # Simple binning
+                ny, nx, nt = self._stack.shape
+                new_ny = ny // binning
+                new_nx = nx // binning
+                binned = np.zeros((new_ny, new_nx, nt), dtype=self._stack.dtype)
+                for i in range(new_ny):
+                    for j in range(new_nx):
+                        binned[i, j, :] = self._stack[
+                            i*binning:(i+1)*binning,
+                            j*binning:(j+1)*binning,
+                            :
+                        ].sum(axis=(0, 1))
+                return binned
+    
+    ptu = StitchedData(stack, tcspc_res, n_bins)
+    
+    # Step 4: Fit using existing fitting code
+    print(f"\n{'='*60}")
+    print(f"  STEP 3: FLIM FITTING")
+    print(f"{'='*60}")
+    print(f"  {args.nexp}-exp  |  {args.mode}  |  optimizer={args.optimizer}")
+    
+    # Get summed decay
+    decay = ptu.summed_decay()
+    irf_peak_bin = find_irf_peak_bin(decay)
+    decay_peak_bin = int(np.argmax(decay))
+    
+    print(f"\nSummed decay:")
+    print(f"  {decay.sum():,.0f} photons  |  peak={decay.max():,.0f} at bin {decay_peak_bin}")
+    print(f"  IRF peak (steepest rise): bin {irf_peak_bin} ({irf_peak_bin * tcspc_res * 1e9:.3f} ns)")
+    
+    # Build IRF
+    print(f"\nBuilding IRF (method: {args.estimate_irf})...")
+    
+    if args.irf is not None and Path(args.irf).exists():
+        # Load scatter IRF
+        irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
+        strategy = "scatter_ptu"
+        has_tail = False
+        fit_sigma = False
+        fit_bg = True
+        print(f"  IRF: scatter PTU from {args.irf}")
+    
+    elif args.estimate_irf == "raw":
+        from .FLIM.irf_tools import estimate_irf_from_decay_raw
+        irf_prompt = estimate_irf_from_decay_raw(
+            decay, ptu.tcspc_res, args.irf_bins, args.irf_fit_width, irf_peak_bin
+        )
+        strategy = f"estimated_raw (bins={args.irf_bins}, width={args.irf_fit_width})"
+        has_tail = True
+        fit_sigma = True
+        fit_bg = True
+        print(f"  IRF: {strategy}")
+    
+    elif args.estimate_irf == "parametric":
+        from .FLIM.irf_tools import estimate_irf_from_decay_parametric
+        irf_prompt = estimate_irf_from_decay_parametric(
+            decay, ptu.tcspc_res, args.irf_bins, args.irf_fit_width, irf_peak_bin
+        )
+        strategy = f"estimated_parametric (bins={args.irf_bins}, width={args.irf_fit_width})"
+        has_tail = True
+        fit_sigma = True
+        fit_bg = True
+        print(f"  IRF: {strategy}")
+    
+    else:
+        # Gaussian IRF (default)
+        fwhm_ns = args.irf_fwhm if args.irf_fwhm is not None else tcspc_res * 1e9
+        irf_prompt = gaussian_irf_from_fwhm(
+            n_bins, tcspc_res, fwhm_ns, decay_peak_bin
+        )
+        strategy = f"gaussian FWHM={fwhm_ns*1000:.1f}ps"
+        has_tail = False
+        fit_sigma = False
+        fit_bg = True
+        print(f"  IRF: {strategy}")
+    
+    print(f"  Flags: has_tail={has_tail}  fit_sigma={fit_sigma}  fit_bg={fit_bg}")
+    
+    # Fit summed decay
+    print(f"\nFitting summed decay ({args.nexp}-exp, optimizer={args.optimizer})...")
+    
+    global_popt, global_summary = fit_summed(
+        decay, tcspc_res, n_bins,
+        irf_prompt, has_tail, fit_bg, fit_sigma,
+        args.nexp, args.tau_min, args.tau_max,
+        optimizer=args.optimizer,
+        n_restarts=args.restarts,
+        de_popsize=args.de_population,
+        de_maxiter=args.de_maxiter,
+        workers=args.workers,
+        polish=not args.no_polish,
+    )
+    
+    print_summary(global_summary, strategy, args.nexp)
+    
+    # Plot summed fit
+    if not args.no_plots:
+        matplotlib.use("Agg")
+        output_name = Path(args.output_dir) / "fit_results"
+        print(f"\nGenerating plots...")
+        plot_summed(
+            decay, global_summary, ptu, None,  # No xlsx
+            args.nexp, strategy, str(output_name),
+            irf_prompt=irf_prompt
+        )
+    
+    # Per-pixel fitting (if requested)
+    if args.mode in ("perPixel", "both"):
+        print(f"\nBuilding pixel stack (binning={args.binning}×{args.binning})...")
+        pixel_stack = ptu.pixel_stack(channel=None, binning=args.binning)
+        
+        print(f"Per-pixel fitting (min_photons={args.min_photons})...")
+        pixel_maps = fit_per_pixel(
+            pixel_stack, tcspc_res, n_bins,
+            irf_prompt, has_tail, fit_bg, fit_sigma,
+            global_popt, args.nexp,
+            min_photons=args.min_photons,
+        )
+        
+        if not args.no_plots:
+            matplotlib.use("Agg")
+            print(f"Generating pixel maps...")
+            plot_pixel_maps(pixel_maps, args.nexp, str(output_name), binning=args.binning)
+            plot_lifetime_histogram(pixel_maps, args.nexp, str(output_name))
+    
+    print(f"\n{'='*60}")
+    print(f"  WORKFLOW COMPLETE")
+    print(f"{'='*60}")
+    print(f"Stitched data: {args.output_dir}")
+    print(f"Fit results:   {output_name}_*")
+    print("\nDone!\n")
+
+
+def single_FOV_flim_fit_inquire():
+    """Interactive prompt to collect FLIM fitting parameters."""
+    print("\n--- Interactive FLIM Fit Setup ---")
+
+    # Essential input
+    ptu_path = input("Enter path to PTU file for this FOV: ").strip()
+    if not ptu_path:
+        raise ValueError("PTU file path is required.")
+
+    # Optional XLSX (overlay) file
+    xlsxq = yes_no_question("Do you have an XLSX file for this FOV? (Recommended for pixel size info)")
+    if xlsxq == 'y':
+        xlif_path = input("Enter path to XLSX file: ").strip()
+        # Ask whether to use its IRF
+        irf_xlsxq = yes_no_question("Do you want to use the IRF from this XLSX file? (Recommended if available)")
+        if irf_xlsxq == 'y':
+            # Use IRF from the same XLSX
+            use_xlsx_irf = True
+            estimate_irf = 'none'        # not needed
+            irf_path = None
+        else:
+            use_xlsx_irf = False
+            # Ask for alternative IRF source
+            print("\nIRF estimation options:")
+            print("  1. 'file'   - measured IRF image (scatter PTU)")
+            print("  2. 'raw'    - non‑parametric IRF from raw decay")
+            print("  3. 'parametric' - fit Gaussian + exponential tail to rising edge")
+            print("  4. 'none'   - do not estimate IRF (not recommended)")
+            method_q = [inquirer.List('method',
+                                      message="Choose IRF estimation method",
+                                      choices=['file', 'raw', 'parametric', 'none'])]
+            estimate_irf = inquirer.prompt(method_q)['method']
+            if estimate_irf == 'file':
+                irf_path = input("Enter path to IRF PTU file: ").strip()
+            else:
+                irf_path = None
+    else:
+        xlif_path = None
+        use_xlsx_irf = False
+        # No XLSX provided – must specify IRF method
+        print("\nNo XLSX file – IRF must be estimated or provided separately.")
+        method_q = [inquirer.List('method',
+                                  message="Choose IRF estimation method",
+                                  choices=['file', 'raw', 'parametric', 'none'])]
+        estimate_irf = inquirer.prompt(method_q)['method']
+        if estimate_irf == 'file':
+            irf_path = input("Enter path to IRF PTU file: ").strip()
+        else:
+            irf_path = None
+
+    # Build an argparse.Namespace that mimics the command‑line arguments
+    import argparse
+    args = argparse.Namespace()
+    args.ptu = ptu_path
+    args.xlsx = xlif_path
+    args.no_xlsx_irf = (xlif_path is not None and not use_xlsx_irf)   # only relevant if xlsx exists
+    args.irf = irf_path
+    args.irf_xlsx = None                # separate IRF‑only xlsx not asked here
+    args.estimate_irf = estimate_irf
+    # Use defaults for all other parameters (they will be filled from constants later)
+    args.irf_bins = IRF_BINS             # assume defined elsewhere
+    args.irf_fit_width = IRF_FIT_WIDTH
+    args.irf_fwhm = IRF_FWHM
+    args.nexp = n_exp
+    args.tau_min = Tau_min
+    args.tau_max = Tau_max
+    args.mode = D_mode
+    args.binning = binning_factor
+    args.min_photons = MIN_PHOTONS_PERPIX
+    args.optimizer = Optimizer
+    args.restarts = lm_restarts
+    args.de_population = de_population
+    args.de_maxiter = de_maxiter
+    args.workers = n_workers
+    args.no_polish = False
+    args.channel = channels
+    args.out = OUT_NAME
+    args.no_plots = False
+    args.debug_xlsx = False
+    args.print_config = False            # not used in interactive mode
+
+    return args
+
+
+def _run_flim_fit(args):
+    """Core fitting routine – identical to original single_FOV_flim_fit body."""
+    print(f"\n{'='*60}")
+    print(f"  flim_fit_v13  |  {args.nexp}-exp  |  {args.mode}  |  optimizer={args.optimizer}")
+    print(f"{'='*60}")
+
+    #  Load PTU 
+    print(f"\n[1] PTU: {args.ptu}")
+    ptu = PTUFile(args.ptu, verbose=True)
+
+    # Resolve FWHM after PTU is loaded
+    fwhm_ns = args.irf_fwhm if args.irf_fwhm is not None else ptu.tcspc_res * 1e9
+    print(f"  IRF FWHM: {fwhm_ns*1000:.2f} ps "
+          f"({'from --irf-fwhm' if args.irf_fwhm is not None else 'default: 1 bin'})")
+
+    #  Summed decay 
+    print(f"\n[2] Building summed decay (channel={args.channel or 'auto'})")
+    decay    = ptu.summed_decay(channel=args.channel)
+    irf_peak_bin  = find_irf_peak_bin(decay)
+    decay_peak_bin = int(np.argmax(decay))
+    print(f"    {decay.sum():,.0f} photons  |  peak={decay.max():,.0f}  "
+          f"at bin {decay_peak_bin} ({ptu.time_ns[decay_peak_bin]:.3f} ns)")
+    print(f"    IRF peak (steepest rise): bin {irf_peak_bin} "
+          f"({irf_peak_bin * ptu.tcspc_res * 1e9:.3f} ns)")
+
+    #  Load xlsx (optional) 
+    xlsx = None
+    if args.xlsx is not None and Path(args.xlsx).exists():
+        print(f"\n[3] XLSX: {args.xlsx}")
+        xlsx = load_xlsx(args.xlsx, debug=args.debug_xlsx)
+        if xlsx['fit_t'] is not None:
+            print(f"    LAS X fit present, peak = {xlsx['fit_c'].max():.0f} cts")
+    else:
+        print(f"\n[3] No XLSX provided or file not found")
+
+    #  Build IRF — sets has_tail, fit_sigma, fit_bg per path 
+    print(f"\n[4] Building IRF")
+
+    if args.irf is not None:
+        # Scatter PTU: IRF fully measured, no tail or sigma needed
+        irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
+        strategy   = "scatter_ptu"
+        has_tail   = False
+        fit_sigma  = False
+        fit_bg     = True
+
+
+    elif args.irf_xlsx is not None:
+        print(f"  IRF: fitting Leica analytical model to: {args.irf_xlsx}")
+        if not Path(args.irf_xlsx).exists():
+            raise FileNotFoundError(f"--irf-xlsx file not found: {args.irf_xlsx}")
+        irf_ref = load_xlsx(args.irf_xlsx, debug=False)
+        if irf_ref['irf_t'] is None or irf_ref['irf_c'] is None:
+            raise ValueError(f"No IRF columns found in --irf-xlsx: {args.irf_xlsx}")
+        irf_prompt, irf_params = irf_from_xlsx_analytical(
+            irf_ref, ptu.n_bins, ptu.tcspc_res, verbose=True)
+
+        # The analytical IRF is centred at t0 from the Gaussian fit (~bin 29).
+        # The optimizer consistently finds shift ≈ -1.26 bins because the true
+        # IRF onset is at the steepest-rise bin (~27), not the decay peak (29).
+        # Pre-shift to irf_peak_bin so the free shift starts near 0.
+        irf_current_peak = int(np.argmax(irf_prompt))
+        pre_shift = irf_peak_bin - irf_current_peak
+        if pre_shift != 0:
+            x          = np.arange(ptu.n_bins, dtype=float)
+            irf_prompt = np.interp(x - pre_shift, x, irf_prompt,
+                                   left=0.0, right=0.0)
+            s = irf_prompt.sum()
+            if s > 0:
+                irf_prompt /= s
+            print(f"  Pre-shifted IRF by {pre_shift:+d} bins "
+                  f"(from bin {irf_current_peak} → {irf_peak_bin})")
+
+        strategy  = (f"irf_xlsx_analytical ({Path(args.irf_xlsx).name})  "
+                     f"FWHM={irf_params['fwhm_ns']*1000:.1f}ps  "
+                     f"tail_amp={irf_params['tail_amp']:.3f}  "
+                     f"tail_tau={irf_params['tail_tau_ns']:.3f}ns")
+        # IRF shape fully determined by analytical fit — tail & sigma not free
+        has_tail  = False
+        fit_sigma = False
+        fit_bg    = True
+        print(f"  IRF peak bin after pre-shift = {np.argmax(irf_prompt)}")
+
+    elif xlsx is not None and xlsx['irf_t'] is not None and not args.no_xlsx_irf:
+        # xlsx IRF: sparse rising-edge, tail and sigma needed
+        irf_prompt = irf_from_xlsx(xlsx, ptu.n_bins, ptu.tcspc_res)
+        above      = np.where(irf_prompt >= irf_prompt.max() / 2)[0]
+        fwhm_xlsx  = (above[-1] - above[0]) * ptu.tcspc_res * 1e9 if len(above) > 1 else 0
+        print(f"  IRF: xlsx prompt  peak bin={int(np.argmax(irf_prompt))}  "
+              f"FWHM={fwhm_xlsx:.3f} ns  + tail + σ as free params")
+        strategy  = "xlsx"
+        has_tail  = True
+        fit_sigma = True
+        fit_bg    = True
+
+    elif args.estimate_irf != "none":
+        # Rising-edge estimation: tail and sigma still needed
+        if args.estimate_irf == "raw":
+            irf_prompt = estimate_irf_from_decay_raw(
+                decay, ptu.tcspc_res, ptu.n_bins, n_irf_bins=args.irf_bins)
+            strategy = "estimated_raw"
+        else:
+            irf_prompt = estimate_irf_from_decay_parametric(
+                decay, ptu.tcspc_res, ptu.n_bins,
+                fit_window_width_ns=args.irf_fit_width)
+            strategy = "estimated_parametric"
+        has_tail  = True
+        fit_sigma = True
+        fit_bg    = True
+        print(f"  IRF: {strategy} + tail + σ as free params")
+
+    #  IRF comparison (optional) 
+    if not args.no_plots and xlsx is not None:
+        matplotlib.use("Agg")
+        print(f"\n[4b] IRF comparison")
+        compare_irfs(irf_prompt, xlsx, ptu.tcspc_res, ptu.n_bins,
+                     strategy, args.out)
+
+    #  Summed fit 
+    global_popt    = None
+    global_summary = None
+
+    def _run_summed():
+        return fit_summed(
+            decay, ptu.tcspc_res, ptu.n_bins,
+            irf_prompt, has_tail, fit_bg, fit_sigma,
+            args.nexp, args.tau_min, args.tau_max,
+            optimizer=args.optimizer,
+            n_restarts=args.restarts,
+            de_popsize=args.de_population,
+            de_maxiter=args.de_maxiter,
+            workers=args.workers,
+            polish=not args.no_polish,
+        )
+
+    if args.mode in ("summed", "both"):
+        print(f"\n[5] Summed decay fit  ({args.nexp}-exp, optimizer={args.optimizer})")
+        global_popt, global_summary = _run_summed()
+        print_summary(global_summary, strategy, args.nexp)
+
+        if not args.no_plots:
+            matplotlib.use("Agg")
+            print(f"\n[6] Plotting")
+            plot_summed(decay, global_summary, ptu, xlsx,
+                        args.nexp, strategy, args.out,
+                        irf_prompt=irf_prompt)
+
+    # Per-pixel fit ─
+    if args.mode in ("perPixel", "both"):
+        if global_popt is None:
+            print(f"\n[5] Running summed fit first (τ needed for per-pixel)")
+            global_popt, global_summary = _run_summed()
+            print_summary(global_summary, strategy, args.nexp)
+
+        print(f"\n[7] Building pixel stack (binning={args.binning}×{args.binning})")
+        stack = ptu.pixel_stack(channel=ptu.photon_channel, binning=args.binning)
+
+        print(f"\n[8] Per-pixel fitting (min_photons={args.min_photons})")
+        pixel_maps = fit_per_pixel(
+            stack, ptu.tcspc_res, ptu.n_bins,
+            irf_prompt, has_tail, fit_bg, fit_sigma,
+            global_popt, args.nexp,
+            min_photons=args.min_photons,
+        )
+
+        if not args.no_plots:
+            matplotlib.use("Agg")
+            print(f"\n[9] Plotting pixel maps")
+            plot_pixel_maps(pixel_maps, args.nexp, args.out, binning=args.binning)
+            plot_lifetime_histogram(pixel_maps, args.nexp, args.out)
+
+    print("\nDone.\n")
+
+
+def single_FOV_flim_fit(interactive=False):
+    """
+    Entry point for FLIM fitting.
+    If interactive=True, prompts the user for inputs; otherwise parses command‑line arguments.
+    """
+    if interactive:
+        args = single_FOV_flim_fit_inquire()
+    else:
+        # Original argparse parsing
+        ap = argparse.ArgumentParser(
+            description="FLIM reconvolution fit — PTU + optional XLSX (Leica FALCON)"
+        )
+        ap.add_argument("--ptu",   default=None, required=True, help="Path to PTU file")
+        ap.add_argument("--xlsx",  default=None,
+                        help="LAS X export xlsx (overlay comparison and/or IRF source)")
+        ap.add_argument("--no-xlsx-irf", action="store_true",
+                        help="Load xlsx for comparison/overlay but do NOT use its IRF "
+                             "for fitting. Falls through to Gaussian/estimated IRF instead.")
+        ap.add_argument("--debug-xlsx", action="store_true",
+                        help="Print raw xlsx row contents and detected columns to diagnose "
+                             "parsing failures.")
+        ap.add_argument("--irf",   default=None,
+                        help="Scatter PTU for measured IRF (highest priority)")
+        ap.add_argument("--irf-xlsx", default=None,
+                        help="Path to a reference xlsx exported from LAS X, used ONLY "
+                             "to extract the IRF shape for fitting. The IRF is "
+                             "system-specific (not FOV-specific) so export once per "
+                             "session and reuse across all PTU files. Independent of "
+                             "--xlsx which is for overlay/comparison only.")
+        ap.add_argument("--estimate-irf", choices=["raw", "parametric", "none"],
+                        default=Estimate_IRF,
+                        help="If no direct IRF provided, estimate from the decay rising edge.")
+        ap.add_argument("--irf-bins",      type=int,   default=IRF_BINS)
+        ap.add_argument("--irf-fit-width", type=float, default=IRF_FIT_WIDTH)
+        ap.add_argument("--irf-fwhm", type=float, default=IRF_FWHM,
+                        help="IRF FWHM in ns. Default: 1 bin width from PTU")
+        ap.add_argument("--nexp",     type=int,   default=n_exp, choices=[1, 2, 3])
+        ap.add_argument("--tau-min",  type=float, default=Tau_min, help="ns")
+        ap.add_argument("--tau-max",  type=float, default=Tau_max, help="ns")
+        ap.add_argument("--mode",     default=D_mode,
+                        choices=["summed", "perPixel", "both"])
+        ap.add_argument("--binning",     type=int, default=binning_factor,
+                        help="Binning factor for per-pixel fitting. Default: 1 (no binning).")
+        ap.add_argument("--min-photons", type=int, default=MIN_PHOTONS_PERPIX)
+        ap.add_argument("--optimizer",   choices=["lm_multistart", "de"], default=Optimizer)
+        ap.add_argument("--restarts",    type=int, default=lm_restarts)
+        ap.add_argument("--de-population", type=int, default=de_population)
+        ap.add_argument("--de-maxiter",    type=int, default=de_maxiter)
+        ap.add_argument("--workers",       type=int, default=n_workers)
+        ap.add_argument("--no-polish",  action="store_true")
+        ap.add_argument("--channel",    type=int, default=channels)
+        ap.add_argument("--out",        default=OUT_NAME)
+        ap.add_argument("--no-plots",   action="store_true")
+        ap.add_argument("--print-config", action="store_true", help="Print default configuration settings and exit")
+        args = ap.parse_args()
+
+    if args.print_config:
+        print(config_message)
+        return
+
+    # Run the fitting routine
+    _run_flim_fit(args)
+
+
+def stitch_tiles(interactive=False):
+    """
+    Entry point for tile stitching (no fitting).
+    """
+    if interactive:
+        args = stitch_tiles_inquire()
+        _run_tile_stitch(args)
+    else:
+        # Command-line argument parsing
+        ap = argparse.ArgumentParser(
+            description="Stitch FLIM PTU tiles into mosaic using XLIF metadata"
+        )
+        ap.add_argument("--xlif", required=True, help="Path to XLIF metadata file")
+        ap.add_argument("--ptu-dir", required=True, help="Directory containing PTU tiles")
+        ap.add_argument("--output-dir", required=True, help="Output directory for stitched data")
+        ap.add_argument("--ptu-basename", default=None, help="PTU basename (default: from XLIF filename)")
+        ap.add_argument("--rotate-tiles", action="store_true", default=True, 
+                       help="Apply 90° CW rotation (default: True)")
+        ap.add_argument("--no-rotate", action="store_true", help="Disable tile rotation")
+        args = ap.parse_args()
+        
+        if args.no_rotate:
+            args.rotate_tiles = False
+        
+        if args.ptu_basename is None:
+            args.ptu_basename = Path(args.xlif).stem
+        
+        _run_tile_stitch(args)
+
+
+def stitch_and_fit(interactive=False):
+    """
+    Entry point for combined stitch + fit workflow.
+    """
+    if interactive:
+        args = stitch_and_fit_inquire()
+        _run_stitch_and_fit(args)
+    else:
+        # Command-line argument parsing
+        ap = argparse.ArgumentParser(
+            description="Stitch FLIM tiles and perform fitting"
+        )
+        # Stitching args
+        ap.add_argument("--xlif", required=True, help="Path to XLIF metadata file")
+        ap.add_argument("--ptu-dir", required=True, help="Directory containing PTU tiles")
+        ap.add_argument("--output-dir", required=True, help="Output directory")
+        ap.add_argument("--ptu-basename", default=None, help="PTU basename (default: from XLIF)")
+        ap.add_argument("--rotate-tiles", action="store_true", default=True)
+        ap.add_argument("--no-rotate", action="store_true")
+        
+        # Fitting args
+        ap.add_argument("--irf", default=None, help="Scatter PTU for IRF")
+        ap.add_argument("--estimate-irf", choices=["raw", "parametric", "gaussian"], 
+                       default="gaussian")
+        ap.add_argument("--nexp", type=int, default=n_exp, choices=[1, 2, 3])
+        ap.add_argument("--tau-min", type=float, default=Tau_min)
+        ap.add_argument("--tau-max", type=float, default=Tau_max)
+        ap.add_argument("--mode", default=D_mode, choices=["summed", "perPixel", "both"])
+        ap.add_argument("--binning", type=int, default=binning_factor)
+        ap.add_argument("--min-photons", type=int, default=MIN_PHOTONS_PERPIX)
+        ap.add_argument("--optimizer", choices=["lm_multistart", "de"], default=Optimizer)
+        ap.add_argument("--restarts", type=int, default=lm_restarts)
+        ap.add_argument("--de-population", type=int, default=de_population)
+        ap.add_argument("--de-maxiter", type=int, default=de_maxiter)
+        ap.add_argument("--workers", type=int, default=n_workers)
+        ap.add_argument("--no-polish", action="store_true")
+        ap.add_argument("--channel", type=int, default=channels)
+        ap.add_argument("--irf-fwhm", type=float, default=IRF_FWHM)
+        ap.add_argument("--irf-bins", type=int, default=IRF_BINS)
+        ap.add_argument("--irf-fit-width", type=float, default=IRF_FIT_WIDTH)
+        ap.add_argument("--no-plots", action="store_true")
+        
+        args = ap.parse_args()
+        
+        if args.no_rotate:
+            args.rotate_tiles = False
+        
+        if args.ptu_basename is None:
+            args.ptu_basename = Path(args.xlif).stem
+        
+        _run_stitch_and_fit(args)
