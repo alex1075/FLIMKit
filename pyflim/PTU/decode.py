@@ -1,12 +1,7 @@
-"""PTU FLIM Data Extraction - Simplified for Existing PTUFile Class
-
-Uses your existing reader.PTUFile class - no external dependencies.
-"""
-
 import numpy as np
 from pathlib import Path
 from typing import Tuple, Dict, Any
-from .reader import normalise_flim
+from .reader import normalise_flim, PTUFile
 
 def get_flim_histogram_from_ptufile(
     ptu_path: Path,
@@ -14,48 +9,22 @@ def get_flim_histogram_from_ptufile(
     binning: int = 1,
     channel: int = None
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """
-    Extract FLIM histogram using your existing PTUFile class.
-    
-    Args:
-        ptu_path: Path to PTU file
-        rotate_cw: If True, rotate tile 90° clockwise (Leica convention)
-        binning: Spatial binning factor
-        channel: Detection channel (None = auto-detect)
-    
-    Returns:
-        Tuple of:
-            - hist: (Y, X, H) FLIM histogram
-            - metadata: dict with tcspc_resolution, n_time_bins, etc.
-    
-    Example:
-        >>> from code.PTU.reader import PTUFile
-        >>> hist, meta = get_flim_histogram_from_ptufile("tile_s1.ptu")
-        >>> print(f"Shape: {hist.shape}, TCSPC: {meta['tcspc_resolution']*1e12:.2f} ps")
-    """
     from .reader import PTUFile
-    
     ptu = PTUFile(str(ptu_path))
-    
-    # Get FLIM histogram (Y, X, H)
-    # Your PTUFile.pixel_stack() already handles rotation internally if needed
-    stack = ptu.pixel_stack(binning=binning, channel=channel)
-    
-    # Additional rotation if Leica data needs it
-    # (Check if your PTUFile already rotates - if so, set rotate_cw=False)
+    # Use raw_pixel_stack to get integer counts
+    stack = ptu.raw_pixel_stack(binning=binning, channel=channel)
     if rotate_cw:
         stack = np.rot90(stack, k=-1, axes=(0, 1))
-    
-    # Extract metadata from your PTUFile class
+    # frequency (if needed)
+    freq = getattr(ptu, 'sync_rate', 1.0 / ptu.tcspc_res if hasattr(ptu, 'tcspc_res') else None)
     metadata = {
-        'tcspc_resolution': ptu.tcspc_res,  # seconds
+        'tcspc_resolution': ptu.tcspc_res,
         'n_time_bins': ptu.n_bins,
         'tile_shape': (ptu.n_y // binning, ptu.n_x // binning),
-        'frequency': ptu.frequency,  # Hz
+        'frequency': freq,
         'binning': binning,
         'channel': channel,
     }
-    
     return stack, metadata
 
 
@@ -101,3 +70,16 @@ def get_intensity_from_ptufile(
     intensity = stack.sum(axis=2)
     
     return intensity, metadata
+
+def get_raw_flim_histogram(ptu_path, rotate_cw: bool = True) -> Tuple[np.ndarray, Dict[str, Any]]:
+    ptu = PTUFile(str(ptu_path), verbose=False)  # or True for debugging
+    stack = ptu.raw_pixel_stack(channel=None, binning=1)
+    if rotate_cw:
+        stack = np.rot90(stack, k=-1, axes=(0, 1))
+    metadata = {
+        'tcspc_resolution': ptu.tcspc_res,
+        'n_time_bins': ptu.n_bins,
+        'tile_shape': (ptu.n_y, ptu.n_x),
+        'frequency': ptu.sync_rate,
+    }
+    return stack, metadata

@@ -4,33 +4,20 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
 
-def parse_xlif_tile_positions(
-    xlif_path: Path,
-    ptu_basename: str = "R 2"
-) -> List[Dict[str, Any]]:
+def parse_xlif_tile_positions(xlif_path: Path, ptu_basename: str = "R 2") -> List[Dict[str, Any]]:
     """
     Parse tile positions from a Leica XLIF file.
     
     Args:
         xlif_path: Path to the XLIF metadata file
-        ptu_basename: Base name for PTU files (e.g., "R 2" → "R 2_s1.ptu")
+        ptu_basename: Base name for PTU files (e.g., "R 2" -> "R 2_s1.ptu")
     
     Returns:
-        List of dicts with keys:
-            - file: PTU filename
-            - field_x: Field index
-            - pos_x: Physical X position in meters
-            - pos_y: Physical Y position in meters
-    
-    Example:
-        >>> tiles = parse_xlif_tile_positions(Path("scan.xlif"), "R 2")
-        >>> tiles[0]
-        {'file': 'R 2_s1.ptu', 'field_x': 0, 'pos_x': 0.0, 'pos_y': 0.0}
+        List of dicts with keys: file, field_x, pos_x, pos_y (positions in **microns**)
     """
     tree = ET.parse(xlif_path)
     root = tree.getroot()
     
-    # Find TileScanInfo attachment
     tile_scan_info = root.find(".//Attachment[@Name='TileScanInfo']")
     if tile_scan_info is None:
         raise RuntimeError(f"No TileScanInfo found in {xlif_path}")
@@ -38,12 +25,9 @@ def parse_xlif_tile_positions(
     tile_positions = []
     for tile_elem in tile_scan_info.findall("Tile"):
         field_x = int(tile_elem.attrib.get("FieldX", 0))
-        pos_x = float(tile_elem.attrib.get("PosX", 0))
-        pos_y = float(tile_elem.attrib.get("PosY", 0))
-        
-        # Leica convention: Field indices start at 0, filenames at 1
+        pos_x = float(tile_elem.attrib.get("PosX", 0)) * 1e6   # meters → microns
+        pos_y = float(tile_elem.attrib.get("PosY", 0)) * 1e6   # meters → microns
         filename = f"{ptu_basename}_s{field_x + 1}.ptu"
-        
         tile_positions.append({
             "file": filename,
             "field_x": field_x,
@@ -62,77 +46,49 @@ def get_pixel_size_from_xlif(xlif_path: Path) -> Tuple[float, int]:
         xlif_path: Path to the XLIF metadata file
     
     Returns:
-        Tuple of (pixel_size_meters, n_pixels)
-    
-    Example:
-        >>> pixel_size, n_pixels = get_pixel_size_from_xlif(Path("scan.xlif"))
-        >>> print(f"Pixel size: {pixel_size * 1e6:.4f} µm")
-        Pixel size: 0.3003 µm
+        Tuple of (pixel_size_microns, n_pixels)
     """
     tree = ET.parse(xlif_path)
     root = tree.getroot()
     
-    # Look for DimensionDescription with DimID='1' (X dimension)
     dim_desc = root.find(".//DimensionDescription[@DimID='1']")
-    
     if dim_desc is not None:
         n_pixels = int(dim_desc.attrib.get("NumberOfElements", 512))
         length_m = float(dim_desc.attrib.get("Length", 1.5377e-4))
-        pixel_size_m = length_m / n_pixels
-        return pixel_size_m, n_pixels
+        pixel_size_m = length_m / n_pixels          # meters
+        pixel_size_microns = pixel_size_m * 1e6     # convert to microns
+        return pixel_size_microns, n_pixels
     
-    # Fallback: Leica SP8 FALCON defaults
-    default_length = 1.5377e-4  # meters (153.77 µm)
-    default_pixels = 512
-    return default_length / default_pixels, default_pixels
+    # Fallback defaults (converted to microns)
+    return (1.5377e-4 / 512) * 1e6, 512
 
 
 def compute_tile_pixel_positions(
     tile_positions: List[Dict[str, Any]],
-    pixel_size_m: float,
+    pixel_size_microns: float,
     tile_size: int
 ) -> Tuple[List[Dict[str, Any]], int, int]:
     """
-    Convert physical tile positions (meters) to pixel coordinates.
-    
-    Computes the canvas size needed to hold all tiles and updates
-    each tile dict with pixel_x and pixel_y coordinates.
+    Convert physical tile positions (microns) to pixel coordinates.
     
     Args:
-        tile_positions: List of tile dicts with pos_x, pos_y in meters
-        pixel_size_m: Pixel size in meters
+        tile_positions: List of tile dicts with pos_x, pos_y in microns
+        pixel_size_microns: Pixel size in microns
         tile_size: Size of each tile in pixels (assumes square tiles)
     
     Returns:
-        Tuple of:
-            - Updated tile_positions (with pixel_x, pixel_y added)
-            - canvas_width (pixels)
-            - canvas_height (pixels)
-    
-    Example:
-        >>> tiles = [{'pos_x': 0.0, 'pos_y': 0.0}, 
-        ...          {'pos_x': 1.5e-4, 'pos_y': 0.0}]
-        >>> tiles, width, height = compute_tile_pixel_positions(
-        ...     tiles, 3e-7, 512)
-        >>> width
-        1012
+        Tuple of (updated tile_positions with pixel_x/pixel_y, canvas_width, canvas_height)
     """
-    if not tile_positions:
-        return tile_positions, 0, 0
-    
-    # Find minimum positions to use as origin
     pos_x_list = [t["pos_x"] for t in tile_positions]
     pos_y_list = [t["pos_y"] for t in tile_positions]
     
     min_pos_x = min(pos_x_list)
     min_pos_y = min(pos_y_list)
     
-    # Convert each tile position to pixels
     for t in tile_positions:
-        t["pixel_x"] = int(round((t["pos_x"] - min_pos_x) / pixel_size_m))
-        t["pixel_y"] = int(round((t["pos_y"] - min_pos_y) / pixel_size_m))
+        t["pixel_x"] = int(round((t["pos_x"] - min_pos_x) / pixel_size_microns))
+        t["pixel_y"] = int(round((t["pos_y"] - min_pos_y) / pixel_size_microns))
     
-    # Calculate canvas size
     canvas_width = max(t["pixel_x"] for t in tile_positions) + tile_size
     canvas_height = max(t["pixel_y"] for t in tile_positions) + tile_size
     

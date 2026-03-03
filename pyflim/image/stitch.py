@@ -14,8 +14,7 @@ from ..utils.xml_utils import (parse_xlif_tile_positions,
     get_pixel_size_from_xlif,
     compute_tile_pixel_positions,
 )
-from ..PTU.decode import get_flim_histogram, create_time_axis
-
+from ..PTU.decode import create_time_axis, get_raw_flim_histogram  # replace get_flim_histogram
 
 def stitch_flim_tiles(
     xlif_path: Path,
@@ -77,7 +76,7 @@ def stitch_flim_tiles(
     if verbose:
         print(f"Loading first tile: {first_tile_path}")
     
-    first_hist, first_meta = get_flim_histogram(first_tile_path, rotate_cw=rotate_tiles)
+    first_hist, first_meta = get_raw_flim_histogram(first_tile_path, rotate_cw=rotate_tiles)
     tile_y, tile_x = first_meta['tile_shape']
     n_time_bins = first_meta['n_time_bins']
     tcspc_resolution = first_meta['tcspc_resolution']
@@ -127,7 +126,7 @@ def stitch_flim_tiles(
             continue
         
         try:
-            hist, meta = get_flim_histogram(tile_path, rotate_cw=rotate_tiles)
+            hist, meta = get_raw_flim_histogram(tile_path, rotate_cw=rotate_tiles)
             
             # Handle time bin mismatch (pad/crop)
             if hist.shape[2] != n_time_bins:

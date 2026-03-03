@@ -40,7 +40,7 @@ def main(fast = False):
         
     elif answers['process_option'] == 'Just stitch multiple tiles together':
         print("Stitching multiple tiles together...")
-        stitch_flim_tiles(interactive=True)
+        stitch_tiles(interactive=True)
     elif answers['process_option'] == 'About':
         print('Current version: ' + __version__)
         print(roadmap)

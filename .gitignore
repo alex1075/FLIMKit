@@ -19,3 +19,4 @@ htmlcov/
 .pytest_cache/
 *.lof
 *.xlif
+Results/

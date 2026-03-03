@@ -96,13 +96,21 @@ class PTUFile:
                                        1 / t.get("TTResult_SyncRate", 20e6)))
         self.sync_rate  = 1.0 / global_res
         self.period_ns  = global_res * 1e9
-        self.n_bins     = int(round(self.period_ns / (self.tcspc_res * 1e9)))
+        self.n_bins     = self._get_n_bins_from_records()
         self.n_x        = int(t.get("ImgHdr_PixX", t.get("$ReqHdr_PixelNumber_X", 256)))
         self.n_y        = int(t.get("ImgHdr_PixY", t.get("$ReqHdr_PixelNumber_Y", 256)))
         self.rec_type   = int(t.get("TTResultFormat_TTTRRecType", 0x00010303))
         self.n_records  = int(t.get("TTResult_NumberOfRecords", 0))
         self.time_ns    = (np.arange(self.n_bins) + 0.5) * self.tcspc_res * 1e9
         self.photon_channel = None
+        self.global_resolution = float(self.tags.get('MeasDesc_GlobalResolution', 1.0 / self.sync_rate))
+        # pixel_time in seconds
+        pixel_time_ms = self.tags.get('ImgHdr_TimePerPixel', 1.0)   # in ms? check units
+        self.pixel_time = pixel_time_ms * 1e-3                      # convert to seconds
+        if self.pixel_time <= 0:
+            # fallback: compute from line time
+            line_time = self.global_line_time * self.global_resolution
+            self.pixel_time = line_time / self.n_x
 
         if self.verbose:
             print(f"  HW type  : {t.get('HW_Type','?')}")
@@ -125,6 +133,13 @@ class PTUFile:
         dtime = (records >> 16) & 0xFFF
         nsync = records & 0xFFFF
         return ch, dtime, nsync
+    
+    def _get_n_bins_from_records(self):
+        records = self._load_records()
+        ch, dtime, _ = self._decode_picoharp_t3(records)
+        # dtime values are 0..4095; find max among photon records (channel != 0xF)
+        max_dtime = dtime[ch != 0xF].max()
+        return int(max_dtime) + 1
 
     def summed_decay(self, channel: int | None = None) -> np.ndarray:
         records = self._load_records()
@@ -144,6 +159,72 @@ class PTUFile:
         dt_ph   = dtime[ph_mask].astype(np.int32)
         decay   = np.bincount(dt_ph, minlength=self.n_bins).astype(float)
         return decay[:self.n_bins]
+
+    def raw_pixel_stack(self, channel: int | None = None, binning: int = 1) -> np.ndarray:
+        if self.photon_channel is None:
+            self.summed_decay(channel=channel)
+        ch_use = channel if channel is not None else self.photon_channel
+
+        records = self._load_records()
+        ch, dtime, nsync = self._decode_picoharp_t3(records)
+        global_time = nsync.astype(np.float64) * self.global_resolution
+        special = ch == 0xF
+        marker_global = global_time[special]
+        marker_dtime = dtime[special]
+        line_start_mask = (marker_dtime & 1) != 0
+        line_stop_mask = (marker_dtime & 2) != 0
+        line_start_times = marker_global[line_start_mask]
+        line_stop_times = marker_global[line_stop_mask]
+
+        line_start_mask = (marker_dtime & 1) != 0
+        line_stop_mask = (marker_dtime & 2) != 0
+        line_start_times = marker_global[line_start_mask]
+        line_stop_times = marker_global[line_stop_mask]
+
+        # Photon events (channel == your selected channel)
+        ph_mask = (~special) & (ch == ch_use)
+        ph_global = global_time[ph_mask]
+        ph_dtime = dtime[ph_mask]   # needed for histogram bin
+
+        # Process each line
+        n_lines = min(len(line_start_times), len(line_stop_times))
+        ny_out = self.n_y // binning
+        nx_out = self.n_x // binning
+        stack = np.zeros((ny_out, nx_out, self.n_bins), dtype=np.uint32)
+
+        for line_num in range(n_lines):
+            t_start = line_start_times[line_num]
+            t_stop = line_stop_times[line_num]
+            if t_stop <= t_start:
+                continue
+
+            # Find photons within this line's time window
+            lo = np.searchsorted(ph_global, t_start, side='left')
+            hi = np.searchsorted(ph_global, t_stop, side='right')
+            if hi <= lo:
+                continue
+
+            line_ph_global = ph_global[lo:hi]
+            line_ph_dtime = ph_dtime[lo:hi]
+
+            # Compute pixel column from global time
+            rel_time = line_ph_global - t_start
+            px = (rel_time / self.pixel_time).astype(np.int32)
+            px = np.clip(px, 0, self.n_x - 1)
+            px_bin = px // binning
+
+            # Row index (line_num already accounts for all lines)
+            row = (line_num % self.n_y) // binning
+            if row >= ny_out:
+                continue
+
+            # Accumulate
+            for i in range(len(line_ph_global)):
+                tb = line_ph_dtime[i]
+                if tb < self.n_bins:
+                    stack[row, px_bin[i], tb] += 1
+
+        return stack
 
     def pixel_stack(self, channel: int | None = None,
                     binning: int = 1) -> np.ndarray:
@@ -204,6 +285,8 @@ class PTUFile:
         if self.verbose:
             print(f"  Stack built: {ny_out}×{nx_out}×{self.n_bins}  "
                   f"({total:,} photons, {elapsed:.1f}s)")
+        print(f"Total photons in stack: {stack.sum()}")
+        print(f"Stack min/max: {stack.min()}, {stack.max()}")    
         return stack.astype(float)
 
 
@@ -350,7 +433,11 @@ class PTUArray5D:
     def dims(self):
         return ('T', 'Y', 'X', 'C', 'H')
 
-
+    @property
+    def frequency(self):
+        """Laser repetition frequency in Hz."""
+        return 1.0 / (self.n_bins * self.tcspc_res)
+    
 # ══════════════════════════════════════════════════════════════════════════════
 # UTILITY FUNCTIONS - Compatible with custom PTUFile
 # ══════════════════════════════════════════════════════════════════════════════
