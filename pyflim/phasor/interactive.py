@@ -463,6 +463,53 @@ def phasor_cursor_tool(
         if on_save is not None:
             on_save(state, params)
 
+    # ── Export figure as image ───────────────────────────────
+    def _on_export(_ignored=None):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            root.update()
+            path = filedialog.asksaveasfilename(
+                title='Export phasor figure',
+                defaultextension='.png',
+                initialfile='phasor_plot.png',
+                filetypes=[('PNG', '*.png'), ('PDF', '*.pdf'),
+                           ('SVG', '*.svg'), ('All files', '*')])
+            root.destroy()
+        except Exception:
+            path = input("Save image path [phasor_plot.png]: ").strip() or 'phasor_plot.png'
+        if path:
+            state['fig'].savefig(path, dpi=300, bbox_inches='tight')
+            print(f"✅  Figure exported → {path}")
+
+    # ── Peak detection on the live phasor ────────────────────
+    _peak_artists: list = []          # track markers for toggle/clear
+
+    def _on_peaks(_ignored=None):
+        from .peaks import find_phasor_peaks, print_peaks, _annotate_peaks
+        # Remove previous peak annotations if any
+        for art in _peak_artists:
+            try:
+                art.remove()
+            except Exception:
+                pass
+        _peak_artists.clear()
+
+        _begin_output()
+        peaks = find_phasor_peaks(rc, ic, mn, frequency,
+                                  min_photons=min_photons)
+        state['peaks'] = peaks
+        print_peaks(peaks)
+        arts = _annotate_peaks(
+            state['ax'], peaks['n_peaks'],
+            peaks['peak_g'], peaks['peak_s'], peaks['tau_phase'])
+        _peak_artists.extend(arts)
+        state['ax'].figure.canvas.draw_idle()
+        _end_output()
+
     # ── Wire up controls ─────────────────────────────────────
     if notebook:
         import ipywidgets as widgets  # noqa: F811
@@ -485,6 +532,10 @@ def phasor_cursor_tool(
         btn_undo = widgets.Button(description='Undo last', button_style='')
         btn_save = widgets.Button(description='💾 Save',
                                   button_style='success') if on_save else None
+        btn_export = widgets.Button(description='📷 Export',
+                                    button_style='info')
+        btn_peaks = widgets.Button(description='🔍 Peaks',
+                                   button_style='')
 
         def _ipyw_radius(change):
             params['radius'] = change['new']
@@ -503,10 +554,12 @@ def phasor_cursor_tool(
         w_angle_mode.observe(_ipyw_angle, names='value')
         btn_clear.on_click(_on_clear)
         btn_undo.on_click(_on_undo)
+        btn_export.on_click(_on_export)
+        btn_peaks.on_click(_on_peaks)
         if btn_save:
             btn_save.on_click(_on_save)
 
-        btn_row = [btn_undo, btn_clear]
+        btn_row = [btn_undo, btn_clear, btn_peaks, btn_export]
         if btn_save:
             btn_row.append(btn_save)
         controls = widgets.HBox([
@@ -533,12 +586,16 @@ def phasor_cursor_tool(
         rb_angle = RadioButtons(ax_angle, ['semicircle', 'phase'],
                                 active=0)
 
-        ax_undo = fig.add_axes([0.45, 0.02, 0.12, 0.05])
-        ax_clr = fig.add_axes([0.59, 0.02, 0.12, 0.05])
-        mpl_btn_undo = Button(ax_undo, 'Undo')
-        mpl_btn_clear = Button(ax_clr, 'Clear')
+        ax_undo  = fig.add_axes([0.35, 0.02, 0.10, 0.05])
+        ax_clr   = fig.add_axes([0.46, 0.02, 0.10, 0.05])
+        ax_peaks = fig.add_axes([0.57, 0.02, 0.10, 0.05])
+        ax_exp   = fig.add_axes([0.68, 0.02, 0.10, 0.05])
+        mpl_btn_undo   = Button(ax_undo,  'Undo')
+        mpl_btn_clear  = Button(ax_clr,   'Clear')
+        mpl_btn_peaks  = Button(ax_peaks, 'Peaks')
+        mpl_btn_export = Button(ax_exp,   'Export')
         if on_save:
-            ax_save = fig.add_axes([0.73, 0.02, 0.12, 0.05])
+            ax_save = fig.add_axes([0.79, 0.02, 0.10, 0.05])
             mpl_btn_save = Button(ax_save, 'Save')
         else:
             mpl_btn_save = None
@@ -560,12 +617,15 @@ def phasor_cursor_tool(
         rb_angle.on_clicked(_mpl_angle)
         mpl_btn_undo.on_clicked(lambda _: _on_undo())
         mpl_btn_clear.on_clicked(lambda _: _on_clear())
+        mpl_btn_peaks.on_clicked(lambda _: _on_peaks())
+        mpl_btn_export.on_clicked(lambda _: _on_export())
         if mpl_btn_save:
             mpl_btn_save.on_clicked(lambda _: _on_save())
 
         # Keep references alive so callbacks aren't GC'd
         state['_mpl_widgets'] = (sl_radius, sl_radius_minor, rb_angle,
                                  mpl_btn_undo, mpl_btn_clear,
+                                 mpl_btn_peaks, mpl_btn_export,
                                  mpl_btn_save)
 
     print(f"Plotting {valid.sum()} valid pixels")
