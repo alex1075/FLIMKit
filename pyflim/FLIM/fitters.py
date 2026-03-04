@@ -232,6 +232,11 @@ def _make_summary(popt, decay, tcspc_res, n_bins, irf_prompt,
     p_val   = float(1 - chi2_dist.cdf(chi2, df=dof))
     resid   = (decay - model) / np.sqrt(np.maximum(model, 1.0))
 
+    # Pearson (Leica convention) chi-squared: sum((d - m)² / max(m, 1))
+    sigma_p  = np.sqrt(np.maximum(m_win, 1.0))
+    chi2_p   = float(np.sum(((d_win - m_win) / sigma_p)**2))
+    rchi2_p  = chi2_p / dof
+
     # Tail-only chi2_r: exclude rising edge
     peak_bin_loc = int(np.argmax(decay[fit_start:fit_end])) + fit_start
     tail_start   = peak_bin_loc + max(1, int(0.05 * (fit_end - peak_bin_loc)))
@@ -241,6 +246,11 @@ def _make_summary(popt, decay, tcspc_res, n_bins, irf_prompt,
     chi2_tail  = float(np.sum(((d_tail - m_tail) / sw_tail)**2))
     dof_tail   = max((fit_end - tail_start) - len(popt), 1)
     rchi2_tail = chi2_tail / dof_tail
+
+    # Pearson tail
+    sp_tail       = np.sqrt(np.maximum(m_tail, 1.0))
+    chi2_tail_p   = float(np.sum(((d_tail - m_tail) / sp_tail)**2))
+    rchi2_tail_p  = chi2_tail_p / dof_tail
 
     # Compute amplitude fractions and weighted means using the sorted arrays
     amp_sum    = amps.sum() if amps.sum() > 0 else 1.0
@@ -263,6 +273,9 @@ def _make_summary(popt, decay, tcspc_res, n_bins, irf_prompt,
         chi2             = chi2,
         reduced_chi2     = rchi2,
         reduced_chi2_tail= rchi2_tail,
+        chi2_pearson           = chi2_p,
+        reduced_chi2_pearson   = rchi2_p,
+        reduced_chi2_tail_pearson = rchi2_tail_p,
         tail_start_bin   = tail_start,
         p_val            = p_val,
         dof              = dof,

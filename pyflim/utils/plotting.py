@@ -64,7 +64,8 @@ def plot_summed(decay, summary, ptu, xlsx, n_exp, strategy, out_prefix,
     ax3.set_ylabel("Frequency")
     ax3.set_title(f"Residuals  μ={rv.mean():.3f}  σ={rv.std():.3f}")
 
-    lines = [f"χ²_r = {s['reduced_chi2']:.4f}",
+    lines = [f"χ²_r = {s['reduced_chi2_pearson']:.4f}  (Leica)",
+             f"χ²_r(tail) = {s['reduced_chi2_tail_pearson']:.4f}  (Leica)",
              f"p    = {s['p_val']:.4f}",
              f"bg   = {s['bg_fit']:.1f} cts/bin",
              f"τ_mean(int) = {s['tau_mean_int_ns']:.4f} ns",

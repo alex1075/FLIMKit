@@ -62,10 +62,13 @@ def print_summary(summary: dict, strategy: str, n_exp: int):
         if s['tail_tau_ns'] > 18:
             print(f"  ⚠  tail τ near upper bound — consider acquiring a scatter PTU")
     print(f"  χ²_r = {s['reduced_chi2']:.4f}  "
-          f"(χ²={s['chi2']:.1f}, DoF={s['dof']}, p={s['p_val']:.4f})  [full window]")
+          f"(χ²={s['chi2']:.1f}, DoF={s['dof']}, p={s['p_val']:.4f})  [full window, Neyman]")
+    print(f"  χ²_r = {s['reduced_chi2_pearson']:.4f}  "
+          f"[full window, Pearson/Leica]")
     print(f"  χ²_r = {s['reduced_chi2_tail']:.4f}  "
-          f"(tail only, t>{s['tail_start_bin']*tcspc_res*1e9:.2f} ns)  "
-          f"← Leica convention")
+          f"(tail only, t>{s['tail_start_bin']*tcspc_res*1e9:.2f} ns)  [Neyman]")
+    print(f"  χ²_r = {s['reduced_chi2_tail_pearson']:.4f}  "
+          f"(tail only, t>{s['tail_start_bin']*tcspc_res*1e9:.2f} ns)  [Pearson/Leica]")
     flag = "✓" if 0.001 < s['p_val'] < 0.999 else "⚠"
     print(f"  {flag} Optimizer: {s['optimizer_msg']}")
 
