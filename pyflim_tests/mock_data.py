@@ -11,6 +11,18 @@ from typing import Tuple, List, Dict, Any
 import xml.etree.ElementTree as ET
 
 
+# ─── Ground-truth constants (also used by MockPTUFile._generate_synthetic_data) ─
+MOCK_TAU1_NS       = 0.5     # Short component lifetime (ns)
+MOCK_TAU2_NS       = 3.0     # Long component lifetime (ns)
+MOCK_AMP1          = 0.6     # Amplitude fraction of τ₁
+MOCK_AMP2          = 0.4     # Amplitude fraction of τ₂
+MOCK_IRF_CENTER    = 30      # IRF peak (bin index)
+MOCK_IRF_FWHM_BINS = 3.0    # IRF FWHM in bins
+MOCK_TCSPC_RES     = 97e-12  # Default TCSPC resolution (s)
+MOCK_FREQUENCY     = 19.5e6  # Default laser repetition rate (Hz)
+MOCK_MEAN_PHOTONS  = 500     # Mean photons per pixel
+
+
 class MockPTUFile:
     """Mock PTUFile class for testing."""
     
@@ -49,16 +61,16 @@ class MockPTUFile:
         """Generate synthetic FLIM histogram with realistic decay."""
         t = np.arange(self.n_bins) * self.tcspc_res
 
-        # Bi‑exponential decay
-        tau1 = 0.5e-9
-        tau2 = 3.0e-9
-        a1 = 0.6
-        a2 = 0.4
+        # Bi‑exponential decay (uses module-level ground-truth constants)
+        tau1 = MOCK_TAU1_NS * 1e-9
+        tau2 = MOCK_TAU2_NS * 1e-9
+        a1 = MOCK_AMP1
+        a2 = MOCK_AMP2
         decay_kernel = a1 * np.exp(-t / tau1) + a2 * np.exp(-t / tau2)
 
-        # IRF: Gaussian centered at bin 30, FWHM = 3 bins
-        irf_center = 30
-        irf_sigma = 3 / 2.355
+        # IRF: Gaussian centered at MOCK_IRF_CENTER, FWHM = MOCK_IRF_FWHM_BINS
+        irf_center = MOCK_IRF_CENTER
+        irf_sigma = MOCK_IRF_FWHM_BINS / 2.355
         x = np.arange(self.n_bins)
         irf = np.exp(-0.5 * ((x - irf_center) / irf_sigma) ** 2)
         irf = irf / irf.sum()
@@ -278,57 +290,117 @@ def generate_test_project(
 
 def generate_synthetic_decay(
     n_bins: int = 256,
-    tcspc_res: float = 97e-12,
+    tcspc_res: float = MOCK_TCSPC_RES,
     tau_ns: float = 2.0,
     bg: float = 10.0,
     peak_counts: float = 1000.0,
-    irf_fwhm_bins: float = 3.0,
-    noise: bool = True
+    irf_fwhm_bins: float = MOCK_IRF_FWHM_BINS,
+    irf_center_bin: int = MOCK_IRF_CENTER,
+    noise: bool = True,
 ) -> np.ndarray:
+    """Generate a synthetic single-exp decay using circular FFT reconvolution.
+
+    Uses the **same** forward model as the fitter
+    (``ifft(fft(kernel) * fft(irf))``), so the fitter can recover the
+    known lifetime.
+
+    Parameters
+    ----------
+    n_bins : int
+        Number of TCSPC time bins.
+    tcspc_res : float
+        Bin width in seconds.
+    tau_ns : float
+        Lifetime in nanoseconds.
+    bg : float
+        Background counts per bin added **after** convolution.
+    peak_counts : float
+        Peak value of the decay (before noise).
+    irf_fwhm_bins : float
+        IRF FWHM in bins.
+    irf_center_bin : int
+        IRF peak position (bin index).
+    noise : bool
+        Add Poisson noise.
+
+    Returns
+    -------
+    np.ndarray, shape (n_bins,)
     """
-    Generate a synthetic decay curve for testing fitting algorithms.
-    
-    Args:
-        n_bins: Number of time bins
-        tcspc_res: TCSPC resolution in seconds
-        tau_ns: Lifetime in nanoseconds
-        bg: Background counts per bin
-        peak_counts: Peak counts
-        irf_fwhm_bins: IRF FWHM in bins
-        noise: Add Poisson noise
-    
-    Returns:
-        Synthetic decay curve
-    """
-    t = np.arange(n_bins) * tcspc_res
+    t = np.arange(n_bins, dtype=float) * tcspc_res
     tau_s = tau_ns * 1e-9
-    
-    # Exponential decay
-    decay = np.exp(-t / tau_s)
-    
-    # Convolve with Gaussian IRF
-    irf_sigma = irf_fwhm_bins / 2.355
-    irf_center = 20   # still fine
-    irf = np.exp(-0.5 * ((np.arange(n_bins) - irf_center) / irf_sigma) ** 2)
-    irf = irf / irf.sum()
 
-    decay_conv = np.convolve(decay, irf, mode='same')
+    # Kernel: same as fitter's _exponential_kernel (pure exp from t = 0)
+    kernel = np.exp(-t / tau_s)
 
-    # Force peak to bin 30
-    desired_peak = 30
-    current_peak = np.argmax(decay_conv)
-    shift = desired_peak - current_peak
-    if shift != 0:
-        decay_conv = np.roll(decay_conv, shift)
+    # Gaussian IRF centred at irf_center_bin (same formula as
+    # gaussian_irf_from_fwhm / gaussian_irf in irf_tools.py)
+    sigma = irf_fwhm_bins / 2.3548
+    bins = np.arange(n_bins, dtype=float)
+    irf = np.exp(-0.5 * ((bins - irf_center_bin) / sigma) ** 2)
+    irf /= irf.sum()
 
-    # Scale and add background
-    decay_conv = decay_conv / decay_conv.max() * peak_counts + bg
-    
-    # Add Poisson noise
+    # Circular FFT convolution — matches reconvolution_model exactly
+    model = np.real(np.fft.ifft(np.fft.fft(kernel) * np.fft.fft(irf)))
+
+    # Scale to desired peak counts and add flat background
+    model = model / model.max() * peak_counts + bg
+
     if noise:
-        decay_conv = np.random.poisson(decay_conv)
-    
-    return decay_conv
+        rng = np.random.default_rng(0)
+        model = rng.poisson(np.maximum(model, 0)).astype(float)
+
+    return model
+
+
+def generate_synthetic_biexp_decay(
+    n_bins: int = 256,
+    tcspc_res: float = MOCK_TCSPC_RES,
+    tau1_ns: float = MOCK_TAU1_NS,
+    tau2_ns: float = MOCK_TAU2_NS,
+    a1: float = MOCK_AMP1,
+    a2: float = MOCK_AMP2,
+    bg: float = 5.0,
+    peak_counts: float = 50_000.0,
+    irf_fwhm_bins: float = MOCK_IRF_FWHM_BINS,
+    irf_center_bin: int = MOCK_IRF_CENTER,
+    noise: bool = True,
+) -> np.ndarray:
+    """Generate a bi-exponential decay using circular FFT reconvolution.
+
+    Uses the **same** forward model as the fitter
+    (``ifft(fft(kernel) * fft(irf))``), so the fitter can recover the
+    known lifetimes and amplitude fractions.
+
+    Returns
+    -------
+    np.ndarray, shape (n_bins,)
+        Photon-count histogram (float).
+    """
+    t = np.arange(n_bins, dtype=float) * tcspc_res
+    tau1_s = tau1_ns * 1e-9
+    tau2_s = tau2_ns * 1e-9
+
+    # Kernel: same as fitter's _exponential_kernel
+    kernel = a1 * np.exp(-t / tau1_s) + a2 * np.exp(-t / tau2_s)
+
+    # Gaussian IRF centred at irf_center_bin
+    sigma = irf_fwhm_bins / 2.3548
+    bins = np.arange(n_bins, dtype=float)
+    irf = np.exp(-0.5 * ((bins - irf_center_bin) / sigma) ** 2)
+    irf /= irf.sum()
+
+    # Circular FFT convolution — matches reconvolution_model exactly
+    model = np.real(np.fft.ifft(np.fft.fft(kernel) * np.fft.fft(irf)))
+
+    # Scale to desired peak counts and add flat background
+    model = model / model.max() * peak_counts + bg
+
+    if noise:
+        rng = np.random.default_rng(0)
+        model = rng.poisson(np.maximum(model, 0)).astype(float)
+
+    return model
 
 
 def load_mock_ptu_file(ptu_path: Path) -> MockPTUFile:

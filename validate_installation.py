@@ -300,6 +300,7 @@ def test_complete_workflow():
     try:
         from pyflim.PTU.stitch import stitch_flim_tiles, load_flim_for_fitting
         import tempfile
+        import numpy as np
         
         with tempfile.TemporaryDirectory() as temp_dir:
             # Generate and stitch
@@ -350,24 +351,37 @@ def test_complete_workflow():
             try:
                 from pyflim.FLIM.fitters import fit_summed
                 from pyflim.FLIM.irf_tools import gaussian_irf_from_fwhm
+                from pyflim_tests.mock_data import (
+                    MOCK_TAU1_NS, MOCK_TAU2_NS, MOCK_IRF_FWHM_BINS
+                )
                 
-                irf = gaussian_irf_from_fwhm(n_bins, tcspc_res, 0.3, 20)
+                irf_fwhm_ns = MOCK_IRF_FWHM_BINS * tcspc_res * 1e9
+                peak_bin = int(np.argmax(decay))
+                irf = gaussian_irf_from_fwhm(n_bins, tcspc_res, irf_fwhm_ns, peak_bin)
                 
                 popt, summary = fit_summed(
                     decay, tcspc_res, n_bins, irf,
                     has_tail=False, fit_bg=True, fit_sigma=False,
-                    n_exp=1, tau_min_ns=0.1, tau_max_ns=10.0,
-                    optimizer="lm_multistart", n_restarts=2, workers=1
+                    n_exp=2, tau_min_ns=0.05, tau_max_ns=15.0,
+                    optimizer="lm_multistart", n_restarts=10, workers=1
                 )
 
                 assert summary is not None, "Fit failed"
-                assert 'taus_ns' in summary, "Missing taus in results"
-                assert len(summary['taus_ns']) > 0, "No tau values"
-                tau = summary['taus_ns'][0]          # first component
-                chi2 = summary['reduced_chi2']       # reduced chi‑squared
-                assert 0.1 < tau < 10.0, f"Tau {tau} out of expected range"
+                taus = summary['taus_ns']        # sorted descending
+                chi2 = summary['reduced_chi2']
 
-                print_success(f"Step 4: Fitted (τ={tau:.3f} ns, χ²={chi2:.3f})")
+                # Ground-truth comparison (30 % tolerance for validation)
+                rel_long  = abs(taus[0] - MOCK_TAU2_NS) / MOCK_TAU2_NS
+                rel_short = abs(taus[1] - MOCK_TAU1_NS) / MOCK_TAU1_NS
+                assert rel_long  < 0.30, f"Long τ err {rel_long:.0%}"
+                assert rel_short < 0.30, f"Short τ err {rel_short:.0%}"
+
+                print_success(
+                    f"Step 4: Bi-exp fit "
+                    f"(τ₁={taus[1]:.2f} vs {MOCK_TAU1_NS} ns [{rel_short:.0%}], "
+                    f"τ₂={taus[0]:.2f} vs {MOCK_TAU2_NS} ns [{rel_long:.0%}], "
+                    f"χ²={chi2:.3f})"
+                )
                                 
             except ImportError:
                 print_warning("Step 4: Fitting not available (fitters module missing)")
@@ -411,12 +425,22 @@ def test_phasor_pipeline():
         print_success(f"Step 2: Found {peaks['n_peaks']} peak(s)")
 
         # Peak should be near the expected (g_true, s_true)
-        best_dist = min(
-            np.sqrt((peaks['peak_g'][i] - g_true) ** 2 +
-                     (peaks['peak_s'][i] - s_true) ** 2)
-            for i in range(peaks['n_peaks']))
-        assert best_dist < 0.1, f"Closest peak too far from expected: {best_dist:.3f}"
-        print_success(f"Step 3: Closest peak distance = {best_dist:.4f} (< 0.1)")
+        best_idx = 0
+        best_dist = float('inf')
+        for i in range(peaks['n_peaks']):
+            d = np.sqrt((peaks['peak_g'][i] - g_true) ** 2 +
+                        (peaks['peak_s'][i] - s_true) ** 2)
+            if d < best_dist:
+                best_dist = d
+                best_idx = i
+        assert best_dist < 0.05, f"Closest peak too far from expected: {best_dist:.3f}"
+        print_success(f"Step 3: Peak distance = {best_dist:.4f} (< 0.05)")
+
+        # Phase lifetime should match input τ within 15 %
+        tau_phase = peaks['tau_phase'][best_idx]
+        rel_err = abs(tau_phase - tau_ns) / tau_ns
+        assert rel_err < 0.15, f"Phase τ = {tau_phase:.3f} vs true {tau_ns} (err {rel_err:.0%})"
+        print_success(f"Step 3b: Phase τ = {tau_phase:.3f} ns vs true {tau_ns} (err {rel_err:.1%})")
 
         # ── Save / load session ──────────────────────────────
         from pyflim.phasor_launcher import save_session, load_session
