@@ -57,7 +57,7 @@ python fit_cli.py --help
 - [~] Fitting multi-tile ROIs and exporting tau-fitted images/data
 - [~] Documentation and examples
 - [ ] GUI development for easier use
-- [ ] Phasor analysis implementation
+- [X] Phasor analysis implementation
 
 ## Contact
 
