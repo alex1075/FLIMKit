@@ -59,7 +59,7 @@ class MockPTUFile:
     
     def _generate_synthetic_data(self):
         """Generate synthetic FLIM histogram with realistic decay."""
-        t = np.arange(self.n_bins) * self.tcspc_res
+        t = np.arange(self.n_bins, dtype=float) * self.tcspc_res
 
         # Bi‑exponential decay (uses module-level ground-truth constants)
         tau1 = MOCK_TAU1_NS * 1e-9
@@ -69,22 +69,16 @@ class MockPTUFile:
         decay_kernel = a1 * np.exp(-t / tau1) + a2 * np.exp(-t / tau2)
 
         # IRF: Gaussian centered at MOCK_IRF_CENTER, FWHM = MOCK_IRF_FWHM_BINS
-        irf_center = MOCK_IRF_CENTER
-        irf_sigma = MOCK_IRF_FWHM_BINS / 2.355
-        x = np.arange(self.n_bins)
-        irf = np.exp(-0.5 * ((x - irf_center) / irf_sigma) ** 2)
+        irf_sigma = MOCK_IRF_FWHM_BINS / 2.3548
+        bins = np.arange(self.n_bins, dtype=float)
+        irf = np.exp(-0.5 * ((bins - MOCK_IRF_CENTER) / irf_sigma) ** 2)
         irf = irf / irf.sum()
 
-        # Convolve (mode='same' aligns the peak with the IRF center)
-        decay_profile = np.convolve(decay_kernel, irf, mode='same')
+        # Circular FFT convolution — matches reconvolution_model exactly
+        decay_profile = np.real(np.fft.ifft(
+            np.fft.fft(decay_kernel) * np.fft.fft(irf)))
         decay_profile = decay_profile / decay_profile.max()
 
-        # Force peak to bin 30
-        desired_peak = 30
-        current_peak = np.argmax(decay_profile)
-        shift = desired_peak - current_peak
-        if shift != 0:
-            decay_profile = np.roll(decay_profile, shift)
         # Spatial pattern (circular gradient)
         y, x = np.ogrid[:self.n_y, :self.n_x]
         cy, cx = self.n_y // 2, self.n_x // 2

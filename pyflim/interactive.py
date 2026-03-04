@@ -414,6 +414,7 @@ def _run_stitch_and_fit(args):
         de_maxiter=args.de_maxiter,
         workers=args.workers,
         polish=not args.no_polish,
+        cost_function=getattr(args, 'cost_function', 'poisson'),
     )
     
     print_summary(global_summary, strategy, args.nexp)
@@ -746,6 +747,7 @@ def _run_flim_fit(args):
             de_maxiter=args.de_maxiter,
             workers=args.workers,
             polish=not args.no_polish,
+            cost_function=getattr(args, 'cost_function', 'poisson'),
         )
 
     if args.mode in ("summed", "both"):

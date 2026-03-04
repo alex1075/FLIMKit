@@ -347,40 +347,53 @@ def test_complete_workflow():
             
             print_success(f"Step 3: Extracted decay ({decay.sum():.0f} photons)")
             
-            # Try fitting if available
+            # Try fitting if available — use a standalone synthetic decay with
+            # realistic photon counts so the fitter works in its intended regime.
+            # (The stitched mosaic has billions of photons which inflates χ².)
             try:
                 from pyflim.FLIM.fitters import fit_summed
                 from pyflim.FLIM.irf_tools import gaussian_irf_from_fwhm
                 from pyflim_tests.mock_data import (
-                    MOCK_TAU1_NS, MOCK_TAU2_NS, MOCK_IRF_FWHM_BINS
+                    MOCK_TAU1_NS, MOCK_TAU2_NS, MOCK_IRF_FWHM_BINS,
+                    MOCK_IRF_CENTER, MOCK_TCSPC_RES,
+                    generate_synthetic_biexp_decay,
                 )
                 
-                irf_fwhm_ns = MOCK_IRF_FWHM_BINS * tcspc_res * 1e9
-                peak_bin = int(np.argmax(decay))
-                irf = gaussian_irf_from_fwhm(n_bins, tcspc_res, irf_fwhm_ns, peak_bin)
-                
+                fit_n_bins   = 256
+                fit_tcspc    = MOCK_TCSPC_RES
+                irf_fwhm_ns  = MOCK_IRF_FWHM_BINS * fit_tcspc * 1e9
+                irf = gaussian_irf_from_fwhm(fit_n_bins, fit_tcspc, irf_fwhm_ns,
+                                             MOCK_IRF_CENTER)
+
+                fit_decay = generate_synthetic_biexp_decay(
+                    n_bins=fit_n_bins, tcspc_res=fit_tcspc,
+                    peak_counts=100_000.0, noise=True,
+                )
+
                 popt, summary = fit_summed(
-                    decay, tcspc_res, n_bins, irf,
+                    fit_decay, fit_tcspc, fit_n_bins, irf,
                     has_tail=False, fit_bg=True, fit_sigma=False,
                     n_exp=2, tau_min_ns=0.05, tau_max_ns=15.0,
-                    optimizer="lm_multistart", n_restarts=10, workers=1
+                    optimizer="lm_multistart", n_restarts=10, workers=1,
+                    cost_function="poisson",
                 )
 
                 assert summary is not None, "Fit failed"
-                taus = summary['taus_ns']        # sorted descending
-                chi2 = summary['reduced_chi2']
+                taus   = summary['taus_ns']        # sorted descending
+                chi2_r = summary['reduced_chi2_tail_pearson']  # Leica X2
 
-                # Ground-truth comparison (30 % tolerance for validation)
+                # Ground-truth comparison (15 % for realistic photon count)
                 rel_long  = abs(taus[0] - MOCK_TAU2_NS) / MOCK_TAU2_NS
                 rel_short = abs(taus[1] - MOCK_TAU1_NS) / MOCK_TAU1_NS
-                assert rel_long  < 0.30, f"Long τ err {rel_long:.0%}"
-                assert rel_short < 0.30, f"Short τ err {rel_short:.0%}"
+                assert rel_long  < 0.15, f"Long τ err {rel_long:.0%}"
+                assert rel_short < 0.15, f"Short τ err {rel_short:.0%}"
+                assert chi2_r < 3.0, f"Pearson tail χ²_r = {chi2_r:.2f}"
 
                 print_success(
                     f"Step 4: Bi-exp fit "
                     f"(τ₁={taus[1]:.2f} vs {MOCK_TAU1_NS} ns [{rel_short:.0%}], "
                     f"τ₂={taus[0]:.2f} vs {MOCK_TAU2_NS} ns [{rel_long:.0%}], "
-                    f"χ²={chi2:.3f})"
+                    f"χ²_r={chi2_r:.2f})"
                 )
                                 
             except ImportError:

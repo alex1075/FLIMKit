@@ -36,6 +36,11 @@ IRF_FIT_WIDTH = 1.5 # ns - width of the region around time zero to use for fitti
 IRF_BINS = 21 # Number of bins to use for the IRF when fitting with the "summed" mode. Adjust as needed for other systems and bin widths. Should be an odd number to have a bin centered on time zero.
 Estimate_IRF = "none" # Options are "raw", "parametric", and "none". Set to "raw" to use the raw IRF from the data, "parametric" to fit a parametric function to the IRF, or "none" to not estimate the IRF (e.g. if you have a separate IRF file or are using a system with a very narrow IRF that doesn't need to be accounted for). Override with --estimate-irf when running the code.
 
+# Cost function for summed fit. Options are "poisson" (recommended) and "chi2" (legacy).
+# "poisson" uses Poisson deviance (C-statistic) on raw counts — statistically correct.
+# "chi2" normalises by peak and uses Neyman weights — underweights the tail.
+Cost_function = "poisson"
+
 # Other specific settings:
 channels = None # Set to None to fit all channels in the PTU file. Override with --channel when running the code.
 OUT_NAME = "flim_out" # Default output directory name. Override with --out when running the code.
@@ -46,6 +51,7 @@ Tau_min: {Tau_min} ns
 Tau_max: {Tau_max} ns
 Fitting mode: {D_mode}  
 Number of exponentials: {n_exp}
+Cost function: {Cost_function}
 Optimizer: {Optimizer}
 Levenberg-Marquardt restarts: {lm_restarts}
 Differential Evolution population size: {de_population}

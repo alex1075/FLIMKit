@@ -267,8 +267,7 @@ class TestStitchAndFitRecovery:
             decay = stack.sum(axis=(0, 1))
 
             irf_fwhm_ns = MOCK_IRF_FWHM_BINS * tcspc_res * 1e9
-            peak_bin = int(np.argmax(decay))
-            irf = gaussian_irf_from_fwhm(n_bins, tcspc_res, irf_fwhm_ns, peak_bin)
+            irf = gaussian_irf_from_fwhm(n_bins, tcspc_res, irf_fwhm_ns, MOCK_IRF_CENTER)
 
             _popt, summary = fit_summed(
                 decay, tcspc_res, n_bins, irf,

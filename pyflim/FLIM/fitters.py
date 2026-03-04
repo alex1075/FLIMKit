@@ -15,7 +15,7 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
                optimizer="de", n_restarts=8,
                de_popsize=15, de_maxiter=1000,
                workers=-1, polish=True,
-               cost_function="chi2") -> tuple[np.ndarray, dict]:
+               cost_function="poisson") -> tuple[np.ndarray, dict]:
     """Fit summed FLIM decay via reconvolution.
 
     Parameters
@@ -51,7 +51,7 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
     leica_fit_end = int(round(44.9455 / (tcspc_res * 1e9)))
     fit_end = min(fit_end, leica_fit_end)
 
-    bg_upper = max(bg_init * 0.75, 10.0)
+    bg_upper = max(bg_init * 2.0, bg_init + 10.0)
 
     print(f"  Cost function: {cost_function}")
     print(f"  bg initial guess = {bg_init:.3f}"

@@ -62,6 +62,11 @@ def single_FOV_flim_fit_cli():
     ap.add_argument("--channel",    type=int, default=channels)
     ap.add_argument("--out",        default=OUT_NAME)
     ap.add_argument("--no-plots",   action="store_true")
+    ap.add_argument("--cost-function", choices=["poisson", "chi2"],
+                    default=Cost_function,
+                    help="Cost function for summed fit. 'poisson' (default, recommended) "
+                         "uses Poisson deviance on raw counts. 'chi2' (legacy) normalises "
+                         "by peak and underweights the tail.")
     ap.add_argument("--print-config", action="store_true", help="Print default configuration settings and exit")
     args = ap.parse_args()
 
@@ -221,6 +226,7 @@ def single_FOV_flim_fit_cli():
             de_maxiter=args.de_maxiter,
             workers=args.workers,
             polish=not args.no_polish,
+            cost_function=args.cost_function,
         )
 
     if args.mode in ("summed", "both"):
@@ -306,6 +312,11 @@ def single_FOV_flim_fit_cli():
     ap.add_argument("--channel",    type=int, default=channels)
     ap.add_argument("--out",        default=OUT_NAME)
     ap.add_argument("--no-plots",   action="store_true")
+    ap.add_argument("--cost-function", choices=["poisson", "chi2"],
+                    default=Cost_function,
+                    help="Cost function for summed fit. 'poisson' (default, recommended) "
+                         "uses Poisson deviance on raw counts. 'chi2' (legacy) normalises "
+                         "by peak and underweights the tail.")
     ap.add_argument("--print-config", action="store_true", help="Print default configuration settings and exit")
     args = ap.parse_args()
 
@@ -465,6 +476,7 @@ def single_FOV_flim_fit_cli():
             de_maxiter=args.de_maxiter,
             workers=args.workers,
             polish=not args.no_polish,
+            cost_function=args.cost_function,
         )
 
     if args.mode in ("summed", "both"):
