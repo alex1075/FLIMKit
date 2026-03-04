@@ -60,11 +60,17 @@ def check_dependencies():
         'numpy': 'NumPy',
         'scipy': 'SciPy',
         'tifffile': 'TiffFile',
+        'phasorpy': 'PhasorPy',
+        'xarray': 'xarray',
+        'inquirer': 'Inquirer',
     }
     
     optional = {
         'pytest': 'Pytest (for testing)',
         'matplotlib': 'Matplotlib (for plotting)',
+        'ipywidgets': 'ipywidgets (notebook interactive)',
+        'ipympl': 'ipympl (notebook matplotlib backend)',
+        'pandas': 'Pandas (IRF Excel reading)',
     }
     
     all_ok = True
@@ -118,13 +124,18 @@ def check_modules_import():
         ('pyflim.utils.xml_utils', 'XML/XLIF parsing'),
         ('pyflim.PTU.decode', 'PTU decoding'),
         ('pyflim.PTU.stitch', 'Tile stitching'),
+        ('pyflim.PTU.tools', 'PTU signal tools'),
     ]
     
     optional_modules = [
-        ('pyflim.interactive', 'Interactive workflows'),
+        ('pyflim.interactive', 'Interactive FLIM workflows'),
         ('pyflim.FLIM.fitters', 'FLIM fitting'),
         ('pyflim.FLIM.irf_tools', 'IRF tools'),
         ('pyflim.PTU.reader', 'PTUFile reader'),
+        ('pyflim.phasor.signal', 'Phasor signal processing'),
+        ('pyflim.phasor.interactive', 'Phasor interactive tool'),
+        ('pyflim.phasor.peaks', 'Phasor peak detection'),
+        ('pyflim.phasor_launcher', 'Phasor launcher'),
     ]
     
     all_ok = True
@@ -369,6 +380,78 @@ def test_complete_workflow():
         return False
 
 
+def test_phasor_pipeline():
+    """Test phasor analysis pipeline with synthetic data."""
+    print_header("Testing Phasor Pipeline")
+
+    try:
+        import numpy as np
+
+        # ── Synthetic phasor data (no real PTU needed) ───────
+        rng = np.random.default_rng(42)
+        shape = (64, 64)
+        # Single-exponential → point ON the semicircle
+        tau_ns = 2.5
+        frequency = 40.0  # MHz
+        omega = 2 * np.pi * frequency * 1e-3  # rad/ns
+        g_true = 1 / (1 + (omega * tau_ns) ** 2)
+        s_true = omega * tau_ns / (1 + (omega * tau_ns) ** 2)
+
+        real_cal = rng.normal(g_true, 0.02, shape)
+        imag_cal = rng.normal(s_true, 0.02, shape)
+        mean = rng.uniform(5, 50, shape)
+
+        print_success("Step 1: Generated synthetic phasor data")
+
+        # ── Peak detection ───────────────────────────────────
+        from pyflim.phasor.peaks import find_phasor_peaks
+
+        peaks = find_phasor_peaks(real_cal, imag_cal, mean, frequency)
+        assert peaks['n_peaks'] >= 1, "No peaks found"
+        print_success(f"Step 2: Found {peaks['n_peaks']} peak(s)")
+
+        # Peak should be near the expected (g_true, s_true)
+        best_dist = min(
+            np.sqrt((peaks['peak_g'][i] - g_true) ** 2 +
+                     (peaks['peak_s'][i] - s_true) ** 2)
+            for i in range(peaks['n_peaks']))
+        assert best_dist < 0.1, f"Closest peak too far from expected: {best_dist:.3f}"
+        print_success(f"Step 3: Closest peak distance = {best_dist:.4f} (< 0.1)")
+
+        # ── Save / load session ──────────────────────────────
+        from pyflim.phasor_launcher import save_session, load_session
+        import tempfile, os
+
+        cursors = [dict(center_g=float(peaks['peak_g'][0]),
+                        center_s=float(peaks['peak_s'][0]),
+                        color='#d62728')]
+        params = dict(radius=0.05, radius_minor=0.03, angle_mode='semicircle')
+
+        with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as f:
+            tmp_path = f.name
+
+        try:
+            save_session(tmp_path,
+                         real_cal=real_cal, imag_cal=imag_cal, mean=mean,
+                         frequency=frequency, cursors=cursors, params=params,
+                         ptu_file='synthetic.ptu')
+
+            sess = load_session(tmp_path)
+            assert sess['frequency'] == frequency
+            assert len(sess['cursors']) == 1
+            np.testing.assert_array_almost_equal(sess['real_cal'], real_cal)
+            print_success("Step 4: Save / load session round-trip OK")
+        finally:
+            os.unlink(tmp_path)
+
+        return True
+
+    except Exception as e:
+        print_error(f"Phasor pipeline test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
 def main():
     """Run all validation checks."""
     print(f"\n{Colors.BOLD}FLIM Pipeline Installation Validation{Colors.END}")
@@ -383,6 +466,7 @@ def main():
     results.append(("Mock Data Generation", test_mock_data()))
     results.append(("Tile Stitching", test_stitching()))
     results.append(("Complete Workflow", test_complete_workflow()))
+    results.append(("Phasor Pipeline", test_phasor_pipeline()))
     
     print_header("Validation Summary")
     

@@ -48,8 +48,8 @@ def run_tests(
         cmd.append("-q")
     
     if coverage:
-        # 👇 Changed from "code" to "pyflim"
-        cmd.extend(["--cov=pyflim", "--cov-report=html", "--cov-report=term"])
+        cmd.extend(["--cov=pyflim", "--cov-report=term",
+                    "--cov-report=term-missing:skip-covered"])
     
     if markers:
         cmd.extend(["-m", markers])
@@ -204,7 +204,10 @@ def main():
     print("=" * 60)
     
     if args.coverage:
-        print("\nCoverage report: htmlcov/index.html")
+        log_path = Path(__file__).parent / "coverage_report.txt"
+        print(f"\nCoverage summary written to terminal above.")
+        print(f"Re-run with: pytest --cov=pyflim --cov-report=term-missing > {log_path}")
+        print(f"to save a text report to {log_path}")
     
     return exit_code
 

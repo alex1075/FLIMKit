@@ -609,15 +609,19 @@ class TestDataIntegrity:
 def test_installation_check():
     """Test that all required modules can be imported."""
     required_modules = [
-        'code.utils.xml_utils',
-        'code.PTU.decode',
-        'code.PTU.stitch',
+        'pyflim.utils.xml_utils',
+        'pyflim.PTU.decode',
+        'pyflim.PTU.stitch',
     ]
     
     optional_modules = [
-        'code.interactive',
-        'code.FLIM.fitters',
-        'code.FLIM.irf_tools',
+        'pyflim.interactive',
+        'pyflim.FLIM.fitters',
+        'pyflim.FLIM.irf_tools',
+        'pyflim.phasor.signal',
+        'pyflim.phasor.interactive',
+        'pyflim.phasor.peaks',
+        'pyflim.phasor_launcher',
     ]
     
     missing_required = []
@@ -643,6 +647,126 @@ def test_installation_check():
     
     if missing_optional:
         print(f"Note: Some optional modules not available: {', '.join(missing_optional)}")
+
+
+class TestPhasorPipeline:
+    """Test phasor analysis pipeline end-to-end."""
+
+    @pytest.fixture
+    def synthetic_phasor(self):
+        """Generate synthetic single-exponential phasor data."""
+        rng = np.random.default_rng(42)
+        shape = (64, 64)
+        tau_ns = 2.5
+        frequency = 40.0
+        omega = 2 * np.pi * frequency * 1e-3
+        g_true = 1 / (1 + (omega * tau_ns) ** 2)
+        s_true = omega * tau_ns / (1 + (omega * tau_ns) ** 2)
+
+        return dict(
+            real_cal=rng.normal(g_true, 0.02, shape),
+            imag_cal=rng.normal(s_true, 0.02, shape),
+            mean=rng.uniform(5, 50, shape),
+            frequency=frequency,
+            g_true=g_true,
+            s_true=s_true,
+            tau_ns=tau_ns,
+        )
+
+    def test_find_phasor_peaks(self, synthetic_phasor):
+        """Peak detection finds a peak near the expected phasor location."""
+        try:
+            from pyflim.phasor.peaks import find_phasor_peaks
+
+            peaks = find_phasor_peaks(
+                synthetic_phasor['real_cal'],
+                synthetic_phasor['imag_cal'],
+                synthetic_phasor['mean'],
+                synthetic_phasor['frequency'],
+            )
+
+            assert peaks['n_peaks'] >= 1
+            best = min(
+                np.sqrt((peaks['peak_g'][i] - synthetic_phasor['g_true']) ** 2 +
+                        (peaks['peak_s'][i] - synthetic_phasor['s_true']) ** 2)
+                for i in range(peaks['n_peaks']))
+            assert best < 0.1, f"Peak distance {best:.3f} > 0.1"
+
+        except ImportError:
+            pytest.skip("phasor.peaks not available")
+
+    def test_peak_lifetime_values(self, synthetic_phasor):
+        """Detected peak lifetimes are consistent with the input tau."""
+        try:
+            from pyflim.phasor.peaks import find_phasor_peaks
+
+            peaks = find_phasor_peaks(
+                synthetic_phasor['real_cal'],
+                synthetic_phasor['imag_cal'],
+                synthetic_phasor['mean'],
+                synthetic_phasor['frequency'],
+            )
+
+            # Phase lifetime should be in a reasonable neighbourhood
+            tau_phase = peaks['tau_phase']
+            assert np.any(np.abs(tau_phase - synthetic_phasor['tau_ns']) < 1.5), \
+                f"No phase lifetime near expected {synthetic_phasor['tau_ns']} ns"
+
+        except ImportError:
+            pytest.skip("phasor.peaks not available")
+
+    def test_save_load_session_roundtrip(self, synthetic_phasor):
+        """save_session / load_session preserves all data."""
+        try:
+            from pyflim.phasor_launcher import save_session, load_session
+            import os
+
+            cursors = [dict(center_g=0.4, center_s=0.3, color='#1f77b4')]
+            params = dict(radius=0.05, radius_minor=0.03, angle_mode='semicircle')
+
+            with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as f:
+                tmp = f.name
+
+            try:
+                save_session(
+                    tmp,
+                    real_cal=synthetic_phasor['real_cal'],
+                    imag_cal=synthetic_phasor['imag_cal'],
+                    mean=synthetic_phasor['mean'],
+                    frequency=synthetic_phasor['frequency'],
+                    cursors=cursors,
+                    params=params,
+                    ptu_file='test.ptu',
+                )
+
+                sess = load_session(tmp)
+                assert sess['frequency'] == synthetic_phasor['frequency']
+                assert len(sess['cursors']) == 1
+                np.testing.assert_array_almost_equal(
+                    sess['real_cal'], synthetic_phasor['real_cal'])
+            finally:
+                os.unlink(tmp)
+
+        except ImportError:
+            pytest.skip("phasor_launcher not available")
+
+    def test_print_peaks(self, synthetic_phasor, capsys):
+        """print_peaks produces output without error."""
+        try:
+            from pyflim.phasor.peaks import find_phasor_peaks, print_peaks
+
+            peaks = find_phasor_peaks(
+                synthetic_phasor['real_cal'],
+                synthetic_phasor['imag_cal'],
+                synthetic_phasor['mean'],
+                synthetic_phasor['frequency'],
+            )
+            print_peaks(peaks)
+            captured = capsys.readouterr()
+            assert "Peak" in captured.out or "peak" in captured.out
+
+        except ImportError:
+            pytest.skip("phasor.peaks not available")
 
 
 if __name__ == "__main__":

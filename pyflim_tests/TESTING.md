@@ -35,11 +35,11 @@ Running: pytest tests/ -q --tb=short --strict-markers -ra
 
 ## What Gets Tested?
 
-✅ **XML/XLIF parsing** - Tile positions, metadata extraction
-✅ **PTU decoding** - Histogram extraction, time axis creation
-✅ **Tile stitching** - Canvas computation, overlap handling
-✅ **Integration** - Complete workflows, error handling
-✅ **Memory efficiency** - Memmap usage, large datasets
+✓ **XML/XLIF parsing** - Tile positions, metadata extraction
+✓ **PTU decoding** - Histogram extraction, time axis creation
+✓ **Tile stitching** - Canvas computation, overlap handling
+✓ **Integration** - Complete workflows, error handling
+✓ **Memory efficiency** - Memmap usage, large datasets
 
 ## Running Specific Tests
 

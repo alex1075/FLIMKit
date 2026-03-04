@@ -29,6 +29,7 @@ class MockPTUFile:
             self.n_bins = data['stack'].shape[2]
             self.tcspc_res = data['tcspc_res']
             self.frequency = data['frequency']
+            self.sync_rate = data['frequency']       # alias used by decode
             self.time_ns = np.arange(self.n_bins) * self.tcspc_res * 1e9
             self.photon_channel = 1
             self._stack = data['stack'].astype(np.float32)
@@ -39,6 +40,7 @@ class MockPTUFile:
             self.n_bins = kwargs.get('n_bins', 256)
             self.tcspc_res = kwargs.get('tcspc_res', 97e-12)
             self.frequency = kwargs.get('frequency', 19.5e6)
+            self.sync_rate = self.frequency              # alias used by decode
             self.time_ns = np.arange(self.n_bins) * self.tcspc_res * 1e9
             self.photon_channel = 1
             self._generate_synthetic_data()

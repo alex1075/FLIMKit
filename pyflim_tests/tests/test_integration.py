@@ -336,5 +336,91 @@ def test_validate_outputs():
         assert flim_loaded.sum() > 0
 
 
+class TestPhasorWorkflow:
+    """Test phasor analysis integration."""
+
+    @pytest.fixture
+    def phasor_data(self):
+        """Create synthetic phasor arrays."""
+        rng = np.random.default_rng(99)
+        shape = (32, 32)
+        tau_ns = 3.0
+        freq = 40.0
+        omega = 2 * np.pi * freq * 1e-3
+        g = 1 / (1 + (omega * tau_ns) ** 2)
+        s = omega * tau_ns / (1 + (omega * tau_ns) ** 2)
+        return dict(
+            real_cal=rng.normal(g, 0.015, shape),
+            imag_cal=rng.normal(s, 0.015, shape),
+            mean=rng.uniform(10, 60, shape),
+            frequency=freq,
+            g_true=g,
+            s_true=s,
+        )
+
+    def test_phasor_peak_detection(self, phasor_data):
+        """Peak detection returns valid structure."""
+        try:
+            from pyflim.phasor.peaks import find_phasor_peaks
+
+            peaks = find_phasor_peaks(
+                phasor_data['real_cal'],
+                phasor_data['imag_cal'],
+                phasor_data['mean'],
+                phasor_data['frequency'],
+            )
+
+            # Structure checks
+            for key in ('n_peaks', 'peak_g', 'peak_s', 'tau_phase',
+                        'tau_mod', 'on_semicircle', 'hist', 'hist_smooth'):
+                assert key in peaks, f"Missing key: {key}"
+            assert peaks['n_peaks'] >= 1
+
+        except ImportError:
+            pytest.skip("phasor.peaks not available")
+
+    def test_phasor_save_load(self, phasor_data):
+        """Save and reload phasor session."""
+        try:
+            from pyflim.phasor_launcher import save_session, load_session
+            import os
+
+            cursors = [dict(center_g=0.5, center_s=0.25, color='#ff0000')]
+            params = dict(radius=0.04, radius_minor=0.02, angle_mode='semicircle')
+
+            with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as f:
+                tmp = f.name
+            try:
+                save_session(tmp,
+                             real_cal=phasor_data['real_cal'],
+                             imag_cal=phasor_data['imag_cal'],
+                             mean=phasor_data['mean'],
+                             frequency=phasor_data['frequency'],
+                             cursors=cursors, params=params)
+                sess = load_session(tmp)
+                assert sess['frequency'] == phasor_data['frequency']
+                np.testing.assert_array_almost_equal(
+                    sess['real_cal'], phasor_data['real_cal'])
+            finally:
+                os.unlink(tmp)
+
+        except ImportError:
+            pytest.skip("phasor_launcher not available")
+
+    def test_phasor_module_imports(self):
+        """All phasor sub-modules import cleanly."""
+        modules = [
+            'pyflim.phasor.signal',
+            'pyflim.phasor.interactive',
+            'pyflim.phasor.peaks',
+            'pyflim.phasor_launcher',
+        ]
+        for mod in modules:
+            try:
+                __import__(mod)
+            except ImportError:
+                pytest.skip(f"{mod} not available")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
