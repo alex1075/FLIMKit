@@ -47,6 +47,54 @@ class _DECostLogTau(_DECost):
         params_lin = np.array(params, dtype=float)
         params_lin[:self.n_exp] = 10.0 ** params_lin[:self.n_exp]
         return super().__call__(params_lin)
+
+
+# --------------- Poisson MLE (deviance) cost functions ---------------
+
+class _DECostPoisson:
+    """Poisson deviance cost for DE: C = 2·Σ[m - n + n·ln(n/m)].
+
+    Works on raw (unnormalised) photon counts so the statistical model
+    is correct.  The resulting C-statistic is χ²-distributed, giving
+    reduced-χ² ≈ 1 for a good fit.
+    """
+
+    def __init__(self, tcspc_res, n_bins, irf_prompt, n_exp, bg_fixed,
+                 has_tail, fit_bg, fit_sigma,
+                 fit_start, fit_end, decay):
+        self.tcspc_res  = tcspc_res
+        self.n_bins     = n_bins
+        self.irf_prompt = irf_prompt
+        self.n_exp      = n_exp
+        self.bg_fixed   = bg_fixed
+        self.has_tail   = has_tail
+        self.fit_bg     = fit_bg
+        self.fit_sigma  = fit_sigma
+        self.fit_start  = fit_start
+        self.fit_end    = fit_end
+        self.decay      = decay          # raw counts (not normalised)
+
+    def __call__(self, params):
+        model = reconvolution_model(
+            params, self.tcspc_res, self.n_bins, self.irf_prompt,
+            self.n_exp, self.bg_fixed, self.has_tail,
+            self.fit_bg, self.fit_sigma)
+        n = self.decay[self.fit_start:self.fit_end]
+        m = np.maximum(model[self.fit_start:self.fit_end], 1e-10)
+        # Poisson deviance (C-statistic)
+        dev = m - n
+        pos = n > 0
+        dev[pos] += n[pos] * np.log(n[pos] / m[pos])
+        return 2.0 * np.sum(dev)
+
+
+class _DECostPoissonLogTau(_DECostPoisson):
+    """Poisson deviance DE cost with log₁₀(τ) parameterisation."""
+
+    def __call__(self, params):
+        params_lin = np.array(params, dtype=float)
+        params_lin[:self.n_exp] = 10.0 ** params_lin[:self.n_exp]
+        return super().__call__(params_lin)
     
 def reconvolution_model(params, tcspc_res, n_bins, irf_prompt,
                         n_exp, bg_fixed, has_tail, fit_bg, fit_sigma):

@@ -23,7 +23,7 @@ For direct calling in the terminal, use 'fit_cli.py' which provides a more strea
 
 1. Clone the repository:
     ```bash
-    git clone https://github.com/alex1075/FLIM_in_Python.git
+    git clone https://github.com/alex1075/pyFLIM.git
     ```
 2. Install dependencies:
     ```bash
@@ -34,7 +34,7 @@ For direct calling in the terminal, use 'fit_cli.py' which provides a more strea
 
 Run the script with:
 ```bash
-python main.py
+./main.py
 ```
 
 To use the command line interface for fitting:

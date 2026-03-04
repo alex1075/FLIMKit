@@ -2,6 +2,7 @@ import json
 import numpy as np
 import tifffile
 from pathlib import Path
+from tqdm import tqdm
 from typing import Tuple, Dict, Any, Optional
 from ..utils.xml_utils import (
     parse_xlif_tile_positions,
@@ -145,7 +146,7 @@ def stitch_flim_tiles(
     tiles_processed = 0
     tiles_skipped = 0
     
-    for i, t in enumerate(tile_positions):
+    for i, t in enumerate(tqdm(tile_positions, desc='  Loading tiles')):
         tile_path = ptu_dir / t["file"]
         
         if not tile_path.exists():
@@ -165,10 +166,6 @@ def stitch_flim_tiles(
             
             # Handle time bin mismatch (pad or crop)
             if hist.shape[2] != n_time_bins:
-                if verbose:
-                    print(f"  [{i+1:3d}/{len(tile_positions)}] {t['file']}: "
-                          f"adjusting time bins {hist.shape[2]} → {n_time_bins}")
-                
                 if hist.shape[2] < n_time_bins:
                     # Pad with zeros
                     padded = np.zeros((hist.shape[0], hist.shape[1], n_time_bins),
@@ -190,10 +187,6 @@ def stitch_flim_tiles(
             intensity_canvas[y0:y1, x0:x1] += hist.sum(axis=2).astype(np.float64)
             weight_canvas[y0:y1, x0:x1] += 1.0
             
-            if verbose:
-                print(f"  [{i+1:3d}/{len(tile_positions)}] {t['file']} "
-                      f"→ ({y0}:{y1}, {x0}:{x1})")
-            
             tiles_processed += 1
             
         except Exception as e:
@@ -212,16 +205,25 @@ def stitch_flim_tiles(
     intensity_canvas[mask] /= weight_canvas[mask]
     
     # Average FLIM histogram cube in overlap regions
+    # Vectorised: chunk by spatial pixels (all time bins at once) instead of
+    # looping over thousands of time bins, cutting I/O by ~10×.
     overlap_mask = weight_canvas > 1
     n_overlap = int(overlap_mask.sum())
     if n_overlap > 0:
         if verbose:
             print(f"  Averaging {n_overlap:,} overlap pixels "
                   f"({100*n_overlap/mask.sum():.1f}% of canvas)")
-        for t in range(n_time_bins):
-            plane = flim_canvas[:, :, t].astype(np.float64)
-            plane[overlap_mask] /= weight_canvas[overlap_mask]
-            flim_canvas[:, :, t] = np.round(plane).astype(np.uint32)
+        overlap_ys, overlap_xs = np.where(overlap_mask)
+        weights = weight_canvas[overlap_ys, overlap_xs].astype(np.float64)
+        CHUNK = 2000                       # overlap pixels per batch (~48 MB at 3k bins)
+        for i in tqdm(range(0, n_overlap, CHUNK),
+                      desc='  Normalising overlaps',
+                      total=(n_overlap + CHUNK - 1) // CHUNK):
+            sl = slice(i, min(i + CHUNK, n_overlap))
+            ys, xs, w = overlap_ys[sl], overlap_xs[sl], weights[sl, np.newaxis]
+            data = flim_canvas[ys, xs, :].astype(np.float64)   # (chunk, T)
+            data /= w
+            flim_canvas[ys, xs, :] = np.round(data).astype(np.uint32)
     
     # Save outputs
     if verbose:

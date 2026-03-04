@@ -2,6 +2,7 @@ import inquirer
 import argparse
 import numpy as np
 from pathlib import Path
+from tqdm import tqdm
 import matplotlib
 from .configs import (
     n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message)
@@ -124,9 +125,11 @@ def stitch_and_fit_inquire():
     save_individual_q = yes_no_question("Save individual component maps? (tau1, tau2, a1, a2) (default: No)")
     save_individual = (save_individual_q == 'y')
     
-    # Auto-select optimizer: LM for reconstructed ROIs (fast, good with large data)
-    optimizer_choice = 'lm_multistart'
-    print(f"\n[Auto] Using optimizer: lm_multistart (recommended for large reconstructed ROIs)")
+    # Auto-select optimizer: DE with log-tau reparameterisation for robust
+    # global search.  The optimizer only affects the summed (global) fit —
+    # per-pixel fitting always uses NNLS — so there is no speed penalty.
+    optimizer_choice = 'de'
+    print(f"\n[Auto] Using optimizer: de (log-tau + Sobol, robust global search)")
     
     # Lifetime display range for weighted tau images
     if fit_per_pixel_mode:
@@ -277,7 +280,7 @@ def _run_stitch_and_fit(args):
                 new_ny = ny // binning
                 new_nx = nx // binning
                 binned = np.zeros((new_ny, new_nx, nt), dtype=self._stack.dtype)
-                for i in range(new_ny):
+                for i in tqdm(range(new_ny), desc='  Binning rows'):
                     for j in range(new_nx):
                         binned[i, j, :] = self._stack[
                             i*binning:(i+1)*binning,
@@ -288,18 +291,33 @@ def _run_stitch_and_fit(args):
     
     ptu = StitchedData(stack, tcspc_res, n_bins)
     
+    # Build tissue mask from stitched intensity to exclude background pixels
+    print(f"\n  Building tissue mask from stitched intensity...")
+    intensity_2d = stack.sum(axis=2)   # raw photon-count intensity
+    tissue_mask = make_cell_mask(intensity_2d,
+                                 save_mask=True,
+                                 path=str(Path(args.output_dir) / roi_name))
+    n_tissue = int(tissue_mask.sum())
+    n_total  = tissue_mask.size
+    print(f"    Tissue mask: {n_tissue:,} / {n_total:,} pixels "
+          f"({100*n_tissue/n_total:.1f}%) are tissue")
+    
+    # Zero out background in the stack for summed-decay fitting
+    stack_masked = stack.copy()
+    stack_masked[~tissue_mask] = 0
+    
     # Step 4: Fit using existing fitting code
     print(f"\n{'='*60}")
     print(f"  STEP 3: FLIM FITTING")
     print(f"{'='*60}")
     print(f"  {args.nexp}-exp  |  {args.mode}  |  optimizer={args.optimizer}")
     
-    # Get summed decay
-    decay = ptu.summed_decay()
+    # Get summed decay (tissue-only)
+    decay = stack_masked.sum(axis=(0, 1))
     irf_peak_bin = find_irf_peak_bin(decay)
     decay_peak_bin = int(np.argmax(decay))
     
-    print(f"\nSummed decay:")
+    print(f"\nSummed decay (tissue-masked):")
     print(f"  {decay.sum():,.0f} photons  |  peak={decay.max():,.0f} at bin {decay_peak_bin}")
     print(f"  IRF peak (steepest rise): bin {irf_peak_bin} ({irf_peak_bin * tcspc_res * 1e9:.3f} ns)")
     
@@ -431,6 +449,18 @@ def _run_stitch_and_fit(args):
         print(f"\nBuilding pixel stack (binning={args.binning}×{args.binning})...")
         pixel_stack = ptu.pixel_stack(channel=None, binning=args.binning)
         
+        # Apply tissue mask to per-pixel stack
+        if tissue_mask is not None:
+            sy, sx, _ = pixel_stack.shape
+            if tissue_mask.shape != (sy, sx):
+                import cv2
+                mask_resized = cv2.resize(tissue_mask.astype(np.uint8), (sx, sy),
+                                          interpolation=cv2.INTER_NEAREST) > 0
+            else:
+                mask_resized = tissue_mask
+            pixel_stack[~mask_resized] = 0
+            print(f"  Applied tissue mask to pixel stack")
+        
         print(f"Per-pixel fitting (min_photons={args.min_photons})...")
         pixel_maps = fit_per_pixel(
             pixel_stack, tcspc_res, n_bins,
@@ -532,7 +562,8 @@ def single_FOV_flim_fit_inquire():
     args.xlsx = xlif_path
     args.no_xlsx_irf = (xlif_path is not None and not use_xlsx_irf)   # only relevant if xlsx exists
     args.irf = irf_path
-    args.irf_xlsx = None                # separate IRF‑only xlsx not asked here
+    # When user chose to use the xlsx IRF, route through the analytical path
+    args.irf_xlsx = xlif_path if use_xlsx_irf else None
     args.estimate_irf = estimate_irf
     # Use defaults for all other parameters (they will be filled from constants later)
     args.irf_bins = IRF_BINS             # assume defined elsewhere

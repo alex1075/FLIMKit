@@ -1,10 +1,12 @@
 import time
 import numpy as np
+from tqdm import tqdm
 from scipy.optimize import least_squares, differential_evolution, nnls
 from scipy.stats.distributions import chi2 as chi2_dist
 from ..FLIM.irf_tools import build_full_irf
 from ..FLIM.fit_tools import estimate_bg, find_fit_end, _build_bounds, _pack_p0
-from ..FLIM.models import reconvolution_model, _DECost, _DECostLogTau
+from ..FLIM.models import (reconvolution_model, _DECost, _DECostLogTau,
+                           _DECostPoisson, _DECostPoissonLogTau)
 from ..configs import MIN_PHOTONS_PERPIX
 
 def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
@@ -12,60 +14,86 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
                n_exp, tau_min_ns, tau_max_ns,
                optimizer="de", n_restarts=8,
                de_popsize=15, de_maxiter=1000,
-               workers=-1, polish=True) -> tuple[np.ndarray, dict]:
+               workers=-1, polish=True,
+               cost_function="chi2") -> tuple[np.ndarray, dict]:
+    """Fit summed FLIM decay via reconvolution.
+
+    Parameters
+    ----------
+    cost_function : str, optional
+        ``'poisson'`` — Poisson deviance / C-statistic (recommended, default).
+        ``'chi2'``    — Neyman chi-squared (legacy: weighted least-squares on
+                        normalised decay).
+    """
 
     tau_min  = tau_min_ns * 1e-9
     tau_max  = tau_max_ns * 1e-9
 
-    # ---- Normalise decay to [0,1] (peak = 1) ----
-    scale = decay.max()
-    if scale <= 0:
-        raise ValueError("Decay has zero maximum – cannot normalise.")
-    decay_norm = decay / scale
-    # ---------------------------------------------
+    # ---- Optionally normalise (legacy chi2 path only) ----
+    if cost_function == "chi2":
+        scale = decay.max()
+        if scale <= 0:
+            raise ValueError("Decay has zero maximum – cannot normalise.")
+        decay_work = decay / scale          # peak = 1
+    elif cost_function == "poisson":
+        scale = 1.0
+        decay_work = decay.astype(float)    # raw counts
+    else:
+        raise ValueError(f"Unknown cost_function: {cost_function!r}")
 
-    peak_bin = int(np.argmax(decay_norm))
-    bg_init  = estimate_bg(decay_norm, peak_bin)   # now in normalised units
-    bg_fixed = bg_init if not fit_bg else 0.0      # passed to model but ignored when fit_bg
+    peak_bin = int(np.argmax(decay_work))
+    bg_init  = estimate_bg(decay_work, peak_bin)
+    bg_fixed = bg_init if not fit_bg else 0.0
 
-    fit_end   = find_fit_end(decay_norm, peak_bin, tau_max, tcspc_res, n_bins)
+    fit_end   = find_fit_end(decay_work, peak_bin, tau_max, tcspc_res, n_bins)
+    fit_start = 1    # match Leica: skip bin 0
 
-    # Match Leica's fit window start: begin at bin 1 (first bin after t=0),
-    # not bin 0. Leica exports fit from 0.1455 ns = 1 bin in.
-    fit_start = 1
-
-    # Cap fit_end to match Leica's window end (~44.95 ns = bin 463).
-    # Our artefact detection finds bin 483 (46.84 ns) which includes extra
-    # tail bins Leica excludes.
     leica_fit_end = int(round(44.9455 / (tcspc_res * 1e9)))
     fit_end = min(fit_end, leica_fit_end)
 
-    # bg upper bound: pre-IRF mean overestimates true bg due to fluorescence
-    # pile-up from the previous laser period (~23 cts/bin wraps into pre-IRF bins).
-    # Cap bg at 0.75 * bg_init so the optimizer can't absorb pile-up into bg.
-    # Leica's Tail Offset (53.62) ≈ 0.65 * pre-IRF mean (82).
     bg_upper = max(bg_init * 0.75, 10.0)
 
-    print(f"  bg initial guess = {bg_init:.3f} (normalised), upper bound = {bg_upper:.3f} "
+    print(f"  Cost function: {cost_function}")
+    print(f"  bg initial guess = {bg_init:.3f}"
+          f"{' (normalised)' if cost_function == 'chi2' else ' cts/bin'}"
+          f", upper bound = {bg_upper:.3f} "
           f"({'free param' if fit_bg else 'fixed'})")
     print(f"  σ broadening: {'free param' if fit_sigma else 'fixed at 0'}")
     print(f"  Fit window: bins {fit_start}–{fit_end} "
           f"({fit_start*tcspc_res*1e9:.2f}–{fit_end*tcspc_res*1e9:.2f} ns), "
           f"{fit_end-fit_start} bins")
 
-    lo, hi  = _build_bounds(n_exp, tau_min, tau_max, decay_norm.max(),   # note: decay_norm.max() = 1
+    lo, hi  = _build_bounds(n_exp, tau_min, tau_max, decay_work.max(),
                              has_tail, fit_bg, fit_sigma,
                              bg_init=bg_init, bg_upper=bg_upper)
     bounds  = list(zip(lo, hi))
 
-    # Weights based on normalised decay – this yields χ²_norm = χ²_original / scale
-    weights = np.sqrt(np.maximum(decay_norm[fit_start:fit_end], 1e-8))
+    # ---- Define residual / cost functions ----
+    if cost_function == "chi2":
+        weights = np.sqrt(np.maximum(decay_work[fit_start:fit_end], 1e-8))
 
-    def residuals(params):
-        model_norm = reconvolution_model(
-            params, tcspc_res, n_bins, irf_prompt,
-            n_exp, bg_fixed, has_tail, fit_bg, fit_sigma)
-        return (model_norm[fit_start:fit_end] - decay_norm[fit_start:fit_end]) / weights
+        def residuals(params):
+            model_vals = reconvolution_model(
+                params, tcspc_res, n_bins, irf_prompt,
+                n_exp, bg_fixed, has_tail, fit_bg, fit_sigma)
+            return (model_vals[fit_start:fit_end]
+                    - decay_work[fit_start:fit_end]) / weights
+
+    else:  # poisson
+        def residuals(params):
+            """Signed Poisson deviance residuals for LM."""
+            model_vals = reconvolution_model(
+                params, tcspc_res, n_bins, irf_prompt,
+                n_exp, bg_fixed, has_tail, fit_bg, fit_sigma)
+            n = decay_work[fit_start:fit_end]
+            m = np.maximum(model_vals[fit_start:fit_end], 1e-10)
+            dev = m - n
+            pos = n > 0
+            dev[pos] += n[pos] * np.log(n[pos] / m[pos])
+            dev = np.maximum(dev, 0.0)       # numerical guard
+            r = np.sqrt(2.0 * dev)
+            r[m < n] *= -1                   # sign = data > model
+            return r
 
     if optimizer == "lm_multistart":
         rng       = np.random.default_rng(42)
@@ -76,7 +104,7 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
             tau_ov = None if i == 0 else np.sort(
                 np.exp(rng.uniform(np.log(tau_min*1.001),
                                    np.log(tau_max*0.999), n_exp)))
-            p0 = _pack_p0(n_exp, tau_min, tau_max, float(decay_norm.max()),
+            p0 = _pack_p0(n_exp, tau_min, tau_max, float(decay_work.max()),
                           has_tail, fit_bg, fit_sigma, bg_init,
                           tau_override=tau_ov)
             try:
@@ -96,7 +124,7 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
 
         if best_res is None:
             raise RuntimeError("All restarts failed.")
-        popt_norm = best_res.x
+        popt_work = best_res.x
         message   = best_res.message
 
     elif optimizer == "de":
@@ -104,19 +132,22 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
               f"maxiter={de_maxiter}, workers={workers}")
 
         # --- Log-tau reparameterisation for DE ---
-        # DE samples uniformly within bounds.  Tau spans ~300× (0.145–45 ns);
-        # uniform sampling over-represents long lifetimes, causing the
-        # optimizer to collapse all taus to the short end.
-        # Searching in log₁₀(τ) gives equal weight per decade.
-        bounds_log = list(bounds)  # copy
+        bounds_log = list(bounds)
         for i in range(n_exp):
             lo_tau, hi_tau = bounds[i]
             bounds_log[i] = (np.log10(lo_tau), np.log10(hi_tau))
 
-        cost_fn = _DECostLogTau(
-            tcspc_res, n_bins, irf_prompt, n_exp, bg_fixed,
-            has_tail, fit_bg, fit_sigma,
-            fit_start, fit_end, decay_norm, weights)
+        if cost_function == "poisson":
+            cost_fn = _DECostPoissonLogTau(
+                tcspc_res, n_bins, irf_prompt, n_exp, bg_fixed,
+                has_tail, fit_bg, fit_sigma,
+                fit_start, fit_end, decay_work)
+        else:
+            cost_fn = _DECostLogTau(
+                tcspc_res, n_bins, irf_prompt, n_exp, bg_fixed,
+                has_tail, fit_bg, fit_sigma,
+                fit_start, fit_end, decay_work, weights)
+
         de_res = differential_evolution(
             cost_fn, bounds=bounds_log,
             maxiter=de_maxiter, popsize=de_popsize,
@@ -126,33 +157,33 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
             disp=False)
 
         # Convert log₁₀(τ) → τ in the result
-        popt_norm = de_res.x.copy()
-        popt_norm[:n_exp] = 10.0 ** popt_norm[:n_exp]
+        popt_work = de_res.x.copy()
+        popt_work[:n_exp] = 10.0 ** popt_work[:n_exp]
         message = f"DE success={de_res.success}, fun={de_res.fun:.4e}"
 
         if polish:
             print("  Running final LM polish...")
-            pol = least_squares(residuals, popt_norm, bounds=(lo, hi), method="trf",
+            pol = least_squares(residuals, popt_work, bounds=(lo, hi), method="trf",
                                 max_nfev=5000, ftol=1e-13, xtol=1e-13, gtol=1e-13)
-            popt_norm = pol.x
+            popt_work = pol.x
             message  += f"; polished cost={pol.cost:.4e}"
     else:
         raise ValueError(f"Unknown optimizer: {optimizer!r}")
 
     # ---- Rescale amplitudes and background back to original units ----
-    popt_original = popt_norm.copy()
-    # amplitudes are indices n_exp : 2*n_exp
-    popt_original[n_exp:2*n_exp] *= scale
-    if fit_bg:
-        # locate bg index: after shift, possibly sigma
-        bg_idx = 2*n_exp + 1                # shift occupies one position
-        if fit_sigma:
-            bg_idx += 1
-        popt_original[bg_idx] *= scale
-    # -------------------------------------------------------------------
+    # (only needed for chi2 path which normalises; poisson works on raw counts)
+    popt_original = popt_work.copy()
+    if cost_function == "chi2":
+        popt_original[n_exp:2*n_exp] *= scale
+        if fit_bg:
+            bg_idx = 2*n_exp + 1
+            if fit_sigma:
+                bg_idx += 1
+            popt_original[bg_idx] *= scale
 
     summary = _make_summary(popt_original, decay, tcspc_res, n_bins, irf_prompt,
-                            n_exp, bg_fixed, has_tail, fit_bg, fit_sigma,
+                            n_exp, bg_fixed * scale if cost_function == "chi2" else bg_fixed,
+                            has_tail, fit_bg, fit_sigma,
                             fit_start, fit_end, message)
     return popt_original, summary
 
@@ -190,8 +221,10 @@ def _make_summary(popt, decay, tcspc_res, n_bins, irf_prompt,
 
     model   = reconvolution_model(popt, tcspc_res, n_bins, irf_prompt,
                                    n_exp, bg_fixed, has_tail, fit_bg, fit_sigma)
-    d_win   = decay[fit_start:fit_end]
+    d_win   = decay[fit_start:fit_end].astype(float)
     m_win   = model[fit_start:fit_end]
+
+    # Neyman chi-squared: sum((d - m)² / max(d, 1))
     sigma_w = np.sqrt(np.maximum(d_win, 1.0))
     chi2    = float(np.sum(((d_win - m_win) / sigma_w)**2))
     dof     = max((fit_end - fit_start) - len(popt), 1)
@@ -199,11 +232,10 @@ def _make_summary(popt, decay, tcspc_res, n_bins, irf_prompt,
     p_val   = float(1 - chi2_dist.cdf(chi2, df=dof))
     resid   = (decay - model) / np.sqrt(np.maximum(model, 1.0))
 
-    # Tail-only chi2_r: exclude rising edge (first 20% of fit window past peak)
-    # Leica reports chi2 only over the post-peak tail — this matches their convention
+    # Tail-only chi2_r: exclude rising edge
     peak_bin_loc = int(np.argmax(decay[fit_start:fit_end])) + fit_start
     tail_start   = peak_bin_loc + max(1, int(0.05 * (fit_end - peak_bin_loc)))
-    d_tail  = decay[tail_start:fit_end]
+    d_tail  = decay[tail_start:fit_end].astype(float)
     m_tail  = model[tail_start:fit_end]
     sw_tail = np.sqrt(np.maximum(d_tail, 1.0))
     chi2_tail  = float(np.sum(((d_tail - m_tail) / sw_tail)**2))
@@ -292,7 +324,7 @@ def fit_per_pixel(stack, tcspc_res, n_bins, irf_prompt,
           f"(τ fixed, amplitudes + bg free) …")
     t0 = time.time()
 
-    for yi in range(ny):
+    for yi in tqdm(range(ny), desc='  Per-pixel rows'):
         for xi in range(nx):
             decay_px = stack[yi, xi, :]
             if decay_px.sum() < min_photons:
