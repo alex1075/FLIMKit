@@ -18,6 +18,7 @@ def main(fast = False):
             message="Choose a processing option",
             choices=[
                 'FLIM FIT a single FOV',
+                'Phasor analysis',
                 'Reconstruct a FOV and FLIM FIT',
                 'Just stitch multiple tiles together',
                 'About',
@@ -33,6 +34,9 @@ def main(fast = False):
         print("FLIM FITting a single FOV...")
         single_FOV_flim_fit(interactive=True)
         
+    elif answers['process_option'] == 'Phasor analysis':
+        from pyflim.phasor_launcher import phasor_inquire
+        phasor_inquire()
         
     elif answers['process_option'] == 'Reconstruct a FOV and FLIM FIT':
         print("Reconstructing a FOV and FLIM FITting...")

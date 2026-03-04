@@ -1,0 +1,12 @@
+# Testing Requirements
+pytest>=6.0
+numpy>=1.20
+scipy>=1.7
+
+# Optional but recommended
+pytest-cov>=2.12      # Coverage reports
+pytest-xdist>=2.3     # Parallel test execution
+pytest-timeout>=1.4   # Timeout for slow tests
+
+# For mock data generation
+tifffile>=2021.7.2

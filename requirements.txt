@@ -1,0 +1,15 @@
+colorama==0.4.6
+inquirer==3.4.1
+ipython==9.10.0
+ipywidgets==8.1.8
+matplotlib==3.10.8
+numpy==2.4.2
+opencv_python==4.13.0.90
+pandas==3.0.1
+phasorpy==0.9
+ptufile==2026.1.14
+pytest==9.0.2
+scipy==1.17.1
+tifffile==2026.1.28
+tqdm==4.67.3
+xarray==2026.1.0
