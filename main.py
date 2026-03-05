@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 from pathlib import Path
-from pyflim.interactive import *
+from flimkit.interactive import *
 import inquirer
-from pyflim._version import __version__, roadmap
-from pyflim.utils.fancy import display_banner, flim_fitting_banner, banner_goodbye
+from flimkit._version import __version__, roadmap
+from flimkit.utils.fancy import display_banner, flim_fitting_banner, banner_goodbye
 
 
 
@@ -35,7 +35,7 @@ def main(fast = False):
         single_FOV_flim_fit(interactive=True)
         
     elif answers['process_option'] == 'Phasor analysis':
-        from pyflim.phasor_launcher import phasor_inquire
+        from flimkit.phasor_launcher import phasor_inquire
         phasor_inquire()
         
     elif answers['process_option'] == 'Reconstruct a FOV and FLIM FIT':

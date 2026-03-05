@@ -49,7 +49,7 @@ class TestXMLUtils:
     
     def test_parse_xlif_tile_positions(self, mock_xlif_2x2):
         """Test parsing tile positions from XLIF."""
-        from pyflim.utils.xml_utils import parse_xlif_tile_positions
+        from flimkit.utils.xml_utils import parse_xlif_tile_positions
         
         tiles = parse_xlif_tile_positions(mock_xlif_2x2, ptu_basename="R 2")
         
@@ -75,7 +75,7 @@ class TestXMLUtils:
     
     def test_get_pixel_size_from_xlif(self, mock_xlif_2x2):
         """Test extracting pixel size from XLIF."""
-        from pyflim.utils.xml_utils import get_pixel_size_from_xlif
+        from flimkit.utils.xml_utils import get_pixel_size_from_xlif
         
         pixel_size_m, n_pixels = get_pixel_size_from_xlif(mock_xlif_2x2)
         
@@ -91,7 +91,7 @@ class TestXMLUtils:
     
     def test_compute_tile_pixel_positions(self, mock_xlif_2x2):
         """Test converting physical positions to pixels."""
-        from pyflim.utils.xml_utils import (
+        from flimkit.utils.xml_utils import (
             parse_xlif_tile_positions,
             get_pixel_size_from_xlif,
             compute_tile_pixel_positions
@@ -122,7 +122,7 @@ class TestXMLUtils:
     
     def test_extract_roi_number(self):
         """Test extracting ROI number from filename."""
-        from pyflim.utils.xml_utils import extract_roi_number
+        from flimkit.utils.xml_utils import extract_roi_number
         
         assert extract_roi_number("R 2_s1.ptu") == 2
         assert extract_roi_number("R 10_s3.ptu") == 10
@@ -131,7 +131,7 @@ class TestXMLUtils:
     
     def test_match_xml_ptu_sets(self, temp_dir):
         """Test matching XML and PTU files."""
-        from pyflim.utils.xml_utils import match_xml_ptu_sets
+        from flimkit.utils.xml_utils import match_xml_ptu_sets
         
         # Create test structure
         metadata_dir = temp_dir / "Metadata"
@@ -168,7 +168,7 @@ class TestXMLUtils:
 
 def test_xlif_with_missing_tilescan():
     """Test XLIF without TileScanInfo raises error."""
-    from pyflim.utils.xml_utils import parse_xlif_tile_positions
+    from flimkit.utils.xml_utils import parse_xlif_tile_positions
     import xml.etree.ElementTree as ET
     
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -184,7 +184,7 @@ def test_xlif_with_missing_tilescan():
 
 def test_xlif_different_layouts():
     """Test XLIF parsing with different tile layouts."""
-    from pyflim.utils.xml_utils import parse_xlif_tile_positions
+    from flimkit.utils.xml_utils import parse_xlif_tile_positions
     
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)

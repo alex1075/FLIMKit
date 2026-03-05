@@ -48,7 +48,7 @@ def run_tests(
         cmd.append("-q")
     
     if coverage:
-        cmd.extend(["--cov=pyflim", "--cov-report=term",
+        cmd.extend(["--cov=flimkit", "--cov-report=term",
                     "--cov-report=term-missing:skip-covered"])
     
     if markers:
@@ -67,7 +67,7 @@ def run_tests(
     print(f"Running: {' '.join(cmd)}")
     print("=" * 60)
     
-    # 👇 Ensure Python can find pyflim by setting PYTHONPATH
+    # 👇 Ensure Python can find flimkit by setting PYTHONPATH
     env = os.environ.copy()
     project_root = str(Path(__file__).parent.parent)  # goes up one level from flim_tests/
     env['PYTHONPATH'] = project_root + os.pathsep + env.get('PYTHONPATH', '')
@@ -206,7 +206,7 @@ def main():
     if args.coverage:
         log_path = Path(__file__).parent / "coverage_report.txt"
         print(f"\nCoverage summary written to terminal above.")
-        print(f"Re-run with: pytest --cov=pyflim --cov-report=term-missing > {log_path}")
+        print(f"Re-run with: pytest --cov=flimkit --cov-report=term-missing > {log_path}")
         print(f"to save a text report to {log_path}")
     
     return exit_code

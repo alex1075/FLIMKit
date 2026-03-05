@@ -1,10 +1,10 @@
-# pyFLIM
+# FLIMKit
 
 > **Warning:** This project is in active development. Please cross-validate results with other software before drawing conclusions.
 
 ## Overview
 
-**pyFLIM** is a Python toolkit for Fluorescence Lifetime Imaging Microscopy (FLIM) data acquired on a Leica SP8 (or compatible PTU-based systems). It provides two complementary analysis workflows:
+**FLIMKit** is a Python toolkit for Fluorescence Lifetime Imaging Microscopy (FLIM) data acquired on a Leica SP8 (or compatible PTU-based systems). It provides two complementary analysis workflows:
 
 1. **Reconvolution fitting** — mono/bi/tri-exponential lifetime fitting with IRF deconvolution, per-pixel and summed modes, and multi-tile ROI stitching.
 2. **Phasor analysis** — calibrated phasor plots with interactive elliptical cursors, automatic peak detection, two-component decomposition, and session save/load.
@@ -24,8 +24,8 @@ Both workflows can be launched through a guided terminal UI (`main.py`), standal
 ## Installation
 
 ```bash
-git clone https://github.com/alex1075/pyFLIM.git
-cd pyFLIM
+git clone https://github.com/alex1075/FLIMKit.git
+cd FLIMKit
 pip install -r requirements.txt
 ```
 
@@ -43,7 +43,7 @@ All 8 checks should pass.
 ### Run the test suite
 
 ```bash
-cd pyflim_tests
+cd flimkit_tests
 python run_tests.py              # all tests
 python run_tests.py -c           # with coverage (text report)
 python run_tests.py integration  # integration tests only
@@ -67,7 +67,7 @@ python fit_cli.py --ptu path/to/file.ptu --irf-xlsx path/to/irf.xlsx --nexp 2 --
 
 For all options: `python fit_cli.py --help`
 
-> **Tip:** While pyFLIM can estimate an IRF from the decay curve, using an IRF exported from the LAS X FLIM tail-fit graph (right-click → export) is strongly recommended.
+> **Tip:** While FLIMKit can estimate an IRF from the decay curve, using an IRF exported from the LAS X FLIM tail-fit graph (right-click → export) is strongly recommended.
 
 ### Phasor analysis (CLI)
 
@@ -85,7 +85,7 @@ python phasor_cli.py --session path/to/session.npz
 ### Phasor analysis (Python API)
 
 ```python
-from pyflim.phasor_launcher import launch_phasor
+from flimkit.phasor_launcher import launch_phasor
 
 # Interactive prompts
 state = launch_phasor()
@@ -116,7 +116,7 @@ The interactive phasor tool provides:
 ├── requirements.txt
 ├── Dockerfile
 │
-├── pyflim/                        # ── Core library ──────────────────────────
+├── flimkit/                        # ── Core library ──────────────────────────
 │   ├── __init__.py                # Top-level exports (launch_phasor, etc.)
 │   ├── _version.py                # Version string & roadmap
 │   ├── configs.py                 # Default fitting parameters
@@ -159,7 +159,7 @@ The interactive phasor tool provides:
 │       ├── misc.py                # Print helpers
 │       └── fancy.py               # Terminal banners & ASCII art
 │
-└── pyflim_tests/                  # ── Test suite ────────────────────────────
+└── flimkit_tests/                  # ── Test suite ────────────────────────────
     ├── pytest.ini
     ├── requirements_test.txt
     ├── run_tests.py               # Test runner script

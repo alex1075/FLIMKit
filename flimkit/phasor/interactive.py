@@ -11,12 +11,12 @@ Usage
 -----
 Notebook::
 
-    from pyflim.phasor.interactive import phasor_cursor_tool
+    from flimkit.phasor.interactive import phasor_cursor_tool
     state = phasor_cursor_tool(real_cal, imag_cal, mean, frequency)
 
 Script::
 
-    from pyflim.phasor.interactive import phasor_cursor_tool
+    from flimkit.phasor.interactive import phasor_cursor_tool
     state = phasor_cursor_tool(real_cal, imag_cal, mean, frequency)
     # blocks until the window is closed
 """

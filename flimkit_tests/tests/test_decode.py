@@ -31,7 +31,7 @@ class TestDecode:
     
     def test_create_time_axis(self):
         """Test time axis creation."""
-        from pyflim.PTU.decode import create_time_axis
+        from flimkit.PTU.decode import create_time_axis
         
         n_bins = 256
         tcspc_res = 97e-12  # 97 ps
@@ -174,7 +174,7 @@ class TestDecodeIntegration:
 
 def test_normalise_flim():
     """Test FLIM normalization function."""
-    from pyflim.PTU.decode import normalise_flim
+    from flimkit.PTU.decode import normalise_flim
     
     # Test 4D -> 3D
     data_4d = np.random.rand(1, 512, 512, 256)
@@ -198,7 +198,7 @@ def test_normalise_flim():
 
 def test_estimate_bg_from_histogram():
     """Test background estimation."""
-    from pyflim.FLIM.fit_tools import estimate_bg_from_histogram
+    from flimkit.FLIM.fit_tools import estimate_bg_from_histogram
     
     # Create synthetic histogram with known background
     hist = np.random.poisson(5, size=(512, 512, 256))  # bg=5

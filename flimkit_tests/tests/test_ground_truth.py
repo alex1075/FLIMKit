@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 import sys
 
-# Ensure both pyflim_tests (for mock_data) and project root (for pyflim) are on path
+# Ensure both flimkit_tests (for mock_data) and project root (for flimkit) are on path
 _tests_dir = str(Path(__file__).parent.parent)
 _project_root = str(Path(__file__).parent.parent.parent)
 if _tests_dir not in sys.path:
@@ -44,7 +44,7 @@ from mock_data import (
 # ─────────────────────────────────────────────────────────────
 def _irf(n_bins, tcspc_res, fwhm_ns, center_bin):
     """Build the same Gaussian IRF the fitter will use."""
-    from pyflim.FLIM.irf_tools import gaussian_irf_from_fwhm
+    from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm
     return gaussian_irf_from_fwhm(n_bins, tcspc_res, fwhm_ns, center_bin)
 
 
@@ -61,7 +61,7 @@ class TestSingleExpRecovery:
     def test_single_exp_tau_recovery(self, known_tau):
         """Recovered τ must be within 15 % of the true value."""
         try:
-            from pyflim.FLIM.fitters import fit_summed
+            from flimkit.FLIM.fitters import fit_summed
         except ImportError:
             pytest.skip("fitters module not available")
 
@@ -107,7 +107,7 @@ class TestBiExpRecovery:
     def test_biexp_tau_recovery(self):
         """Both lifetimes recovered within 25 % (bi-exp is harder)."""
         try:
-            from pyflim.FLIM.fitters import fit_summed
+            from flimkit.FLIM.fitters import fit_summed
         except ImportError:
             pytest.skip("fitters module not available")
 
@@ -157,7 +157,7 @@ class TestBiExpRecovery:
     def test_biexp_amplitude_fractions(self):
         """Amplitude fractions within 0.15 of truth."""
         try:
-            from pyflim.FLIM.fitters import fit_summed
+            from flimkit.FLIM.fitters import fit_summed
         except ImportError:
             pytest.skip("fitters module not available")
 
@@ -196,7 +196,7 @@ class TestBiExpRecovery:
     def test_biexp_chi2_reasonable(self):
         """Pearson reduced χ² (Leica convention: Σ(d-m)²/m) should be near 1."""
         try:
-            from pyflim.FLIM.fitters import fit_summed
+            from flimkit.FLIM.fitters import fit_summed
         except ImportError:
             pytest.skip("fitters module not available")
 
@@ -239,9 +239,9 @@ class TestStitchAndFitRecovery:
     def test_stitched_biexp_recovery(self):
         """τ values recovered from stitched mosaic match MockPTUFile truth."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles, load_flim_for_fitting
-            from pyflim.FLIM.fitters import fit_summed
-            from pyflim.FLIM.irf_tools import gaussian_irf_from_fwhm
+            from flimkit.PTU.stitch import stitch_flim_tiles, load_flim_for_fitting
+            from flimkit.FLIM.fitters import fit_summed
+            from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm
         except ImportError as e:
             pytest.skip(f"Module not available: {e}")
 
@@ -254,7 +254,7 @@ class TestStitchAndFitRecovery:
 
             out = project['base_dir'] / "stitched"
 
-            with patch('pyflim.PTU.reader.PTUFile', MockPTUFile):
+            with patch('flimkit.PTU.reader.PTUFile', MockPTUFile):
                 stitch_flim_tiles(
                     xlif_path=project['xlif_path'],
                     ptu_dir=project['ptu_dir'],
@@ -319,7 +319,7 @@ class TestPhasorGroundTruth:
     def test_peak_location_tight(self, phasor_truth):
         """Detected peak within 0.03 of the analytical (G, S)."""
         try:
-            from pyflim.phasor.peaks import find_phasor_peaks
+            from flimkit.phasor.peaks import find_phasor_peaks
         except ImportError:
             pytest.skip("phasor.peaks not available")
 
@@ -345,7 +345,7 @@ class TestPhasorGroundTruth:
     def test_phase_lifetime_tight(self, phasor_truth):
         """Phase lifetime from nearest peak within 10 % of true τ."""
         try:
-            from pyflim.phasor.peaks import find_phasor_peaks
+            from flimkit.phasor.peaks import find_phasor_peaks
         except ImportError:
             pytest.skip("phasor.peaks not available")
 
@@ -374,7 +374,7 @@ class TestPhasorGroundTruth:
     def test_peak_on_semicircle(self, phasor_truth):
         """Nearest peak is flagged as on the universal semicircle."""
         try:
-            from pyflim.phasor.peaks import find_phasor_peaks
+            from flimkit.phasor.peaks import find_phasor_peaks
         except ImportError:
             pytest.skip("phasor.peaks not available")
 
@@ -398,7 +398,7 @@ class TestPhasorGroundTruth:
     def test_modulation_lifetime_tight(self, phasor_truth):
         """Modulation lifetime from nearest peak within 10 % of true τ."""
         try:
-            from pyflim.phasor.peaks import find_phasor_peaks
+            from flimkit.phasor.peaks import find_phasor_peaks
         except ImportError:
             pytest.skip("phasor.peaks not available")
 

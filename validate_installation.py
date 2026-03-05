@@ -16,8 +16,8 @@ project_root = str(Path(__file__).parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Now we can import from pyflim and mock_data
-from pyflim_tests.mock_data import MockPTUFile, generate_test_project
+# Now we can import from flimkit and mock_data
+from flimkit_tests.mock_data import MockPTUFile, generate_test_project
 
 
 class Colors:
@@ -98,9 +98,9 @@ def check_simplified_integration():
     print_header("Checking Simplified Integration")
     
     required_files = [
-        'pyflim/utils/xml_utils.py',
-        'pyflim/PTU/decode.py',
-        'pyflim/PTU/stitch.py',
+        'flimkit/utils/xml_utils.py',
+        'flimkit/PTU/decode.py',
+        'flimkit/PTU/stitch.py',
     ]
     
     all_ok = True
@@ -121,21 +121,21 @@ def check_modules_import():
     print_header("Checking Module Imports")
     
     modules = [
-        ('pyflim.utils.xml_utils', 'XML/XLIF parsing'),
-        ('pyflim.PTU.decode', 'PTU decoding'),
-        ('pyflim.PTU.stitch', 'Tile stitching'),
-        ('pyflim.PTU.tools', 'PTU signal tools'),
+        ('flimkit.utils.xml_utils', 'XML/XLIF parsing'),
+        ('flimkit.PTU.decode', 'PTU decoding'),
+        ('flimkit.PTU.stitch', 'Tile stitching'),
+        ('flimkit.PTU.tools', 'PTU signal tools'),
     ]
     
     optional_modules = [
-        ('pyflim.interactive', 'Interactive FLIM workflows'),
-        ('pyflim.FLIM.fitters', 'FLIM fitting'),
-        ('pyflim.FLIM.irf_tools', 'IRF tools'),
-        ('pyflim.PTU.reader', 'PTUFile reader'),
-        ('pyflim.phasor.signal', 'Phasor signal processing'),
-        ('pyflim.phasor.interactive', 'Phasor interactive tool'),
-        ('pyflim.phasor.peaks', 'Phasor peak detection'),
-        ('pyflim.phasor_launcher', 'Phasor launcher'),
+        ('flimkit.interactive', 'Interactive FLIM workflows'),
+        ('flimkit.FLIM.fitters', 'FLIM fitting'),
+        ('flimkit.FLIM.irf_tools', 'IRF tools'),
+        ('flimkit.PTU.reader', 'PTUFile reader'),
+        ('flimkit.phasor.signal', 'Phasor signal processing'),
+        ('flimkit.phasor.interactive', 'Phasor interactive tool'),
+        ('flimkit.phasor.peaks', 'Phasor peak detection'),
+        ('flimkit.phasor_launcher', 'Phasor launcher'),
     ]
     
     all_ok = True
@@ -163,9 +163,9 @@ def test_xml_parsing():
     print_header("Testing XML/XLIF Parsing")
     
     try:
-        from pyflim.utils.xml_utils import parse_xlif_tile_positions, compute_tile_pixel_positions
+        from flimkit.utils.xml_utils import parse_xlif_tile_positions, compute_tile_pixel_positions
         import tempfile
-        from pyflim_tests.mock_data import generate_mock_xlif
+        from flimkit_tests.mock_data import generate_mock_xlif
         
         with tempfile.TemporaryDirectory() as temp_dir:
             # Generate mock XLIF
@@ -203,7 +203,7 @@ def test_mock_data():
     print_header("Testing Mock Data Generation")
     
     try:
-        from pyflim_tests.mock_data import MockPTUFile, generate_synthetic_decay
+        from flimkit_tests.mock_data import MockPTUFile, generate_synthetic_decay
         import numpy as np
         
         # Test MockPTUFile
@@ -242,7 +242,7 @@ def test_stitching():
     print_header("Testing Tile Stitching")
     
     try:
-        from pyflim.PTU.stitch import stitch_flim_tiles, load_stitched_flim
+        from flimkit.PTU.stitch import stitch_flim_tiles, load_stitched_flim
         import tempfile
         
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -262,7 +262,7 @@ def test_stitching():
             output_dir = project['base_dir'] / "stitched"
             
             # Patch PTUFile with MockPTUFile so the .ptu files (actually .npy) are read correctly
-            with patch('pyflim.PTU.reader.PTUFile', MockPTUFile):
+            with patch('flimkit.PTU.reader.PTUFile', MockPTUFile):
                 result = stitch_flim_tiles(
                     xlif_path=project['xlif_path'],
                     ptu_dir=project['ptu_dir'],
@@ -298,7 +298,7 @@ def test_complete_workflow():
     print_header("Testing Complete Workflow")
     
     try:
-        from pyflim.PTU.stitch import stitch_flim_tiles, load_flim_for_fitting
+        from flimkit.PTU.stitch import stitch_flim_tiles, load_flim_for_fitting
         import tempfile
         import numpy as np
         
@@ -318,7 +318,7 @@ def test_complete_workflow():
             
             output_dir = project['base_dir'] / "stitched"
             
-            with patch('pyflim.PTU.reader.PTUFile', MockPTUFile):
+            with patch('flimkit.PTU.reader.PTUFile', MockPTUFile):
                 result = stitch_flim_tiles(
                     xlif_path=project['xlif_path'],
                     ptu_dir=project['ptu_dir'],
@@ -351,9 +351,9 @@ def test_complete_workflow():
             # realistic photon counts so the fitter works in its intended regime.
             # (The stitched mosaic has billions of photons which inflates χ².)
             try:
-                from pyflim.FLIM.fitters import fit_summed
-                from pyflim.FLIM.irf_tools import gaussian_irf_from_fwhm
-                from pyflim_tests.mock_data import (
+                from flimkit.FLIM.fitters import fit_summed
+                from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm
+                from flimkit_tests.mock_data import (
                     MOCK_TAU1_NS, MOCK_TAU2_NS, MOCK_IRF_FWHM_BINS,
                     MOCK_IRF_CENTER, MOCK_TCSPC_RES,
                     generate_synthetic_biexp_decay,
@@ -431,7 +431,7 @@ def test_phasor_pipeline():
         print_success("Step 1: Generated synthetic phasor data")
 
         # ── Peak detection ───────────────────────────────────
-        from pyflim.phasor.peaks import find_phasor_peaks
+        from flimkit.phasor.peaks import find_phasor_peaks
 
         peaks = find_phasor_peaks(real_cal, imag_cal, mean, frequency)
         assert peaks['n_peaks'] >= 1, "No peaks found"
@@ -456,7 +456,7 @@ def test_phasor_pipeline():
         print_success(f"Step 3b: Phase τ = {tau_phase:.3f} ns vs true {tau_ns} (err {rel_err:.1%})")
 
         # ── Save / load session ──────────────────────────────
-        from pyflim.phasor_launcher import save_session, load_session
+        from flimkit.phasor_launcher import save_session, load_session
         import tempfile, os
 
         cursors = [dict(center_g=float(peaks['peak_g'][0]),

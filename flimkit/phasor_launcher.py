@@ -10,7 +10,7 @@ Usage
 -----
 From a script or terminal::
 
-    from pyflim.phasor_launcher import launch_phasor
+    from flimkit.phasor_launcher import launch_phasor
     launch_phasor()          # interactive prompts
 
 Or via the CLI entry-point (``phasor_cli.py``)::
@@ -222,7 +222,7 @@ def launch_phasor(ptu_path: str | None = None,
     session_path : str, optional
         Path to a previously saved *.npz* session to resume.
     min_photons, max_cursors, figsize
-        Forwarded to :func:`~pyflim.phasor.interactive.phasor_cursor_tool`.
+        Forwarded to :func:`~flimkit.phasor.interactive.phasor_cursor_tool`.
 
     Returns
     -------
@@ -329,6 +329,6 @@ def phasor_inquire() -> dict:
     return launch_phasor()   # all prompts happen inside
 
 
-# ── Allow ``python -m pyflim.phasor_launcher`` ───────────────
+# ── Allow ``python -m flimkit.phasor_launcher`` ───────────────
 if __name__ == '__main__':
     phasor_inquire()

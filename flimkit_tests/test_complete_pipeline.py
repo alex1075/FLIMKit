@@ -51,7 +51,7 @@ class TestCompleteStitchingPipeline:
     def test_stitch_2x2_tiles(self, test_project_2x2):
         """Test stitching 2x2 tile layout."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles
+            from flimkit.PTU.stitch import stitch_flim_tiles
             
             output_dir = test_project_2x2['base_dir'] / "stitched"
             
@@ -87,7 +87,7 @@ class TestCompleteStitchingPipeline:
     def test_stitch_3x3_tiles(self, test_project_3x3):
         """Test stitching 3x3 tile layout."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles
+            from flimkit.PTU.stitch import stitch_flim_tiles
             
             output_dir = test_project_3x3['base_dir'] / "stitched"
             
@@ -110,7 +110,7 @@ class TestCompleteStitchingPipeline:
     def test_load_stitched_data(self, test_project_2x2):
         """Test loading stitched data."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles, load_stitched_flim
+            from flimkit.PTU.stitch import stitch_flim_tiles, load_stitched_flim
             
             output_dir = test_project_2x2['base_dir'] / "stitched"
             
@@ -146,7 +146,7 @@ class TestCompleteStitchingPipeline:
     def test_load_for_fitting(self, test_project_2x2):
         """Test loading data ready for fitting."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles, load_flim_for_fitting
+            from flimkit.PTU.stitch import stitch_flim_tiles, load_flim_for_fitting
             
             output_dir = test_project_2x2['base_dir'] / "stitched"
             
@@ -188,7 +188,7 @@ class TestCompleteFittingPipeline:
     def stitched_project(self):
         """Create and stitch a test project."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles
+            from flimkit.PTU.stitch import stitch_flim_tiles
             
             with tempfile.TemporaryDirectory() as temp_dir:
                 project = generate_test_project(
@@ -217,9 +217,9 @@ class TestCompleteFittingPipeline:
     def test_fit_stitched_summed_decay(self, stitched_project):
         """Test fitting summed decay from stitched data."""
         try:
-            from pyflim.PTU.stitch import load_flim_for_fitting
-            from pyflim.FLIM.irf_tools import gaussian_irf_from_fwhm
-            from pyflim.FLIM.fitters import fit_summed
+            from flimkit.PTU.stitch import load_flim_for_fitting
+            from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm
+            from flimkit.FLIM.fitters import fit_summed
             
             # Load data
             stack, tcspc_res, n_bins = load_flim_for_fitting(
@@ -275,9 +275,9 @@ class TestCompleteFittingPipeline:
     def test_full_workflow_summed_only(self, stitched_project):
         """Test complete workflow: stitch → load → fit (summed only)."""
         try:
-            from pyflim.PTU.stitch import load_flim_for_fitting
-            from pyflim.FLIM.irf_tools import gaussian_irf_from_fwhm
-            from pyflim.FLIM.fitters import fit_summed
+            from flimkit.PTU.stitch import load_flim_for_fitting
+            from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm
+            from flimkit.FLIM.fitters import fit_summed
             
             # This simulates what the user would do
             
@@ -329,7 +329,7 @@ class TestInteractiveFunctions:
     def test_stitch_tiles_workflow(self, test_project):
         """Test stitch_tiles workflow from interactive.py."""
         try:
-            from pyflim.interactive import _run_tile_stitch
+            from flimkit.interactive import _run_tile_stitch
             import argparse
             
             # Build args
@@ -354,7 +354,7 @@ class TestInteractiveFunctions:
     def test_stitch_and_fit_workflow(self, test_project):
         """Test complete stitch + fit workflow from interactive.py."""
         try:
-            from pyflim.interactive import _run_stitch_and_fit
+            from flimkit.interactive import _run_stitch_and_fit
             import argparse
             
             # Build args
@@ -410,7 +410,7 @@ class TestEdgeCases:
     def test_missing_tiles(self):
         """Test handling of missing PTU tiles."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles
+            from flimkit.PTU.stitch import stitch_flim_tiles
             from mock_data import generate_mock_xlif
             
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -453,8 +453,8 @@ class TestEdgeCases:
     def test_empty_decay(self):
         """Test fitting with zero photons."""
         try:
-            from pyflim.FLIM.fitters import fit_summed
-            from pyflim.FLIM.irf_tools import gaussian_irf_from_fwhm
+            from flimkit.FLIM.fitters import fit_summed
+            from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm
             
             # Create zero decay
             decay = np.zeros(256)
@@ -478,7 +478,7 @@ class TestEdgeCases:
     def test_single_tile_as_mosaic(self):
         """Test that single tile (no stitching needed) works."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles
+            from flimkit.PTU.stitch import stitch_flim_tiles
             from mock_data import generate_mock_xlif, generate_mock_ptu_tiles
             
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -523,7 +523,7 @@ class TestDataIntegrity:
     def test_photon_conservation(self):
         """Test that photons are conserved during stitching."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles, load_stitched_flim
+            from flimkit.PTU.stitch import stitch_flim_tiles, load_stitched_flim
             from mock_data import generate_test_project, load_mock_ptu_file
             
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -565,8 +565,8 @@ class TestDataIntegrity:
     def test_time_axis_consistency(self):
         """Test time axis is consistent throughout pipeline."""
         try:
-            from pyflim.PTU.stitch import stitch_flim_tiles, load_stitched_flim
-            from pyflim.PTU.decode import create_time_axis
+            from flimkit.PTU.stitch import stitch_flim_tiles, load_stitched_flim
+            from flimkit.PTU.decode import create_time_axis
             from mock_data import generate_test_project
             
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -609,19 +609,19 @@ class TestDataIntegrity:
 def test_installation_check():
     """Test that all required modules can be imported."""
     required_modules = [
-        'pyflim.utils.xml_utils',
-        'pyflim.PTU.decode',
-        'pyflim.PTU.stitch',
+        'flimkit.utils.xml_utils',
+        'flimkit.PTU.decode',
+        'flimkit.PTU.stitch',
     ]
     
     optional_modules = [
-        'pyflim.interactive',
-        'pyflim.FLIM.fitters',
-        'pyflim.FLIM.irf_tools',
-        'pyflim.phasor.signal',
-        'pyflim.phasor.interactive',
-        'pyflim.phasor.peaks',
-        'pyflim.phasor_launcher',
+        'flimkit.interactive',
+        'flimkit.FLIM.fitters',
+        'flimkit.FLIM.irf_tools',
+        'flimkit.phasor.signal',
+        'flimkit.phasor.interactive',
+        'flimkit.phasor.peaks',
+        'flimkit.phasor_launcher',
     ]
     
     missing_required = []
@@ -676,7 +676,7 @@ class TestPhasorPipeline:
     def test_find_phasor_peaks(self, synthetic_phasor):
         """Peak detection finds a peak near the expected phasor location."""
         try:
-            from pyflim.phasor.peaks import find_phasor_peaks
+            from flimkit.phasor.peaks import find_phasor_peaks
 
             peaks = find_phasor_peaks(
                 synthetic_phasor['real_cal'],
@@ -698,7 +698,7 @@ class TestPhasorPipeline:
     def test_peak_lifetime_values(self, synthetic_phasor):
         """Detected peak lifetimes are consistent with the input tau."""
         try:
-            from pyflim.phasor.peaks import find_phasor_peaks
+            from flimkit.phasor.peaks import find_phasor_peaks
 
             peaks = find_phasor_peaks(
                 synthetic_phasor['real_cal'],
@@ -718,7 +718,7 @@ class TestPhasorPipeline:
     def test_save_load_session_roundtrip(self, synthetic_phasor):
         """save_session / load_session preserves all data."""
         try:
-            from pyflim.phasor_launcher import save_session, load_session
+            from flimkit.phasor_launcher import save_session, load_session
             import os
 
             cursors = [dict(center_g=0.4, center_s=0.3, color='#1f77b4')]
@@ -753,7 +753,7 @@ class TestPhasorPipeline:
     def test_print_peaks(self, synthetic_phasor, capsys):
         """print_peaks produces output without error."""
         try:
-            from pyflim.phasor.peaks import find_phasor_peaks, print_peaks
+            from flimkit.phasor.peaks import find_phasor_peaks, print_peaks
 
             peaks = find_phasor_peaks(
                 synthetic_phasor['real_cal'],

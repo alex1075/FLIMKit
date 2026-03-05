@@ -11,7 +11,7 @@ Run from the terminal::
 import warnings
 warnings.filterwarnings("ignore")
 
-from pyflim.phasor_launcher import launch_phasor, phasor_inquire
+from flimkit.phasor_launcher import launch_phasor, phasor_inquire
 
 
 def main():

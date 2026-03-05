@@ -235,7 +235,7 @@ class TestErrorHandling:
     
     def test_missing_xlif_file(self):
         """Test handling of missing XLIF file."""
-        from pyflim.utils.xml_utils import parse_xlif_tile_positions
+        from flimkit.utils.xml_utils import parse_xlif_tile_positions
         
         with pytest.raises(FileNotFoundError):
             parse_xlif_tile_positions(Path("/nonexistent/file.xlif"), "R 2")
@@ -361,7 +361,7 @@ class TestPhasorWorkflow:
     def test_phasor_peak_detection(self, phasor_data):
         """Peak detection returns valid structure."""
         try:
-            from pyflim.phasor.peaks import find_phasor_peaks
+            from flimkit.phasor.peaks import find_phasor_peaks
 
             peaks = find_phasor_peaks(
                 phasor_data['real_cal'],
@@ -382,7 +382,7 @@ class TestPhasorWorkflow:
     def test_phasor_save_load(self, phasor_data):
         """Save and reload phasor session."""
         try:
-            from pyflim.phasor_launcher import save_session, load_session
+            from flimkit.phasor_launcher import save_session, load_session
             import os
 
             cursors = [dict(center_g=0.5, center_s=0.25, color='#ff0000')]
@@ -410,10 +410,10 @@ class TestPhasorWorkflow:
     def test_phasor_module_imports(self):
         """All phasor sub-modules import cleanly."""
         modules = [
-            'pyflim.phasor.signal',
-            'pyflim.phasor.interactive',
-            'pyflim.phasor.peaks',
-            'pyflim.phasor_launcher',
+            'flimkit.phasor.signal',
+            'flimkit.phasor.interactive',
+            'flimkit.phasor.peaks',
+            'flimkit.phasor_launcher',
         ]
         for mod in modules:
             try:

@@ -7,7 +7,7 @@ Usage
 -----
 ::
 
-    from pyflim.phasor.peaks import find_phasor_peaks, plot_phasor_peaks
+    from flimkit.phasor.peaks import find_phasor_peaks, plot_phasor_peaks
 
     peaks = find_phasor_peaks(real_cal, imag_cal, mean, frequency)
     fig   = plot_phasor_peaks(peaks, real_cal, imag_cal, mean, frequency)

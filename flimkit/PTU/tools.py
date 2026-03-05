@@ -247,7 +247,7 @@ def signal_from_PTUFile(
 ):
     """Return TCSPC histogram and metadata from a PTU T3 mode file.
 
-    Uses pyflim's PTUFile / PTUArray5D for decoding instead of ptufile.
+    Uses flimkit's PTUFile / PTUArray5D for decoding instead of ptufile.
 
     Parameters
     ----------
