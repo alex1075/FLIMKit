@@ -52,11 +52,14 @@ def stitch_flim_tiles(
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True, parents=True)
     
-    # Output paths
-    output_intensity = output_dir / "stitched_intensity.tif"
-    output_flim = output_dir / "stitched_flim_counts.npy"
-    output_time = output_dir / "time_axis_ns.npy"
-    output_weight = output_dir / "weight_map.npy"
+    # Derive ROI prefix from ptu_basename (e.g. "R 2" -> "R_2")
+    roi_prefix = ptu_basename.replace(' ', '_')
+    
+    # Output paths — prefixed with ROI name for clarity
+    output_intensity = output_dir / f"{roi_prefix}_stitched_intensity.tif"
+    output_flim = output_dir / f"{roi_prefix}_stitched_flim_counts.npy"
+    output_time = output_dir / f"{roi_prefix}_time_axis_ns.npy"
+    output_weight = output_dir / f"{roi_prefix}_weight_map.npy"
     
     # --- PARSE XML FOR TILE POSITIONS ---
     if verbose:
@@ -245,19 +248,40 @@ def load_stitched_flim(
     """
     output_dir = Path(output_dir)
     
+    # Try ROI-prefixed filenames first, fall back to generic
+    time_candidates = sorted(output_dir.glob("*_time_axis_ns.npy"))
+    if time_candidates:
+        time_path = time_candidates[0]
+        roi_prefix = time_path.name.replace('_time_axis_ns.npy', '')
+    else:
+        time_path = output_dir / "time_axis_ns.npy"
+        roi_prefix = None
+    
     # Load time axis
-    time_axis = np.load(output_dir / "time_axis_ns.npy")
+    time_axis = np.load(str(time_path))
     if n_time_bins is None:
         n_time_bins = len(time_axis)
     
+    # Resolve filenames (ROI-prefixed or generic)
+    def _find(prefixed, generic):
+        p = output_dir / prefixed
+        return p if p.exists() else output_dir / generic
+    
+    if roi_prefix:
+        int_path  = _find(f"{roi_prefix}_stitched_intensity.tif", "stitched_intensity.tif")
+        flim_path = _find(f"{roi_prefix}_stitched_flim_counts.npy", "stitched_flim_counts.npy")
+    else:
+        int_path  = output_dir / "stitched_intensity.tif"
+        flim_path = output_dir / "stitched_flim_counts.npy"
+    
     # Load intensity to get shape
-    intensity = tifffile.imread(output_dir / "stitched_intensity.tif")
+    intensity = tifffile.imread(str(int_path))
     if canvas_shape is None:
         canvas_shape = intensity.shape
     
     # Load FLIM cube via memmap (read-only)
     flim = np.memmap(
-        str(output_dir / "stitched_flim_counts.npy"),
+        str(flim_path),
         dtype=np.uint32,
         mode='r',
         shape=(canvas_shape[0], canvas_shape[1], n_time_bins)

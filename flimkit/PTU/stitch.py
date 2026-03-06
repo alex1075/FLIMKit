@@ -58,12 +58,15 @@ def stitch_flim_tiles(
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True, parents=True)
     
-    # Output paths
-    output_intensity = output_dir / "stitched_intensity.tif"
-    output_flim = output_dir / "stitched_flim_counts.npy"
-    output_time = output_dir / "time_axis_ns.npy"
-    output_weight = output_dir / "weight_map.npy"
-    output_meta = output_dir / "metadata.json"
+    # Derive ROI prefix from ptu_basename (e.g. "R 2" -> "R_2")
+    roi_prefix = ptu_basename.replace(' ', '_')
+    
+    # Output paths — prefixed with ROI name for clarity
+    output_intensity = output_dir / f"{roi_prefix}_stitched_intensity.tif"
+    output_flim = output_dir / f"{roi_prefix}_stitched_flim_counts.npy"
+    output_time = output_dir / f"{roi_prefix}_time_axis_ns.npy"
+    output_weight = output_dir / f"{roi_prefix}_weight_map.npy"
+    output_meta = output_dir / f"{roi_prefix}_metadata.json"
     
     if verbose:
         print(f"{'='*60}")
@@ -303,20 +306,45 @@ def load_stitched_flim(
     """
     output_dir = Path(output_dir)
     
+    # Find metadata file — try ROI-prefixed first, fall back to generic
+    meta_candidates = sorted(output_dir.glob("*_metadata.json"))
+    if meta_candidates:
+        meta_path = meta_candidates[0]
+        roi_prefix = meta_path.name.replace('_metadata.json', '')
+    elif (output_dir / "metadata.json").exists():
+        meta_path = output_dir / "metadata.json"
+        roi_prefix = None
+    else:
+        raise FileNotFoundError(f"No metadata.json found in {output_dir}")
+    
     # Load metadata
-    with open(output_dir / "metadata.json", 'r') as f:
+    with open(meta_path, 'r') as f:
         metadata = json.load(f)
     
     canvas_shape = tuple(metadata['canvas_shape'])
     n_time_bins = metadata['n_time_bins']
     
+    # Resolve filenames (ROI-prefixed or generic)
+    def _find(prefixed, generic):
+        p = output_dir / prefixed
+        return p if p.exists() else output_dir / generic
+    
+    if roi_prefix:
+        time_path = _find(f"{roi_prefix}_time_axis_ns.npy", "time_axis_ns.npy")
+        int_path  = _find(f"{roi_prefix}_stitched_intensity.tif", "stitched_intensity.tif")
+        flim_path = _find(f"{roi_prefix}_stitched_flim_counts.npy", "stitched_flim_counts.npy")
+    else:
+        time_path = output_dir / "time_axis_ns.npy"
+        int_path  = output_dir / "stitched_intensity.tif"
+        flim_path = output_dir / "stitched_flim_counts.npy"
+    
     # Load arrays
-    time_axis = np.load(output_dir / "time_axis_ns.npy")
-    intensity = tifffile.imread(output_dir / "stitched_intensity.tif")
+    time_axis = np.load(str(time_path))
+    intensity = tifffile.imread(str(int_path))
     
     # Load FLIM cube as memmap
     flim = np.memmap(
-        str(output_dir / "stitched_flim_counts.npy"),
+        str(flim_path),
         dtype=np.uint32,
         mode=mode,
         shape=(canvas_shape[0], canvas_shape[1], n_time_bins)
