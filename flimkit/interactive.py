@@ -5,7 +5,7 @@ from pathlib import Path
 from tqdm import tqdm
 import matplotlib
 from .configs import (
-    n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message)
+    n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message, INTENSITY_THRESHOLD)
 from .PTU.reader import PTUFile
 from .PTU.stitch import stitch_flim_tiles, load_flim_for_fitting  
 from .utils.xml_utils import parse_xlif_tile_positions 
@@ -21,7 +21,7 @@ from .utils.enhanced_outputs import (
     save_individual_tau_maps,
     create_complete_output_package
 )
-from .image.tools import make_intensity_image, make_cell_mask
+from .image.tools import make_intensity_image, make_cell_mask, apply_intensity_threshold, pick_intensity_threshold
 
 def yes_no_question(question):
     """Ask a yes/no question using inquirer and return 'y' or 'n'."""
@@ -146,6 +146,25 @@ def stitch_and_fit_inquire():
         tau_min_display = None
         tau_max_display = None
     
+    # Intensity threshold
+    thresh_q = yes_no_question("Apply an intensity threshold to exclude low-signal pixels?")
+    if thresh_q == 'y':
+        thresh_mode_q = [inquirer.List('tmode',
+                                       message="Choose threshold method",
+                                       choices=['Enter a value', 'Pick interactively (slider)'],
+                                       default='Pick interactively (slider)')]
+        thresh_mode = inquirer.prompt(thresh_mode_q)['tmode']
+        if thresh_mode == 'Enter a value':
+            val = input("  Min photon intensity per pixel: ").strip()
+            intensity_threshold = int(val) if val else None
+            intensity_threshold_interactive = False
+        else:
+            intensity_threshold = 'interactive'
+            intensity_threshold_interactive = True
+    else:
+        intensity_threshold = None
+        intensity_threshold_interactive = False
+
     # Build combined namespace
     args = argparse.Namespace()
     
@@ -177,6 +196,7 @@ def stitch_and_fit_inquire():
     args.irf_bins = IRF_BINS
     args.irf_fit_width = IRF_FIT_WIDTH
     args.no_plots = False
+    args.intensity_threshold = intensity_threshold
     
     # Output control flags
     args.save_individual = save_individual
@@ -301,6 +321,20 @@ def _run_stitch_and_fit(args):
     n_total  = tissue_mask.size
     print(f"    Tissue mask: {n_tissue:,} / {n_total:,} pixels "
           f"({100*n_tissue/n_total:.1f}%) are tissue")
+
+    # Apply intensity threshold (optional)
+    _int_thr = getattr(args, 'intensity_threshold', None)
+    if _int_thr is not None:
+        print(f"\n  Applying intensity threshold...")
+        if _int_thr == 'interactive':
+            _int_thr = pick_intensity_threshold(intensity_2d)
+        else:
+            _int_thr = int(_int_thr)
+        int_mask = apply_intensity_threshold(intensity_2d, _int_thr)
+        tissue_mask = tissue_mask & int_mask
+        n_after = int(tissue_mask.sum())
+        print(f"    Intensity threshold: {_int_thr} photons  →  "
+              f"{n_after:,}/{n_total:,} pixels kept ({100*n_after/n_total:.1f}%)")
     
     # Zero out background in the stack for summed-decay fitting
     stack_masked = stack.copy()
@@ -592,6 +626,22 @@ def single_FOV_flim_fit_inquire():
     mask_q = yes_no_question("Apply cell mask to filter background before fitting?")
     args.cell_mask = (mask_q == 'y')
 
+    # Intensity threshold option
+    thresh_q = yes_no_question("Apply an intensity threshold to exclude low-signal pixels?")
+    if thresh_q == 'y':
+        thresh_mode_q = [inquirer.List('tmode',
+                                       message="Choose threshold method",
+                                       choices=['Enter a value', 'Pick interactively (slider)'],
+                                       default='Pick interactively (slider)')]
+        thresh_mode = inquirer.prompt(thresh_mode_q)['tmode']
+        if thresh_mode == 'Enter a value':
+            val = input("  Min photon intensity per pixel: ").strip()
+            args.intensity_threshold = int(val) if val else None
+        else:
+            args.intensity_threshold = 'interactive'
+    else:
+        args.intensity_threshold = None
+
     return args
 
 
@@ -620,6 +670,33 @@ def _run_flim_fit(args):
         n_total_px = cell_mask.size
         print(f"    Cell mask: {n_cell_px:,} / {n_total_px:,} pixels "
               f"({100*n_cell_px/n_total_px:.1f}% of FOV)")
+
+    #  Intensity threshold (optional) 
+    intensity_mask = None
+    _int_thr = getattr(args, 'intensity_threshold', None)
+    if _int_thr is not None:
+        print(f"\n[1c] Intensity threshold")
+        # Build intensity image if we don't already have one
+        if cell_mask is not None:
+            # reuse intensity_img computed above
+            pass
+        else:
+            intensity_img = make_intensity_image(args.ptu, rotate_90_cw=False, save_image=False)
+        if _int_thr == 'interactive':
+            _int_thr = pick_intensity_threshold(intensity_img)
+        else:
+            _int_thr = int(_int_thr)
+        intensity_mask = apply_intensity_threshold(intensity_img, _int_thr)
+        n_kept = int(intensity_mask.sum())
+        n_total_px = intensity_mask.size
+        print(f"    Intensity threshold: {_int_thr} photons  →  "
+              f"{n_kept:,}/{n_total_px:,} pixels kept ({100*n_kept/n_total_px:.1f}%)")
+        # Combine with cell mask if both present
+        if cell_mask is not None:
+            cell_mask = cell_mask & intensity_mask
+            print(f"    Combined with cell mask: {int(cell_mask.sum()):,} pixels kept")
+        else:
+            cell_mask = intensity_mask
 
     #  Summed decay 
     print(f"\n[2] Building summed decay (channel={args.channel or 'auto'})")
@@ -855,6 +932,11 @@ def single_FOV_flim_fit(interactive=False):
         ap.add_argument("--channel",    type=int, default=channels)
         ap.add_argument("--out",        default=OUT_NAME)
         ap.add_argument("--no-plots",   action="store_true")
+        ap.add_argument("--intensity-threshold", default=INTENSITY_THRESHOLD,
+                        help="Min photon-count per pixel. Pixels below this are "
+                             "excluded from both summed and per-pixel fits. "
+                             "Pass an integer, or 'interactive' to choose visually "
+                             "with a slider on the intensity image.")
         ap.add_argument("--print-config", action="store_true", help="Print default configuration settings and exit")
         args = ap.parse_args()
 
@@ -948,6 +1030,11 @@ def stitch_and_fit(interactive=False):
                         help="Save individual tau/amplitude component maps")
         ap.add_argument("--no-save-weighted", action="store_true",
                         help="Disable saving of weighted tau images (default: enabled)")
+        ap.add_argument("--intensity-threshold", default=INTENSITY_THRESHOLD,
+                        help="Min photon-count per pixel. Pixels below this are "
+                             "excluded from both summed and per-pixel fits. "
+                             "Pass an integer, or 'interactive' to choose visually "
+                             "with a slider on the intensity image.")
         
         args = ap.parse_args()
         

@@ -6,6 +6,11 @@ FLIM_CMAP = LinearSegmentedColormap.from_list(
 
 MIN_PHOTONS_PERPIX = 10
 
+# Intensity threshold for masking low-signal pixels before fitting.
+# Set to None (disabled) or an integer photon count.
+# Use --intensity-threshold on the CLI, or 'interactive' to pick visually.
+INTENSITY_THRESHOLD = None
+
 
 # General fitting settings:
 Tau_min = 0.145 # ns - set to 0.145 ns to avoid fitting to the IRF peak (which is typically around 0.1-0.12 ns for a system with 97 ps bins). Adjust as needed for other systems.
@@ -47,6 +52,7 @@ OUT_NAME = "flim_out" # Default output directory name. Override with --out when 
 
 
 config_message = f"""Default settings:
+Intensity threshold: {INTENSITY_THRESHOLD} photons (None = disabled)
 Tau_min: {Tau_min} ns
 Tau_max: {Tau_max} ns
 Fitting mode: {D_mode}  

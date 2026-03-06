@@ -11,6 +11,7 @@ from flimkit.utils.plotting import plot_summed, plot_pixel_maps, plot_lifetime_h
 from flimkit.utils.misc import print_summary
 from flimkit.utils.xlsx_tools import load_xlsx
 from flimkit.FLIM.fit_tools import find_irf_peak_bin
+from flimkit.image.tools import make_intensity_image, apply_intensity_threshold, pick_intensity_threshold
 from flimkit.configs import *
 
 warnings.filterwarnings("ignore")
@@ -67,6 +68,11 @@ def single_FOV_flim_fit_cli():
                     help="Cost function for summed fit. 'poisson' (default, recommended) "
                          "uses Poisson deviance on raw counts. 'chi2' (legacy) normalises "
                          "by peak and underweights the tail.")
+    ap.add_argument("--intensity-threshold", default=INTENSITY_THRESHOLD,
+                    help="Min photon-count per pixel. Pixels below this are "
+                         "excluded from both summed and per-pixel fits. "
+                         "Pass an integer, or 'interactive' to choose visually "
+                         "with a slider on the intensity image.")
     ap.add_argument("--print-config", action="store_true", help="Print default configuration settings and exit")
     args = ap.parse_args()
 
@@ -87,9 +93,32 @@ def single_FOV_flim_fit_cli():
     print(f"  IRF FWHM: {fwhm_ns*1000:.2f} ps "
           f"({'from --irf-fwhm' if args.irf_fwhm is not None else 'default: 1 bin'})")
 
+    # ── Intensity threshold (optional) ────────────────────────────────────────
+    intensity_mask = None
+    _int_thr = getattr(args, 'intensity_threshold', None)
+    if _int_thr is not None:
+        print(f"\n[1b] Intensity threshold")
+        intensity_img = make_intensity_image(args.ptu, rotate_90_cw=False, save_image=False)
+        if str(_int_thr).lower() == 'interactive':
+            _int_thr = pick_intensity_threshold(intensity_img)
+        else:
+            _int_thr = int(_int_thr)
+        intensity_mask = apply_intensity_threshold(intensity_img, _int_thr)
+        n_kept = int(intensity_mask.sum())
+        n_total = intensity_mask.size
+        print(f"    Threshold: {_int_thr} photons  →  "
+              f"{n_kept:,}/{n_total:,} pixels kept ({100*n_kept/n_total:.1f}%)")
+
     # ── Summed decay ──────────────────────────────────────────────────────────
     print(f"\n[2] Building summed decay (channel={args.channel or 'auto'})")
-    decay    = ptu.summed_decay(channel=args.channel)
+    if intensity_mask is not None:
+        stack_tmp = ptu.pixel_stack(channel=args.channel, binning=1)
+        stack_tmp[~intensity_mask] = 0
+        decay = stack_tmp.sum(axis=(0, 1))
+        del stack_tmp
+        print(f"    (Using intensity-masked photons only)")
+    else:
+        decay = ptu.summed_decay(channel=args.channel)
     # IRF peak from steepest rise of the decay, not from the decay maximum.
     # np.argmax(decay) is the fluorescence convolution peak — shifted right
     # of the true IRF peak by ~1-2 bins depending on the shortest lifetime.
@@ -250,6 +279,19 @@ def single_FOV_flim_fit_cli():
 
         print(f"\n[7] Building pixel stack (binning={args.binning}×{args.binning})")
         stack = ptu.pixel_stack(channel=ptu.photon_channel, binning=args.binning)
+
+        # Apply intensity mask to per-pixel stack
+        if intensity_mask is not None:
+            import cv2
+            sy, sx = stack.shape[:2]
+            if intensity_mask.shape != (sy, sx):
+                mask_resized = cv2.resize(intensity_mask.astype(np.uint8),
+                                          (sx, sy),
+                                          interpolation=cv2.INTER_NEAREST) > 0
+            else:
+                mask_resized = intensity_mask
+            stack[~mask_resized] = 0
+            print(f"    Applied intensity threshold mask to pixel stack")
 
         print(f"\n[8] Per-pixel fitting (min_photons={args.min_photons})")
         pixel_maps = fit_per_pixel(
@@ -317,6 +359,11 @@ def single_FOV_flim_fit_cli():
                     help="Cost function for summed fit. 'poisson' (default, recommended) "
                          "uses Poisson deviance on raw counts. 'chi2' (legacy) normalises "
                          "by peak and underweights the tail.")
+    ap.add_argument("--intensity-threshold", default=INTENSITY_THRESHOLD,
+                    help="Min photon-count per pixel. Pixels below this are "
+                         "excluded from both summed and per-pixel fits. "
+                         "Pass an integer, or 'interactive' to choose visually "
+                         "with a slider on the intensity image.")
     ap.add_argument("--print-config", action="store_true", help="Print default configuration settings and exit")
     args = ap.parse_args()
 
@@ -337,9 +384,32 @@ def single_FOV_flim_fit_cli():
     print(f"  IRF FWHM: {fwhm_ns*1000:.2f} ps "
           f"({'from --irf-fwhm' if args.irf_fwhm is not None else 'default: 1 bin'})")
 
+    # ── Intensity threshold (optional) ────────────────────────────────────────
+    intensity_mask = None
+    _int_thr = getattr(args, 'intensity_threshold', None)
+    if _int_thr is not None:
+        print(f"\n[1b] Intensity threshold")
+        intensity_img = make_intensity_image(args.ptu, rotate_90_cw=False, save_image=False)
+        if str(_int_thr).lower() == 'interactive':
+            _int_thr = pick_intensity_threshold(intensity_img)
+        else:
+            _int_thr = int(_int_thr)
+        intensity_mask = apply_intensity_threshold(intensity_img, _int_thr)
+        n_kept = int(intensity_mask.sum())
+        n_total = intensity_mask.size
+        print(f"    Threshold: {_int_thr} photons  →  "
+              f"{n_kept:,}/{n_total:,} pixels kept ({100*n_kept/n_total:.1f}%)")
+
     # ── Summed decay ──────────────────────────────────────────────────────────
     print(f"\n[2] Building summed decay (channel={args.channel or 'auto'})")
-    decay    = ptu.summed_decay(channel=args.channel)
+    if intensity_mask is not None:
+        stack_tmp = ptu.pixel_stack(channel=args.channel, binning=1)
+        stack_tmp[~intensity_mask] = 0
+        decay = stack_tmp.sum(axis=(0, 1))
+        del stack_tmp
+        print(f"    (Using intensity-masked photons only)")
+    else:
+        decay    = ptu.summed_decay(channel=args.channel)
     # IRF peak from steepest rise of the decay, not from the decay maximum.
     # np.argmax(decay) is the fluorescence convolution peak — shifted right
     # of the true IRF peak by ~1-2 bins depending on the shortest lifetime.
@@ -500,6 +570,19 @@ def single_FOV_flim_fit_cli():
 
         print(f"\n[7] Building pixel stack (binning={args.binning}×{args.binning})")
         stack = ptu.pixel_stack(channel=ptu.photon_channel, binning=args.binning)
+
+        # Apply intensity mask to per-pixel stack
+        if intensity_mask is not None:
+            import cv2
+            sy, sx = stack.shape[:2]
+            if intensity_mask.shape != (sy, sx):
+                mask_resized = cv2.resize(intensity_mask.astype(np.uint8),
+                                          (sx, sy),
+                                          interpolation=cv2.INTER_NEAREST) > 0
+            else:
+                mask_resized = intensity_mask
+            stack[~mask_resized] = 0
+            print(f"    Applied intensity threshold mask to pixel stack")
 
         print(f"\n[8] Per-pixel fitting (min_photons={args.min_photons})")
         pixel_maps = fit_per_pixel(
