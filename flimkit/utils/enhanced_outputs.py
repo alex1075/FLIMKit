@@ -123,6 +123,8 @@ def save_weighted_tau_images(
     save_amplitude: bool = True,
     tau_display_min: float = None,
     tau_display_max: float = None,
+    intensity_display_min: float = None,
+    intensity_display_max: float = None,
 ):
     """
     Save intensity-weighted and/or amplitude-weighted tau images.
@@ -137,8 +139,15 @@ def save_weighted_tau_images(
         n_exp: Number of exponential components
         save_intensity: Save intensity-weighted tau image
         save_amplitude: Save amplitude-weighted tau image
-        tau_display_min: Minimum lifetime (ns) for display range (pixels below set to 0)
-        tau_display_max: Maximum lifetime (ns) for display range (pixels above set to 0)
+        tau_display_min: Minimum lifetime (ns) for display range (pixels clipped to this value)
+        tau_display_max: Maximum lifetime (ns) for display range (pixels clipped to this value)
+        intensity_display_min: Minimum intensity for display range (pixels clipped to this value)
+        intensity_display_max: Maximum intensity for display range (pixels clipped to this value)
+    
+    Note:
+        Out-of-range values are **clipped** to the nearest boundary, matching
+        the behaviour of Leica LAS X.  For example, a pixel with tau = 0.2 ns
+        and tau_display_min = 0.5 ns will be set to 0.5 ns, not zeroed.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -156,14 +165,32 @@ def save_weighted_tau_images(
     
     # Save intensity image — scaled to full uint16 range like stitch-only
     if save_intensity:
+        intensity_out = intensity.copy().astype(np.float64)
+        # Apply intensity display range (clip to boundaries, LAS X style)
+        if intensity_display_min is not None:
+            intensity_out = np.where(
+                intensity_out > 0,
+                np.clip(intensity_out, intensity_display_min, intensity_out),
+                intensity_out,
+            )
+        if intensity_display_max is not None:
+            intensity_out = np.where(
+                intensity_out > 0,
+                np.clip(intensity_out, intensity_out, intensity_display_max),
+                intensity_out,
+            )
         intensity_path = output_dir / f"{roi_name}_intensity.tif"
-        max_val = intensity.max()
+        max_val = intensity_out.max()
         if max_val > 0:
-            intensity_scaled = (intensity / max_val * 65535).astype(np.uint16)
+            intensity_scaled = (intensity_out / max_val * 65535).astype(np.uint16)
         else:
-            intensity_scaled = np.zeros_like(intensity, dtype=np.uint16)
+            intensity_scaled = np.zeros_like(intensity_out, dtype=np.uint16)
         tifffile.imwrite(str(intensity_path), intensity_scaled)
         print(f"✓ Intensity image saved: {intensity_path} (uint16, max-scaled)")
+        if intensity_display_min is not None or intensity_display_max is not None:
+            lo = intensity_display_min if intensity_display_min is not None else "auto"
+            hi = intensity_display_max if intensity_display_max is not None else "auto"
+            print(f"  Intensity display range: [{lo}, {hi}] (clipped)")
     
     # Compute intensity-weighted average lifetime
     if save_intensity and n_exp > 1:
@@ -185,14 +212,11 @@ def save_weighted_tau_images(
         tau_intensity_weighted[mask] /= intensity[mask]
         tau_intensity_weighted[~mask] = 0
         
-        # Apply lifetime display range
+        # Apply lifetime display range (clip to boundaries, LAS X style)
         if tau_display_min is not None or tau_display_max is not None:
-            range_mask = np.ones_like(tau_intensity_weighted, dtype=bool)
-            if tau_display_min is not None:
-                range_mask &= (tau_intensity_weighted >= tau_display_min)
-            if tau_display_max is not None:
-                range_mask &= (tau_intensity_weighted <= tau_display_max)
-            tau_intensity_weighted[~range_mask & mask] = 0
+            lo = tau_display_min if tau_display_min is not None else tau_intensity_weighted[mask].min() if mask.any() else 0
+            hi = tau_display_max if tau_display_max is not None else tau_intensity_weighted[mask].max() if mask.any() else 0
+            tau_intensity_weighted[mask] = np.clip(tau_intensity_weighted[mask], lo, hi)
         
         # Save
         tau_int_path = output_dir / f"{roi_name}_tau_intensity_weighted.tif"
@@ -200,6 +224,10 @@ def save_weighted_tau_images(
         print(f"✓ Intensity-weighted tau image saved: {tau_int_path}")
         if mask.any():
             print(f"  Range: {tau_intensity_weighted[mask].min():.3f} - {tau_intensity_weighted[mask].max():.3f} ns")
+            if tau_display_min is not None or tau_display_max is not None:
+                lo_s = f"{tau_display_min}" if tau_display_min is not None else "auto"
+                hi_s = f"{tau_display_max}" if tau_display_max is not None else "auto"
+                print(f"  Tau display range: [{lo_s}, {hi_s}] ns (clipped)")
         else:
             print(f"  Range: no valid pixels")
     
@@ -225,14 +253,11 @@ def save_weighted_tau_images(
         tau_amplitude_weighted[mask] /= total_amplitude[mask]
         tau_amplitude_weighted[~mask] = 0
         
-        # Apply lifetime display range
+        # Apply lifetime display range (clip to boundaries, LAS X style)
         if tau_display_min is not None or tau_display_max is not None:
-            range_mask = np.ones_like(tau_amplitude_weighted, dtype=bool)
-            if tau_display_min is not None:
-                range_mask &= (tau_amplitude_weighted >= tau_display_min)
-            if tau_display_max is not None:
-                range_mask &= (tau_amplitude_weighted <= tau_display_max)
-            tau_amplitude_weighted[~range_mask & mask] = 0
+            lo = tau_display_min if tau_display_min is not None else tau_amplitude_weighted[mask].min() if mask.any() else 0
+            hi = tau_display_max if tau_display_max is not None else tau_amplitude_weighted[mask].max() if mask.any() else 0
+            tau_amplitude_weighted[mask] = np.clip(tau_amplitude_weighted[mask], lo, hi)
         
         # Save
         tau_amp_path = output_dir / f"{roi_name}_tau_amplitude_weighted.tif"
@@ -240,6 +265,10 @@ def save_weighted_tau_images(
         print(f"✓ Amplitude-weighted tau image saved: {tau_amp_path}")
         if mask.any():
             print(f"  Range: {tau_amplitude_weighted[mask].min():.3f} - {tau_amplitude_weighted[mask].max():.3f} ns")
+            if tau_display_min is not None or tau_display_max is not None:
+                lo_s = f"{tau_display_min}" if tau_display_min is not None else "auto"
+                hi_s = f"{tau_display_max}" if tau_display_max is not None else "auto"
+                print(f"  Tau display range: [{lo_s}, {hi_s}] ns (clipped)")
         else:
             print(f"  Range: no valid pixels")
     
@@ -306,7 +335,11 @@ def create_complete_output_package(
     n_exp: int,
     strategy: str,
     metadata: Optional[Dict] = None,
-    save_individual_components: bool = True
+    save_individual_components: bool = True,
+    tau_display_min: float = None,
+    tau_display_max: float = None,
+    intensity_display_min: float = None,
+    intensity_display_max: float = None,
 ):
     """
     Create complete output package with all results.
@@ -320,6 +353,10 @@ def create_complete_output_package(
         strategy: IRF strategy
         metadata: Optional metadata
         save_individual_components: Save individual tau/amplitude maps
+        tau_display_min: Minimum lifetime (ns) for display range (clipped)
+        tau_display_max: Maximum lifetime (ns) for display range (clipped)
+        intensity_display_min: Minimum intensity for display range (clipped)
+        intensity_display_max: Maximum intensity for display range (clipped)
     
     Creates comprehensive output package with all results organized.
     """
@@ -343,7 +380,11 @@ def create_complete_output_package(
             roi_name,
             n_exp,
             save_intensity=True,
-            save_amplitude=True
+            save_amplitude=True,
+            tau_display_min=tau_display_min,
+            tau_display_max=tau_display_max,
+            intensity_display_min=intensity_display_min,
+            intensity_display_max=intensity_display_max,
         )
         
         # Individual components

@@ -190,6 +190,10 @@ python fit_cli.py [OPTIONS]
 | `--no-polish` | Skip polishing step after DE optimisation |
 | `--cost-function {poisson,chi2}` | Cost function for summed fit (default: `poisson`) |
 | `--intensity-threshold INT\|interactive` | Min photons per pixel; pass `interactive` for visual slider |
+| `--tau-display-min FLOAT` | Min lifetime (ns) for exported tau images; clips to this value (LAS X style) |
+| `--tau-display-max FLOAT` | Max lifetime (ns) for exported tau images; clips to this value (LAS X style) |
+| `--intensity-display-min FLOAT` | Min intensity for exported intensity images; clips to this value |
+| `--intensity-display-max FLOAT` | Max intensity for exported intensity images; clips to this value |
 
 #### Output Arguments
 
@@ -440,6 +444,22 @@ Default fitting parameters are defined in `flimkit/configs.py`. All can be overr
 | `channels` | `None` | Channels to fit (`None` = all) |
 | `OUT_NAME` | `'flim_out'` | Default output directory name |
 
+### Display Range Settings
+
+These control how exported tau and intensity images are scaled. Out-of-range pixel values are **clipped to the nearest boundary**, matching the behaviour of Leica LAS X (rather than being zeroed).
+
+| Parameter | Default | Description |
+|---|---|---|
+| `TAU_DISPLAY_MIN` | `None` | Minimum lifetime (ns) for weighted-tau images (`None` = no clip) |
+| `TAU_DISPLAY_MAX` | `None` | Maximum lifetime (ns) for weighted-tau images (`None` = no clip) |
+| `INTENSITY_DISPLAY_MIN` | `None` | Minimum photon count for intensity images (`None` = no clip) |
+| `INTENSITY_DISPLAY_MAX` | `None` | Maximum photon count for intensity images (`None` = no clip) |
+
+> **Tip — Leica LAS X behaviour:** When a display range is set, pixels with lifetime or
+> intensity outside the range are clamped to the boundary value, not discarded. This
+> preserves spatial information while confining the colour scale to a biologically
+> relevant window (e.g. 0–5 ns for most fluorophores).
+
 ### Cost Functions
 
 | Function | Description |
@@ -562,7 +582,7 @@ navy → blue → cyan → green → yellow → red
 
 #### `enhanced_outputs.py`
 - **`save_fit_summary_txt(summary, output_path, n_exp, strategy, metadata)`** — Save fit results to a human-readable text file
-- **`save_weighted_tau_images(summary, output_path, ...)`** — Save intensity-weighted and amplitude-weighted τ images as TIFFs
+- **`save_weighted_tau_images(pixel_maps, output_dir, roi_name, n_exp, ...)`** — Save intensity-weighted and amplitude-weighted τ images as TIFFs. Accepts `tau_display_min`, `tau_display_max`, `intensity_display_min`, and `intensity_display_max` to clip out-of-range pixels (Leica LAS X style).
 - **`save_individual_tau_maps(summary, output_path, ...)`** — Save individual component maps (τ₁, τ₂, a₁, a₂, etc.)
 - **`create_complete_output_package(summary, output_dir, ...)`** — Generate a complete output package with all plots, images, and text summaries
 

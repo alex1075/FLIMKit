@@ -12,6 +12,7 @@ from flimkit.utils.misc import print_summary
 from flimkit.utils.xlsx_tools import load_xlsx
 from flimkit.FLIM.fit_tools import find_irf_peak_bin
 from flimkit.image.tools import make_intensity_image, apply_intensity_threshold, pick_intensity_threshold
+from flimkit.utils.enhanced_outputs import save_weighted_tau_images, save_individual_tau_maps
 from flimkit.configs import *
 
 warnings.filterwarnings("ignore")
@@ -73,6 +74,18 @@ def single_FOV_flim_fit_cli():
                          "excluded from both summed and per-pixel fits. "
                          "Pass an integer, or 'interactive' to choose visually "
                          "with a slider on the intensity image.")
+    ap.add_argument("--tau-display-min", type=float, default=TAU_DISPLAY_MIN,
+                    help="Min lifetime (ns) for exported tau images. "
+                         "Out-of-range pixels are clipped to this value (LAS X style).")
+    ap.add_argument("--tau-display-max", type=float, default=TAU_DISPLAY_MAX,
+                    help="Max lifetime (ns) for exported tau images. "
+                         "Out-of-range pixels are clipped to this value (LAS X style).")
+    ap.add_argument("--intensity-display-min", type=float, default=INTENSITY_DISPLAY_MIN,
+                    help="Min intensity for exported intensity images. "
+                         "Out-of-range pixels are clipped to this value (LAS X style).")
+    ap.add_argument("--intensity-display-max", type=float, default=INTENSITY_DISPLAY_MAX,
+                    help="Max intensity for exported intensity images. "
+                         "Out-of-range pixels are clipped to this value (LAS X style).")
     ap.add_argument("--print-config", action="store_true", help="Print default configuration settings and exit")
     args = ap.parse_args()
 
@@ -301,6 +314,21 @@ def single_FOV_flim_fit_cli():
             min_photons=args.min_photons,
         )
 
+        # Save weighted tau and intensity images
+        roi_name = Path(args.ptu).stem
+        save_weighted_tau_images(
+            pixel_maps,
+            Path(args.out),
+            roi_name=roi_name,
+            n_exp=args.nexp,
+            save_intensity=True,
+            save_amplitude=True,
+            tau_display_min=getattr(args, "tau_display_min", None),
+            tau_display_max=getattr(args, "tau_display_max", None),
+            intensity_display_min=getattr(args, "intensity_display_min", None),
+            intensity_display_max=getattr(args, "intensity_display_max", None),
+        )
+
         if not args.no_plots:
             matplotlib.use("Agg")
             print(f"\n[9] Plotting pixel maps")
@@ -364,6 +392,18 @@ def single_FOV_flim_fit_cli():
                          "excluded from both summed and per-pixel fits. "
                          "Pass an integer, or 'interactive' to choose visually "
                          "with a slider on the intensity image.")
+    ap.add_argument("--tau-display-min", type=float, default=TAU_DISPLAY_MIN,
+                    help="Min lifetime (ns) for exported tau images. "
+                         "Out-of-range pixels are clipped to this value (LAS X style).")
+    ap.add_argument("--tau-display-max", type=float, default=TAU_DISPLAY_MAX,
+                    help="Max lifetime (ns) for exported tau images. "
+                         "Out-of-range pixels are clipped to this value (LAS X style).")
+    ap.add_argument("--intensity-display-min", type=float, default=INTENSITY_DISPLAY_MIN,
+                    help="Min intensity for exported intensity images. "
+                         "Out-of-range pixels are clipped to this value (LAS X style).")
+    ap.add_argument("--intensity-display-max", type=float, default=INTENSITY_DISPLAY_MAX,
+                    help="Max intensity for exported intensity images. "
+                         "Out-of-range pixels are clipped to this value (LAS X style).")
     ap.add_argument("--print-config", action="store_true", help="Print default configuration settings and exit")
     args = ap.parse_args()
 
@@ -590,6 +630,21 @@ def single_FOV_flim_fit_cli():
             irf_prompt, has_tail, fit_bg, fit_sigma,
             global_popt, args.nexp,
             min_photons=args.min_photons,
+        )
+
+        # Save weighted tau and intensity images
+        roi_name = Path(args.ptu).stem
+        save_weighted_tau_images(
+            pixel_maps,
+            Path(args.out),
+            roi_name=roi_name,
+            n_exp=args.nexp,
+            save_intensity=True,
+            save_amplitude=True,
+            tau_display_min=getattr(args, "tau_display_min", None),
+            tau_display_max=getattr(args, "tau_display_max", None),
+            intensity_display_min=getattr(args, "intensity_display_min", None),
+            intensity_display_max=getattr(args, "intensity_display_max", None),
         )
 
         if not args.no_plots:

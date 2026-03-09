@@ -46,6 +46,17 @@ Estimate_IRF = "none" # Options are "raw", "parametric", and "none". Set to "raw
 # "chi2" normalises by peak and uses Neyman weights — underweights the tail.
 Cost_function = "poisson"
 
+# Display range for exported tau images (Leica LAS X-style clipping).
+# Out-of-range pixels are clipped to the nearest boundary, matching LAS X behaviour.
+# Set to None to keep the full fitted range (no clipping).
+TAU_DISPLAY_MIN = None   # ns – minimum lifetime for weighted-tau images
+TAU_DISPLAY_MAX = None   # ns – maximum lifetime for weighted-tau images
+
+# Display range for exported intensity images (same clipping behaviour).
+# Set to None to keep the full range.
+INTENSITY_DISPLAY_MIN = None  # photon counts – minimum intensity
+INTENSITY_DISPLAY_MAX = None  # photon counts – maximum intensity
+
 # Other specific settings:
 channels = None # Set to None to fit all channels in the PTU file. Override with --channel when running the code.
 OUT_NAME = "flim_out" # Default output directory name. Override with --out when running the code.
@@ -55,6 +66,10 @@ config_message = f"""Default settings:
 Intensity threshold: {INTENSITY_THRESHOLD} photons (None = disabled)
 Tau_min: {Tau_min} ns
 Tau_max: {Tau_max} ns
+Tau display min: {TAU_DISPLAY_MIN} ns (None = no clip)
+Tau display max: {TAU_DISPLAY_MAX} ns (None = no clip)
+Intensity display min: {INTENSITY_DISPLAY_MIN} (None = no clip)
+Intensity display max: {INTENSITY_DISPLAY_MAX} (None = no clip)
 Fitting mode: {D_mode}  
 Number of exponentials: {n_exp}
 Cost function: {Cost_function}

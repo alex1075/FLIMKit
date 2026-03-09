@@ -5,7 +5,8 @@ from pathlib import Path
 from tqdm import tqdm
 import matplotlib
 from .configs import (
-    n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message, INTENSITY_THRESHOLD)
+    n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message, INTENSITY_THRESHOLD,
+    TAU_DISPLAY_MIN, TAU_DISPLAY_MAX, INTENSITY_DISPLAY_MIN, INTENSITY_DISPLAY_MAX)
 from .PTU.reader import PTUFile
 from .PTU.stitch import stitch_flim_tiles, load_flim_for_fitting  
 from .utils.xml_utils import parse_xlif_tile_positions 
@@ -135,16 +136,33 @@ def stitch_and_fit_inquire():
     if fit_per_pixel_mode:
         tau_range_q = yes_no_question("Set a lifetime display range for tau images? (e.g. 0-5 ns)")
         if tau_range_q == 'y':
-            tau_min_display = input("  Min lifetime (ns, press Enter for 0): ").strip()
-            tau_max_display = input("  Max lifetime (ns, press Enter for no limit): ").strip()
-            tau_min_display = float(tau_min_display) if tau_min_display else 0.0
-            tau_max_display = float(tau_max_display) if tau_max_display else None
+            _def_lo = TAU_DISPLAY_MIN
+            _def_hi = TAU_DISPLAY_MAX
+            tau_min_display = input(f"  Min lifetime (ns, Enter={'0' if _def_lo is None else _def_lo}): ").strip()
+            tau_max_display = input(f"  Max lifetime (ns, Enter={'no limit' if _def_hi is None else _def_hi}): ").strip()
+            tau_min_display = float(tau_min_display) if tau_min_display else (_def_lo if _def_lo is not None else 0.0)
+            tau_max_display = float(tau_max_display) if tau_max_display else _def_hi
         else:
-            tau_min_display = None
-            tau_max_display = None
+            tau_min_display = TAU_DISPLAY_MIN
+            tau_max_display = TAU_DISPLAY_MAX
+
+        # Intensity display range for exported intensity images
+        int_range_q = yes_no_question("Set an intensity display range for exported images?")
+        if int_range_q == 'y':
+            _idef_lo = INTENSITY_DISPLAY_MIN
+            _idef_hi = INTENSITY_DISPLAY_MAX
+            int_min_display = input(f"  Min intensity (Enter={'no limit' if _idef_lo is None else _idef_lo}): ").strip()
+            int_max_display = input(f"  Max intensity (Enter={'no limit' if _idef_hi is None else _idef_hi}): ").strip()
+            int_min_display = float(int_min_display) if int_min_display else _idef_lo
+            int_max_display = float(int_max_display) if int_max_display else _idef_hi
+        else:
+            int_min_display = INTENSITY_DISPLAY_MIN
+            int_max_display = INTENSITY_DISPLAY_MAX
     else:
         tau_min_display = None
         tau_max_display = None
+        int_min_display = None
+        int_max_display = None
     
     # Intensity threshold
     thresh_q = yes_no_question("Apply an intensity threshold to exclude low-signal pixels?")
@@ -203,6 +221,8 @@ def stitch_and_fit_inquire():
     args.save_weighted = True   # always save weighted tau images
     args.tau_display_min = tau_min_display
     args.tau_display_max = tau_max_display
+    args.intensity_display_min = int_min_display
+    args.intensity_display_max = int_max_display
     
     return args
 
@@ -515,6 +535,8 @@ def _run_stitch_and_fit(args):
                 save_amplitude=True,
                 tau_display_min=getattr(args, 'tau_display_min', None),
                 tau_display_max=getattr(args, 'tau_display_max', None),
+                intensity_display_min=getattr(args, 'intensity_display_min', None),
+                intensity_display_max=getattr(args, 'intensity_display_max', None),
             )
         
         # Save individual component maps if requested
