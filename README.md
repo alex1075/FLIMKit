@@ -14,7 +14,9 @@ Both workflows can be launched through a guided terminal UI (`main.py`), standal
 ## Requirements
 
 - Python ≥ 3.11
-- See [requirements.txt](requirements.txt) for the full list. Key dependencies:
+- See [requirements.txt](requirements.txt) for the full list. 
+
+Key dependencies:
   - numpy, scipy, matplotlib, xarray
   - phasorpy 0.9
   - ptufile
@@ -38,7 +40,7 @@ python validate_installation.py
 ```
 
 It checks dependencies, module imports, XLIF parsing, stitching, fitting, and the phasor pipeline.
-All 8 checks should pass.
+All checks should pass.
 
 ### Run the test suite
 

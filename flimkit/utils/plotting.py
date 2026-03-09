@@ -36,7 +36,7 @@ def plot_summed(decay, summary, ptu, xlsx, n_exp, strategy, out_prefix,
                      color="#f4a261", lw=1.5, ls="-.", alpha=0.85,
                      label=f"IRF (×{scale:.1e})")
 
-    if xlsx is not None and xlsx.get('fit_t') is not None:
+    if xlsx is not None and xlsx.get('fit_t') is not None and xlsx.get('fit_c') is not None:
         ax1.semilogy(xlsx["fit_t"], np.clip(xlsx["fit_c"], 1, None),
                      "b-", lw=1.1, alpha=0.55, label="LAS X fit")
     ax1.semilogy(t_ns, np.clip(s["model"], 1, None), "r-", lw=2,

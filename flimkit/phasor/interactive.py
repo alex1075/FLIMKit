@@ -67,6 +67,7 @@ def phasor_cursor_tool(
     mean: np.ndarray,
     frequency: float,
     *,
+    display_image: np.ndarray | None = None,
     min_photons: float = 0.01,
     max_cursors: int = 6,
     figsize: tuple[float, float] = (8, 5),
@@ -94,6 +95,10 @@ def phasor_cursor_tool(
         Mean intensity image, same spatial shape.
     frequency : float
         Laser-repetition / modulation frequency in **MHz**.
+    display_image : ndarray, optional
+        Spatially-correct intensity image for the pseudo-colour FOV overlay.
+        Built from nsync-timed pixel assignment (``raw_pixel_stack``).  If
+        *None*, falls back to *mean*.
     min_photons : float, optional
         Minimum mean-intensity to consider a pixel valid (default 0.01).
     max_cursors : int, optional
@@ -125,6 +130,9 @@ def phasor_cursor_tool(
     rc = np.asarray(real_cal).squeeze().astype(float)
     ic = np.asarray(imag_cal).squeeze().astype(float)
     mn = np.asarray(mean).squeeze().astype(float)
+    # Spatially-correct image for the pseudo-colour FOV overlay
+    disp = (np.asarray(display_image).squeeze().astype(float)
+            if display_image is not None else mn)
     valid = (mn >= min_photons) & ~np.isnan(rc)
     g_all = rc[valid]
     s_all = ic[valid]
@@ -262,7 +270,7 @@ def phasor_cursor_tool(
             for c in cursors
         ])
         pc_img = pseudo_color(
-            *mask_list, intensity=mn, colors=colors_rgb)
+            *mask_list, intensity=disp, colors=colors_rgb)
         ax_pc.imshow(pc_img, origin='upper')
         ax_pc.set_title('Pseudo-color overlay')
         for i, c in enumerate(cursors):

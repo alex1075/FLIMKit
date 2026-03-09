@@ -436,6 +436,8 @@ class PTUArray5D:
             line_ph_ch = photon_ch[lo:hi]
             line_ph_dt = photon_dtime[lo:hi]
             
+            # Column from record-index position within the line
+            # (produces cleaner phasor than nsync-based assignment)
             line_len = le - ls
             rel_pos = line_ph_idx - ls
             col_full = (rel_pos * self.ptu.n_x) // line_len

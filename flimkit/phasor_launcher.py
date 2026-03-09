@@ -84,7 +84,8 @@ def save_session(path: str, *,
                  cursors: list[dict],
                  params: dict,
                  ptu_file: str | None = None,
-                 irf_file: str | None = None) -> None:
+                 irf_file: str | None = None,
+                 display_image: np.ndarray | None = None) -> None:
     """Persist phasor data **and** cursor state to a *.npz* file.
 
     Parameters
@@ -101,14 +102,15 @@ def save_session(path: str, *,
         Ellipse parameters (``radius``, ``radius_minor``, ``angle_mode``).
     ptu_file, irf_file : str or None
         Original source paths (stored as metadata for reference).
+    display_image : ndarray or None
+        Spatially-correct intensity image (nsync-based).
     """
     n = len(cursors)
     cursor_g = np.array([c['center_g'] for c in cursors], dtype=float) if n else np.array([], dtype=float)
     cursor_s = np.array([c['center_s'] for c in cursors], dtype=float) if n else np.array([], dtype=float)
     cursor_colors = np.array([c['color'] for c in cursors], dtype='U10') if n else np.array([], dtype='U10')
 
-    np.savez_compressed(
-        path,
+    save_kw = dict(
         real_cal=real_cal,
         imag_cal=imag_cal,
         mean=mean,
@@ -122,6 +124,10 @@ def save_session(path: str, *,
         ptu_file=np.array(ptu_file or ''),
         irf_file=np.array(irf_file or ''),
     )
+    if display_image is not None:
+        save_kw['display_image'] = np.asarray(display_image)
+
+    np.savez_compressed(path, **save_kw)
     print(f"✅  Session saved → {path}  ({n} cursor(s))")
 
 
@@ -160,6 +166,7 @@ def load_session(path: str) -> dict:
         params=params,
         ptu_file=str(d['ptu_file']) or None,
         irf_file=str(d['irf_file']) or None,
+        display_image=d['display_image'] if 'display_image' in d else None,
     )
 
 
@@ -169,10 +176,12 @@ def load_session(path: str) -> dict:
 def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
     """Load a PTU file, compute phasors, optionally calibrate with IRF.
 
-    Returns dict with ``real_cal``, ``imag_cal``, ``mean``, ``frequency``.
+    Returns dict with ``real_cal``, ``imag_cal``, ``mean``, ``frequency``,
+    and ``display_image`` (nsync-based intensity for correct spatial overlay).
     """
     from phasorpy.phasor import phasor_from_signal
     from .PTU.tools import signal_from_PTUFile
+    from .PTU.reader import PTUFile
     from .phasor.signal import get_phasor_irf, calibrate_signal_with_irf
 
     print(f"Loading PTU file: {ptu_path}")
@@ -181,6 +190,11 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
 
     print(f"Computing phasors (frequency = {frequency:.2f} MHz) …")
     mean, real, imag = phasor_from_signal(signal, axis='H')
+
+    # Build a spatially-correct intensity image via raw_pixel_stack
+    # (uses nsync timing → accurate pixel positions for the FOV overlay)
+    ptu = PTUFile(str(ptu_path), verbose=False)
+    display_image = ptu.raw_pixel_stack(binning=4).sum(axis=-1)  # (Y, X)
 
     if irf_path:
         print(f"Calibrating with IRF: {irf_path}")
@@ -196,6 +210,7 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
         imag_cal=np.asarray(imag_cal),
         mean=np.asarray(mean),
         frequency=frequency,
+        display_image=np.asarray(display_image, dtype=float),
     )
 
 
@@ -268,6 +283,7 @@ def launch_phasor(ptu_path: str | None = None,
             imag_cal=sess['imag_cal'],
             mean=sess['mean'],
             frequency=sess['frequency'],
+            display_image=sess.get('display_image'),
         )
         initial_cursors = sess['cursors'] or None
         initial_params = sess['params']
@@ -301,6 +317,7 @@ def launch_phasor(ptu_path: str | None = None,
                 params=params,
                 ptu_file=src_ptu,
                 irf_file=src_irf,
+                display_image=_data.get('display_image'),
             )
 
     # ── Launch the interactive tool ──────────────────────────
@@ -308,8 +325,7 @@ def launch_phasor(ptu_path: str | None = None,
         data['real_cal'],
         data['imag_cal'],
         data['mean'],
-        data['frequency'],
-        min_photons=min_photons,
+        data['frequency'],        display_image=data.get('display_image'),        min_photons=min_photons,
         max_cursors=max_cursors,
         figsize=figsize,
         initial_cursors=initial_cursors,

@@ -147,7 +147,7 @@ def single_FOV_flim_fit_cli():
     if args.xlsx is not None and Path(args.xlsx).exists():
         print(f"\n[3] XLSX: {args.xlsx}")
         xlsx = load_xlsx(args.xlsx, debug=args.debug_xlsx)
-        if xlsx['fit_t'] is not None:
+        if xlsx['fit_t'] is not None and xlsx['fit_c'] is not None:
             print(f"    LAS X fit present, peak = {xlsx['fit_c'].max():.0f} cts")
     else:
         print(f"\n[3] No XLSX provided or file not found")
@@ -465,7 +465,7 @@ def single_FOV_flim_fit_cli():
     if args.xlsx is not None and Path(args.xlsx).exists():
         print(f"\n[3] XLSX: {args.xlsx}")
         xlsx = load_xlsx(args.xlsx, debug=args.debug_xlsx)
-        if xlsx['fit_t'] is not None:
+        if xlsx['fit_t'] is not None and xlsx['fit_c'] is not None:
             print(f"    LAS X fit present, peak = {xlsx['fit_c'].max():.0f} cts")
     else:
         print(f"\n[3] No XLSX provided or file not found")
