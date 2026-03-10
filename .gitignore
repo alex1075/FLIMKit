@@ -19,3 +19,4 @@ htmlcov/
 *.lof
 *.xlif
 Results/
+.vscode/
