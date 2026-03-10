@@ -287,15 +287,15 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
     print(f"\n{'='*60}")
     print(f"  STEP 2: LOADING STITCHED DATA")
     print(f"{'='*60}")
-    
+
+    # FIX: keep as memmap — do NOT load 65 GB to RAM
     stack, tcspc_res, n_bins = load_flim_for_fitting(
         Path(args.output_dir),
-        load_to_memory=True  # Load to RAM for faster fitting
+        load_to_memory=False
     )
-    
-    print(f"  Loaded: {stack.shape} @ {tcspc_res*1e12:.2f} ps/bin")
-    print(f"  Total photons: {stack.sum():,.0f}")
-    
+
+    print(f"  Mapped: {stack.shape} @ {tcspc_res*1e12:.2f} ps/bin")
+
     # Step 3: Prepare for fitting (create mock PTU object with necessary attributes)
     class StitchedData:
         """Mock PTU object for stitched data."""
@@ -330,10 +330,19 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
                 return binned
     
     ptu = StitchedData(stack, tcspc_res, n_bins)
-    
-    # Build tissue mask from stitched intensity to exclude background pixels
-    print(f"\n  Building tissue mask from stitched intensity...")
-    intensity_2d = stack.sum(axis=2)   # raw photon-count intensity
+
+    # ── Build tissue mask + summed decay via chunked memmap reads ──────────
+    # Never materialise the full cube — read CHUNK_ROWS rows at a time.
+    # For a 1024-wide, 256-bin cube: 64 rows × 1024 × 256 × 4 B ≈ 67 MB/chunk.
+    CHUNK_ROWS = 64
+    ny, nx = stack.shape[:2]
+
+    print(f"\n  Building tissue mask from stitched intensity (chunked)...")
+    intensity_2d = np.zeros((ny, nx), dtype=np.float64)
+    for r0 in tqdm(range(0, ny, CHUNK_ROWS), desc='  Building intensity', unit='chunk'):
+        r1 = min(r0 + CHUNK_ROWS, ny)
+        intensity_2d[r0:r1] = stack[r0:r1].sum(axis=2)
+
     tissue_mask = make_cell_mask(intensity_2d,
                                  save_mask=True,
                                  path=str(Path(args.output_dir) / roi_name))
@@ -342,7 +351,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
     print(f"    Tissue mask: {n_tissue:,} / {n_total:,} pixels "
           f"({100*n_tissue/n_total:.1f}%) are tissue")
 
-    # Apply intensity threshold (optional)
+    # Optional intensity threshold
     _int_thr = getattr(args, 'intensity_threshold', None)
     if _int_thr is not None:
         print(f"\n  Applying intensity threshold...")
@@ -350,24 +359,31 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
             _int_thr = pick_intensity_threshold(intensity_2d)
         else:
             _int_thr = int(_int_thr)
-        int_mask = apply_intensity_threshold(intensity_2d, _int_thr)
+        int_mask    = apply_intensity_threshold(intensity_2d, _int_thr)
         tissue_mask = tissue_mask & int_mask
         n_after = int(tissue_mask.sum())
         print(f"    Intensity threshold: {_int_thr} photons  →  "
               f"{n_after:,}/{n_total:,} pixels kept ({100*n_after/n_total:.1f}%)")
-    
-    # Zero out background in the stack for summed-decay fitting
-    stack_masked = stack.copy()
-    stack_masked[~tissue_mask] = 0
-    
+
+    # FIX: chunked masked summation — no stack.copy()
+    print(f"\n  Building masked summed decay (chunked)...")
+    decay = np.zeros(n_bins, dtype=np.float64)
+    for r0 in tqdm(range(0, ny, CHUNK_ROWS), desc='  Building decay', unit='chunk'):
+        r1       = min(r0 + CHUNK_ROWS, ny)
+        chunk    = stack[r0:r1].astype(np.float32)   # (rows, X, T)
+        row_mask = tissue_mask[r0:r1]                 # (rows, X) bool
+        chunk[~row_mask] = 0
+        decay   += chunk.sum(axis=(0, 1))
+    del chunk   # free the last chunk
+
+    print(f"  Total photons (tissue): {decay.sum():,.0f}")
+
     # Step 4: Fit using existing fitting code
     print(f"\n{'='*60}")
     print(f"  STEP 3: FLIM FITTING")
     print(f"{'='*60}")
     print(f"  {args.nexp}-exp  |  {args.mode}  |  optimizer={args.optimizer}")
     
-    # Get summed decay (tissue-only)
-    decay = stack_masked.sum(axis=(0, 1))
     irf_peak_bin = find_irf_peak_bin(decay)
     decay_peak_bin = int(np.argmax(decay))
     
@@ -476,7 +492,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
     # --- Save fit summary text file ---
     metadata = {
         'canvas_shape': stack.shape[:2],
-        'total_photons': int(stack.sum()),
+        'total_photons': int(decay.sum()),   # use masked decay total
         'tiles_processed': stitch_result['tiles_processed'],
     }
     save_fit_summary_txt(
@@ -503,18 +519,12 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
     if args.mode in ("perPixel", "both"):
         print(f"\nBuilding pixel stack (binning={args.binning}×{args.binning})...")
         pixel_stack = ptu.pixel_stack(channel=None, binning=args.binning)
-        
-        # Apply tissue mask to per-pixel stack
+
+        # FIX: do NOT zero the pixel stack (memmap is read-only; zeroing would
+        # require a full in-memory copy).  Background pixels are excluded by
+        # fit_per_pixel's min_photons threshold, which is cleaner anyway.
         if tissue_mask is not None:
-            sy, sx, _ = pixel_stack.shape
-            if tissue_mask.shape != (sy, sx):
-                import cv2
-                mask_resized = cv2.resize(tissue_mask.astype(np.uint8), (sx, sy),
-                                          interpolation=cv2.INTER_NEAREST) > 0
-            else:
-                mask_resized = tissue_mask
-            pixel_stack[~mask_resized] = 0
-            print(f"  Applied tissue mask to pixel stack")
+            print(f"  Background pixels will be skipped via min_photons threshold")
         
         print(f"Per-pixel fitting (min_photons={args.min_photons})...")
         pixel_maps = fit_per_pixel(
