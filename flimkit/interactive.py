@@ -438,9 +438,9 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
     elif args.estimate_irf == "raw":
         from .FLIM.irf_tools import estimate_irf_from_decay_raw
         irf_prompt = estimate_irf_from_decay_raw(
-            decay, ptu.tcspc_res, args.irf_bins, args.irf_fit_width, irf_peak_bin
+            decay, tcspc_res, n_bins, n_irf_bins=args.irf_bins
         )
-        strategy = f"estimated_raw (bins={args.irf_bins}, width={args.irf_fit_width})"
+        strategy = f"estimated_raw (bins={args.irf_bins})"
         has_tail = True
         fit_sigma = True
         fit_bg = True
@@ -449,9 +449,10 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
     elif args.estimate_irf == "parametric":
         from .FLIM.irf_tools import estimate_irf_from_decay_parametric
         irf_prompt = estimate_irf_from_decay_parametric(
-            decay, ptu.tcspc_res, args.irf_bins, args.irf_fit_width, irf_peak_bin
+            decay, tcspc_res, n_bins,
+            fit_window_width_ns=args.irf_fit_width
         )
-        strategy = f"estimated_parametric (bins={args.irf_bins}, width={args.irf_fit_width})"
+        strategy = f"estimated_parametric (width={args.irf_fit_width}ns)"
         has_tail = True
         fit_sigma = True
         fit_bg = True

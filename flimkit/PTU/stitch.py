@@ -194,7 +194,8 @@ def stitch_flim_tiles(
             y1 = y0 + tile_y
             x1 = x0 + tile_x
             
-            # Accumulate (overlaps get summed)
+            # Accumulate — overlaps are summed, giving more photons where
+            # tiles overlap (which is correct for FLIM fitting statistics).
             flim_canvas[y0:y1, x0:x1, :] += hist.astype(np.uint32)
             intensity_canvas[y0:y1, x0:x1] += hist.sum(axis=2).astype(np.float64)
             weight_canvas[y0:y1, x0:x1] += 1.0
@@ -207,36 +208,22 @@ def stitch_flim_tiles(
             tiles_skipped += 1
             continue
     
-    # Normalize overlaps — average FLIM counts so overlap regions
-    # have the same per-pixel count level as non-overlap regions
+    # Normalise intensity image for display only.
+    # The FLIM cube is intentionally NOT normalised — photon counts in overlap
+    # regions are summed across tiles, which improves fitting statistics there.
     if verbose:
         print()
-        print("Normalizing overlaps...")
+        print("Normalising intensity image for display...")
     
     mask = weight_canvas > 0
     intensity_canvas[mask] /= weight_canvas[mask]
-    
-    # Average FLIM histogram cube in overlap regions
-    # Vectorised: chunk by spatial pixels (all time bins at once) instead of
-    # looping over thousands of time bins, cutting I/O by ~10×.
-    overlap_mask = weight_canvas > 1
-    n_overlap = int(overlap_mask.sum())
-    if n_overlap > 0:
-        if verbose:
-            print(f"  Averaging {n_overlap:,} overlap pixels "
-                  f"({100*n_overlap/mask.sum():.1f}% of canvas)")
-        overlap_ys, overlap_xs = np.where(overlap_mask)
-        weights = weight_canvas[overlap_ys, overlap_xs].astype(np.float64)
-        CHUNK = 2000                       # overlap pixels per batch (~48 MB at 3k bins)
-        for i in tqdm(range(0, n_overlap, CHUNK),
-                      desc='  Normalising overlaps',
-                      total=(n_overlap + CHUNK - 1) // CHUNK):
-            sl = slice(i, min(i + CHUNK, n_overlap))
-            ys, xs, w = overlap_ys[sl], overlap_xs[sl], weights[sl, np.newaxis]
-            data = flim_canvas[ys, xs, :].astype(np.float64)   # (chunk, T)
-            data /= w
-            flim_canvas[ys, xs, :] = np.round(data).astype(np.uint32)
-    
+
+    n_overlap = int((weight_canvas > 1).sum())
+    if verbose and n_overlap > 0:
+        print(f"  {n_overlap:,} overlap pixels "
+              f"({100*n_overlap/mask.sum():.1f}% of canvas) — "
+              f"photon counts summed across tiles")
+
     # Save outputs
     if verbose:
         print("Saving outputs...")
@@ -390,14 +377,15 @@ def load_flim_for_fitting(
     """
     flim_memmap, time_axis, intensity, metadata = load_stitched_flim(source_dir)
     
+    tcspc_res = metadata['tcspc_resolution_ps'] * 1e-12  # ps → s
+    n_bins = metadata['n_time_bins']
+
     if load_to_memory:
         # Convert memmap to full array in RAM
         stack = np.array(flim_memmap, dtype=np.float32)
     else:
-        # Keep as memmap (memory efficient but slower)
-        stack = flim_memmap.astype(np.float32)
-    
-    tcspc_res = metadata['tcspc_resolution_ps'] * 1e-12  # ps → s
-    n_bins = metadata['n_time_bins']
+        # Return the memmap directly — do NOT call .astype() here as that
+        # materialises the entire array in RAM, defeating the purpose.
+        stack = flim_memmap
     
     return stack, tcspc_res, n_bins
