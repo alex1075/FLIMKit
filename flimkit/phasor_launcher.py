@@ -1,23 +1,3 @@
-"""Top-level interactive launcher for phasor FLIM analysis.
-
-Prompts the user for a *.ptu* file (or a previously saved *.npz* session),
-an optional IRF calibration file, then opens the interactive phasor cursor
-tool.  Results — phasor arrays **and** cursor positions / ellipse parameters
-— can be saved to a single *.npz* file and re-opened later for continued
-editing.
-
-Usage
------
-From a script or terminal::
-
-    from flimkit.phasor_launcher import launch_phasor
-    launch_phasor()          # interactive prompts
-
-Or via the CLI entry-point (``phasor_cli.py``)::
-
-    python phasor_cli.py
-"""
-
 from __future__ import annotations
 
 import os
@@ -53,20 +33,36 @@ def _ask_path(message: str, *, optional: bool = False) -> str | None:
 
 
 def _pick_save_file(title: str, default_name: str) -> str | None:
-    """Open a native save-file dialog (tkinter) or fall back to input."""
+    """Open a native save-file dialog (tkinter) or fall back to input.
+
+    Reuses an existing Tk root if the GUI is already running (avoids
+    creating a second conflicting root window).
+    """
     try:
         import tkinter as tk
         from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        root.update()
+
+        # Reuse an existing Tk root (e.g. when called from the FLIMkit GUI)
+        # rather than creating a second conflicting root window.
+        existing = tk._default_root  # None if no root yet
+        if existing is not None:
+            parent = existing
+            need_destroy = False
+        else:
+            parent = tk.Tk()
+            parent.withdraw()
+            need_destroy = True
+
+        parent.attributes('-topmost', True)
+        parent.update()
         path = filedialog.asksaveasfilename(
+            parent=parent,
             title=title,
             defaultextension='.npz',
             initialfile=default_name,
             filetypes=[('NumPy archive', '*.npz'), ('All files', '*')])
-        root.destroy()
+        if need_destroy:
+            parent.destroy()
         return path or None
     except Exception:
         path = input(f"Save path [{default_name}]: ").strip().strip('"')

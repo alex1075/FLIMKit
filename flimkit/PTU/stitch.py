@@ -19,6 +19,8 @@ def stitch_flim_tiles(
     ptu_basename: str = "R 2",
     rotate_tiles: bool = True,
     verbose: bool = True,
+    progress_callback=None,
+    cancel_event=None,
 ) -> Dict[str, Any]:
     """
     Stitch FLIM PTU tiles into a mosaic using your existing PTUFile class.
@@ -149,7 +151,14 @@ def stitch_flim_tiles(
     tiles_processed = 0
     tiles_skipped = 0
     
+    total_tiles = len(tile_positions)
     for i, t in enumerate(tqdm(tile_positions, desc='  Loading tiles')):
+        if cancel_event is not None and cancel_event.is_set():
+            if verbose:
+                print("\nStitching cancelled by user.")
+            break
+        if progress_callback is not None:
+            progress_callback(i, total_tiles)
         tile_path = ptu_dir / t["file"]
         
         if not tile_path.exists():

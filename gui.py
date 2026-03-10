@@ -1,0 +1,1136 @@
+#! /usr/bin/env python3
+#!/usr/bin/env python3
+"""
+gui.py – Tkinter GUI front-end for FLIMkit
+==========================================
+Lives at the PROJECT ROOT (alongside the flimkit/ package folder).
+
+Launch
+------
+  ./gui.py
+  python gui.py
+  python -m flimkit.gui   (also works if copied inside flimkit/)
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+import threading
+import argparse
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+from pathlib import Path
+from typing import Optional
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.image as mpimg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+from flimkit.utils.progress_window import ProgressWindow
+# ─────────────────────────────────────────────────────────────────────────────
+# Lazy config loader – deferred so flimkit.__init__ circular imports don't fire
+# at module load time.  Call _C()['key'] anywhere you need a config value.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_cfg: dict = {}
+
+
+def _C() -> dict:
+    if not _cfg:
+        from flimkit.configs import (
+            n_exp, Tau_min, Tau_max, D_mode, binning_factor,
+            MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population,
+            de_maxiter, n_workers, OUT_NAME, IRF_BINS, IRF_FIT_WIDTH,
+            IRF_FWHM, channels, TAU_DISPLAY_MIN, TAU_DISPLAY_MAX,
+            INTENSITY_DISPLAY_MIN, INTENSITY_DISPLAY_MAX,
+        )
+        _cfg.update(
+            n_exp=n_exp, Tau_min=Tau_min, Tau_max=Tau_max, D_mode=D_mode,
+            binning_factor=binning_factor, MIN_PHOTONS_PERPIX=MIN_PHOTONS_PERPIX,
+            Optimizer=Optimizer, lm_restarts=lm_restarts,
+            de_population=de_population, de_maxiter=de_maxiter,
+            n_workers=n_workers, OUT_NAME=OUT_NAME,
+            IRF_BINS=IRF_BINS, IRF_FIT_WIDTH=IRF_FIT_WIDTH, IRF_FWHM=IRF_FWHM,
+            channels=channels,
+            TAU_DISPLAY_MIN=TAU_DISPLAY_MIN, TAU_DISPLAY_MAX=TAU_DISPLAY_MAX,
+            INTENSITY_DISPLAY_MIN=INTENSITY_DISPLAY_MIN,
+            INTENSITY_DISPLAY_MAX=INTENSITY_DISPLAY_MAX,
+        )
+    return _cfg
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stdout capture
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _Redirect:
+    """Redirect stdout/stderr to a ScrolledText widget.
+
+    Handles ``\\r`` (carriage return) so tqdm-style progress bars update the
+    current line instead of stacking new ones.
+    """
+
+    def __init__(self, widget: scrolledtext.ScrolledText, buf: list):
+        self.widget   = widget
+        self.buf      = buf
+        self._at_sol  = True   # True when the cursor is at the start-of-line
+
+    def write(self, text: str):
+        if not text:
+            return
+        self.buf.append(text)
+        self.widget.configure(state="normal")
+
+        # Split on carriage-returns so we can overwrite the current line,
+        # giving tqdm-style progress bars a chance to render properly.
+        parts = text.split('\r')
+        for idx, part in enumerate(parts):
+            if idx > 0:
+                # \r: delete from the beginning of the current line to end
+                line_start = self.widget.index("end-1c linestart")
+                self.widget.delete(line_start, tk.END)
+                self._at_sol = True
+            if part:
+                self.widget.insert(tk.END, part)
+                self._at_sol = part.endswith('\n')
+
+        self.widget.see(tk.END)
+        self.widget.configure(state="disabled")
+        self.widget.update_idletasks()
+
+    def flush(self):
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fit summary parser  →  list of (parameter, value, unit)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_summary(text: str) -> list:
+    rows = []
+    lines = text.splitlines()
+
+    # Collect all summary-like lines, but only keep the last contiguous block
+    summary_lines = []
+    block = []
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            if block:
+                summary_lines.append(block)
+                block = []
+            continue
+        if (
+            re.match(r'τ\d\s*=.*ns', line) or
+            re.match(r'[αa]\d\s*=.*', line) or
+            re.match(r'f\d\s*=.*', line) or
+            'τ_mean' in line or
+            'chi2' in line.lower() or 'χ2' in line or 'χ²' in line or
+            'bg (fitted' in line or
+            'IRF' in line or
+            line.startswith(('⚠', '✓', 'Optimizer'))
+        ):
+            block.append(line)
+        else:
+            if block:
+                summary_lines.append(block)
+                block = []
+    if block:
+        summary_lines.append(block)
+
+    # Use only the last block
+    if not summary_lines:
+        return []
+    block = summary_lines[-1]
+
+    # Parse lines in canonical order
+    canonical = []
+    for line in block:
+        m = re.match(
+            r'τ(\d)\s*=\s*([\d.eE+\-]+)\s*ns.*[αa](\d)\s*=\s*([\d.eE+\-]+).*f(\d)\s*=\s*([\d.eE+\-]+)', line)
+        if m:
+            i = m.group(1)
+            canonical.append((f'τ{i}',              m.group(2), 'ns'))
+            canonical.append((f'α{i}  (amplitude)', m.group(4), 'counts'))
+            canonical.append((f'f{i}  (fraction)',  m.group(6), ''))
+            continue
+        m = re.match(r'(τ_mean\s*\([^)]+\))\s*=\s*([\d.eE+\-]+)\s*(ns)?', line)
+        if m:
+            canonical.append((m.group(1), m.group(2), m.group(3) or 'ns'))
+            continue
+        if 'chi2' in line.lower() or 'χ2' in line or 'χ²' in line:
+            m2 = re.match(r'(χ[²2][^\s=]*)\s*=\s*([\d.]+)', line)
+            if m2:
+                ctx = re.search(r'\[(.*?)\]', line)
+                key = m2.group(1) + (f'  [{ctx.group(1)}]' if ctx else '')
+                canonical.append((key, m2.group(2), ''))
+            continue
+        m = re.match(
+            r'([^\=]+?)\s*=\s*([\d.eE+\-]+)\s*(ns|bins|cts/bin|ps)?\s*'
+            r'(?:\(.*\))?$', line)
+        if m:
+            key = m.group(1).strip()
+            if key and not key[0].isdigit():
+                canonical.append((key, m.group(2), m.group(3) or ''))
+            continue
+        if line.startswith(('⚠', '✓', 'Optimizer')):
+            canonical.append((line, '', ''))
+
+    return canonical
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Layout helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+PAD = dict(padx=8, pady=4)
+
+
+def _browse_file(var, title="Select file", filetypes=(("All", "*.*"),)):
+    p = filedialog.askopenfilename(title=title, filetypes=filetypes)
+    if p:
+        var.set(p)
+
+
+def _browse_dir(var, title="Select directory"):
+    p = filedialog.askdirectory(title=title)
+    if p:
+        var.set(p)
+
+
+def _row(parent, label, var, row, browse_fn, width=45, state="normal"):
+    ttk.Label(parent, text=label).grid(
+        row=row, column=0, sticky="e", padx=6, pady=3)
+    e = ttk.Entry(parent, textvariable=var, width=width, state=state)
+    e.grid(row=row, column=1, sticky="ew", padx=4, pady=3)
+    ttk.Button(parent, text="Browse...", command=browse_fn).grid(
+        row=row, column=2, padx=4, pady=3)
+    return e
+
+
+def _section(parent, text: str) -> ttk.LabelFrame:
+    return ttk.LabelFrame(parent, text=f"  {text}  ", padding=(10, 6))
+
+
+def _tog(bvar: tk.BooleanVar, entry: ttk.Entry):
+    entry.configure(state="normal" if bvar.get() else "disabled")
+
+
+def _flt(sv: tk.StringVar) -> Optional[float]:
+    v = sv.get().strip()
+    return float(v) if v else None
+
+
+def _thresh(bvar: tk.BooleanVar, sv: tk.StringVar):
+    """Return threshold value, or None.  Never returns 'interactive' from the
+    GUI – the interactive matplotlib slider cannot run safely in a background
+    thread.  A blank entry simply disables the threshold."""
+    if not bvar.get():
+        return None
+    v = sv.get().strip()
+    return int(v) if v else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IRF sub-widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+class IRFWidget:
+    CHOICES = [
+        ("Leica analytical model (XLSX)  [recommended]", "irf_xlsx"),
+        ("Scatter PTU (measured IRF)",                   "file"),
+        ("Estimate from decay – raw",                    "raw"),
+        ("Estimate from decay – parametric",             "parametric"),
+        ("Gaussian (fallback)",                          "gaussian"),
+    ]
+
+    def __init__(self, parent, default="irf_xlsx", xlsx_var=None):
+        self.xlsx_var  = xlsx_var
+        self.sv_method = tk.StringVar(value=default)
+        self.sv_path   = tk.StringVar()
+
+        self.frame = _section(parent, "Instrument Response Function (IRF)")
+        self.frame.columnconfigure(1, weight=1)
+
+        for i, (lbl, val) in enumerate(self.CHOICES):
+            ttk.Radiobutton(self.frame, text=lbl, variable=self.sv_method,
+                            value=val, command=self._update).grid(
+                row=i, column=0, columnspan=3, sticky="w", padx=4, pady=1)
+
+        r = len(self.CHOICES)
+        self._path_lbl = ttk.Label(self.frame, text="IRF / XLSX path")
+        self._path_lbl.grid(row=r, column=0, sticky="e", padx=6, pady=3)
+        self._path_e = ttk.Entry(self.frame, textvariable=self.sv_path, width=45)
+        self._path_e.grid(row=r, column=1, sticky="ew", padx=4, pady=3)
+        self._path_btn = ttk.Button(
+            self.frame, text="Browse...",
+            command=lambda: _browse_file(
+                self.sv_path, "Select IRF file",
+                [("PTU / XLSX", "*.ptu *.xlsx"), ("All", "*.*")]))
+        self._path_btn.grid(row=r, column=2, padx=4, pady=3)
+
+        self._note = ttk.Label(
+            self.frame,
+            text="Uses the XLSX entered in Input Files above",
+            foreground="grey")
+        self._note.grid(row=r, column=0, columnspan=3, sticky="w", padx=8, pady=3)
+
+        self._update()
+
+    def _show_browse(self):
+        self._path_lbl.grid()
+        self._path_e.grid()
+        self._path_btn.grid()
+        self._note.grid_remove()
+
+    def _show_note(self):
+        self._path_lbl.grid_remove()
+        self._path_e.grid_remove()
+        self._path_btn.grid_remove()
+        self._note.grid()
+
+    def _hide_all(self):
+        self._path_lbl.grid_remove()
+        self._path_e.grid_remove()
+        self._path_btn.grid_remove()
+        self._note.grid_remove()
+
+    def _update(self):
+        method = self.sv_method.get()
+        if method == "irf_xlsx":
+            self._show_note() if self.xlsx_var is not None else self._show_browse()
+        elif method == "file":
+            self._show_browse()
+        else:
+            self._hide_all()
+
+    def grid(self, **kw):
+        self.frame.grid(**kw)
+
+    def get_args(self, xlsx_fallback: Optional[str] = None) -> dict:
+        method = self.sv_method.get()
+        path   = self.sv_path.get().strip() or None
+        if method == "irf_xlsx":
+            xlsx = (self.xlsx_var.get().strip() if self.xlsx_var else None) \
+                   or xlsx_fallback or path
+            return dict(irf=None, irf_xlsx=xlsx, estimate_irf="none", no_xlsx_irf=False)
+        elif method == "file":
+            return dict(irf=path, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True)
+        elif method in ("raw", "parametric"):
+            return dict(irf=None, irf_xlsx=None, estimate_irf=method, no_xlsx_irf=True)
+        else:
+            return dict(irf=None, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Results panel  –  Progress  |  Fit Summary  |  Images
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ResultsPanel:
+
+    def __init__(self, parent):
+        self.frame = ttk.Frame(parent)
+        self.frame.columnconfigure(0, weight=1)
+        self.frame.rowconfigure(0, weight=1)
+
+        self._nb = ttk.Notebook(self.frame)
+        self._nb.grid(row=0, column=0, sticky="nsew")
+
+        self._build_progress()
+        self._build_summary()
+        self._build_images()
+
+        self._status = tk.StringVar(value="Ready.")
+        ttk.Label(self.frame, textvariable=self._status, foreground="grey").grid(
+            row=1, column=0, sticky="w", padx=4, pady=(2, 4))
+
+    # ── Progress ─────────────────────────────────────────────────────────────
+
+    def _build_progress(self):
+        f = ttk.Frame(self._nb, padding=4)
+        self._nb.add(f, text="  Progress  ")
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(0, weight=1)
+        self.log = scrolledtext.ScrolledText(
+            f, state="disabled", height=12, wrap="word",
+            font=("Courier", 9), background="#1e1e1e", foreground="#d4d4d4")
+        self.log.grid(row=0, column=0, sticky="nsew")
+
+        btn_bar = ttk.Frame(f)
+        btn_bar.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Button(btn_bar, text="Save log…", command=self._save_log).pack(side="left",  padx=4)
+        ttk.Button(btn_bar, text="Clear log", command=self._clear_log).pack(side="right", padx=4)
+
+    def _clear_log(self):
+        self.log.configure(state="normal")
+        self.log.delete("1.0", tk.END)
+        self.log.configure(state="disabled")
+
+    def _save_log(self):
+        text = self.log.get("1.0", tk.END)
+        if not text.strip():
+            messagebox.showinfo("Nothing to save", "The log is empty.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save log as…",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All", "*.*")])
+        if path:
+            Path(path).write_text(text, encoding="utf-8")
+            self._status.set(f"Log saved → {Path(path).name}")
+
+    # ── Fit Summary ───────────────────────────────────────────────────────────
+
+    def _build_summary(self):
+        f = ttk.Frame(self._nb, padding=4)
+        self._nb.add(f, text="  Fit Summary  ")
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(0, weight=1)
+
+        cols = ("Parameter", "Value", "Unit")
+        tv = ttk.Treeview(f, columns=cols, show="headings", height=16)
+        tv.heading("Parameter", text="Parameter", anchor="w")
+        tv.heading("Value",     text="Value",     anchor="e")
+        tv.heading("Unit",      text="Unit",      anchor="w")
+        tv.column("Parameter", width=300, anchor="w", stretch=True)
+        tv.column("Value",     width=110, anchor="e", stretch=False)
+        tv.column("Unit",      width=70,  anchor="w", stretch=False)
+
+        sb = ttk.Scrollbar(f, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+
+        tv.tag_configure("odd",  background="#f5f7fa")
+        tv.tag_configure("even", background="#ffffff")
+        tv.tag_configure("warn", foreground="#c0550a", background="#fff8f0")
+        self._tv = tv
+
+    def populate_summary(self, rows: list):
+        for item in self._tv.get_children():
+            self._tv.delete(item)
+        for i, (param, val, unit) in enumerate(rows):
+            tag = "warn" if param.startswith('⚠') else ("odd" if i % 2 else "even")
+            self._tv.insert("", tk.END, values=(param, val, unit), tags=(tag,))
+        if rows:
+            self._nb.select(1)
+
+    # ── Images (matplotlib) ───────────────────────────────────────────────────
+
+    def _build_images(self):
+        f = ttk.Frame(self._nb, padding=4)
+        self._nb.add(f, text="  Images  ")
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(1, weight=1)
+
+        ctrl = ttk.Frame(f)
+        ctrl.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ttk.Button(ctrl, text="← Prev",       command=self._img_prev).pack(side="left",  padx=4)
+        ttk.Button(ctrl, text="Next →",       command=self._img_next).pack(side="left",  padx=4)
+        ttk.Button(ctrl, text="Save image…",  command=self._save_img).pack(side="left",  padx=4)
+        ttk.Button(ctrl, text="Save all…",    command=self._save_all_imgs).pack(side="left",  padx=4)
+        ttk.Button(ctrl, text="Open folder",  command=self._open_folder).pack(side="right", padx=4)
+        self._img_lbl = tk.StringVar(value="No images yet")
+        ttk.Label(ctrl, textvariable=self._img_lbl).pack(side="left", padx=8)
+
+        self._fig = Figure(figsize=(6, 4), dpi=100, facecolor="#2b2b2b")
+        self._ax  = self._fig.add_subplot(111)
+        self._ax.set_facecolor("#2b2b2b")
+        self._ax.axis("off")
+
+        self._canvas_mpl = FigureCanvasTkAgg(self._fig, master=f)
+        self._canvas_mpl.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+
+        self._imgs: list         = []
+        self._img_i: int         = 0
+        self._folder: Optional[str] = None
+
+    def load_images(self, folder: Optional[str]):
+        self._imgs = []
+        if folder and Path(folder).is_dir():
+            self._folder = folder
+            for pat in ("*.png", "*.tif", "*.tiff"):
+                self._imgs += sorted(Path(folder).glob(pat))
+        self._img_i = 0
+        self._draw_img()
+        if self._imgs:
+            self._nb.select(2)
+
+    def _draw_img(self):
+        self._ax.cla()
+        self._ax.set_facecolor("#2b2b2b")
+        self._ax.axis("off")
+        if not self._imgs:
+            self._img_lbl.set("No images found")
+            self._ax.text(0.5, 0.5, "No images found",
+                          ha="center", va="center", color="grey", fontsize=11,
+                          transform=self._ax.transAxes)
+        else:
+            path = self._imgs[self._img_i]
+            self._img_lbl.set(f"{path.name}  ({self._img_i + 1}/{len(self._imgs)})")
+            try:
+                img = mpimg.imread(str(path))
+                self._ax.imshow(img, aspect="equal")
+            except Exception as e:
+                self._ax.text(0.5, 0.5, f"Cannot load image:\n{e}",
+                              ha="center", va="center", color="red",
+                              fontsize=9, transform=self._ax.transAxes)
+        self._fig.tight_layout(pad=0.3)
+        self._canvas_mpl.draw_idle()
+
+    def _img_prev(self):
+        if self._imgs:
+            self._img_i = (self._img_i - 1) % len(self._imgs)
+            self._draw_img()
+
+    def _img_next(self):
+        if self._imgs:
+            self._img_i = (self._img_i + 1) % len(self._imgs)
+            self._draw_img()
+
+    def _save_img(self):
+        """Save the currently displayed image to a user-chosen file."""
+        if not self._imgs:
+            messagebox.showinfo("No image", "No image is currently displayed.")
+            return
+        src = self._imgs[self._img_i]
+        path = filedialog.asksaveasfilename(
+            title="Save current image as…",
+            initialfile=src.name,
+            defaultextension=src.suffix,
+            filetypes=[
+                ("PNG",  "*.png"),
+                ("TIFF", "*.tif *.tiff"),
+                ("All",  "*.*"),
+            ])
+        if path:
+            import shutil
+            shutil.copy2(str(src), path)
+            self._status.set(f"Image saved → {Path(path).name}")
+
+    def _save_all_imgs(self):
+        """Copy all output images to a user-chosen directory."""
+        if not self._imgs:
+            messagebox.showinfo("No images", "No images are available to save.")
+            return
+        dest = filedialog.askdirectory(title="Save all images to…")
+        if not dest:
+            return
+        import shutil
+        dest_path = Path(dest)
+        for img in self._imgs:
+            shutil.copy2(str(img), str(dest_path / img.name))
+        self._status.set(f"{len(self._imgs)} image(s) saved → {dest_path.name}/")
+
+    def _open_folder(self):
+        import subprocess, platform
+        if not self._folder or not Path(self._folder).exists():
+            messagebox.showinfo("No folder", "No output folder available yet.")
+            return
+        s = platform.system()
+        if   s == "Darwin":  subprocess.Popen(["open",     self._folder])
+        elif s == "Windows": subprocess.Popen(["explorer", self._folder])
+        else:                subprocess.Popen(["xdg-open", self._folder])
+
+    def set_status(self, msg: str):
+        self._status.set(msg)
+
+    def grid(self, **kw):
+        self.frame.grid(**kw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main GUI
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FLIMKitGUI:
+
+    def run_with_progress(self, task_fn, task_name="Working…", on_done=None):
+        """Run a function in a thread, showing a pop-out progress window with cancel."""
+        win = ProgressWindow(self.root, task_name=task_name)
+        cancel_event = win.cancelled
+
+        def progress_callback(i, total):
+            win.set_progress(i, maximum=total)
+            if cancel_event.is_set():
+                win.set_status("Cancelling…")
+
+        def worker():
+            # Redirect stdout/stderr to GUI buffer for this thread
+            orig_stdout, orig_stderr = sys.stdout, sys.stderr
+            redir = _Redirect(self._res.log, self._buf)
+            sys.stdout = redir
+            sys.stderr = redir
+            try:
+                result = task_fn(progress_callback, cancel_event)
+                self.root.after(0, lambda: win.close())
+                if on_done:
+                    self.root.after(0, lambda: on_done(result))
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self.root.after(0, lambda: win.set_status(f"Error: {exc}"))
+                self.root.after(0, lambda: win.btn_cancel.config(text="Close", command=win.close))
+            finally:
+                sys.stdout = orig_stdout
+                sys.stderr = orig_stderr
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        root.title("FLIMkit Analysis GUI")
+        root.resizable(True, True)
+        root.minsize(760, 700)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(1, weight=1)
+
+        self._buf: list = []
+
+        self._nb = ttk.Notebook(root)
+        self._nb.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
+
+        self._build_fov_tab()
+        self._build_stitch_tab()
+        self._build_phasor_tab()
+
+        self._res = ResultsPanel(root)
+        self._res.grid(row=1, column=0, sticky="nsew", padx=10, pady=(6, 10))
+
+        redir = _Redirect(self._res.log, self._buf)
+        sys.stdout = redir
+        sys.stderr = redir
+
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 1 – Single-FOV FLIM fit
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _build_fov_tab(self):
+        tab = ttk.Frame(self._nb, padding=10)
+        self._nb.add(tab, text="  Single FOV Fit  ")
+        tab.columnconfigure(0, weight=1)
+
+        ff = _section(tab, "Input Files")
+        ff.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ff.columnconfigure(1, weight=1)
+        self.sv_ptu  = tk.StringVar()
+        self.sv_xlsx = tk.StringVar()
+        _row(ff, "PTU file *", self.sv_ptu, 0,
+             lambda: _browse_file(self.sv_ptu, "PTU file",
+                                  [("PTU", "*.ptu"), ("All", "*.*")]))
+        _row(ff, "XLSX file (optional)", self.sv_xlsx, 1,
+             lambda: _browse_file(self.sv_xlsx, "XLSX file",
+                                  [("Excel", "*.xlsx"), ("All", "*.*")]))
+
+        self._irf_fov = IRFWidget(tab, default="irf_xlsx", xlsx_var=self.sv_xlsx)
+        self._irf_fov.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+
+        fp = _section(tab, "Fitting Parameters")
+        fp.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+
+        ttk.Label(fp, text="Exponential components:").grid(
+            row=0, column=0, sticky="w", **PAD)
+        self.iv_nexp_fov = tk.IntVar(value=2)
+        for n in (1, 2, 3):
+            ttk.Radiobutton(fp, text=str(n), variable=self.iv_nexp_fov,
+                            value=n).grid(row=0, column=n, sticky="w", padx=4)
+
+        ttk.Label(fp, text="Fitting mode:").grid(row=1, column=0, sticky="w", **PAD)
+        self.sv_mode_fov = tk.StringVar(value="summed")
+        for c, (lbl, val) in enumerate(
+                [("Summed only", "summed"), ("Per-pixel", "perPixel"), ("Both", "both")], 1):
+            ttk.Radiobutton(fp, text=lbl, variable=self.sv_mode_fov,
+                            value=val).grid(row=1, column=c, sticky="w", padx=4)
+
+        ttk.Label(fp, text="Output prefix:").grid(row=2, column=0, sticky="w", **PAD)
+        self.sv_out_fov = tk.StringVar(value="flim_out")
+        ttk.Entry(fp, textvariable=self.sv_out_fov, width=35).grid(
+            row=2, column=1, columnspan=3, sticky="ew", padx=4)
+
+        fm = _section(tab, "Masking & Thresholding")
+        fm.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+
+        self.bv_cell = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fm, text="Apply cell mask (Otsu on intensity image)",
+                        variable=self.bv_cell).grid(
+            row=0, column=0, columnspan=3, sticky="w", **PAD)
+
+        self.bv_thr_fov = tk.BooleanVar(value=False)
+        self.sv_thr_fov = tk.StringVar()
+        ttk.Checkbutton(fm, text="Intensity threshold (min photons/px):",
+                        variable=self.bv_thr_fov,
+                        command=lambda: _tog(self.bv_thr_fov, self._thr_fov_e)).grid(
+            row=1, column=0, sticky="w", **PAD)
+        self._thr_fov_e = ttk.Entry(fm, textvariable=self.sv_thr_fov,
+                                    width=8, state="disabled")
+        self._thr_fov_e.grid(row=1, column=1, sticky="w", padx=4)
+        ttk.Label(fm, text="(leave blank for no threshold)",
+                  foreground="grey").grid(row=1, column=2, sticky="w")
+
+        self._btn_fov = ttk.Button(tab, text="▶  Run Single-FOV Fit",
+                                   command=self._run_fov)
+        self._btn_fov.grid(row=4, column=0, pady=8, ipadx=20, ipady=4)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 2 – Tile Stitch  ±  Fit
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _build_stitch_tab(self):
+        tab = ttk.Frame(self._nb, padding=10)
+        self._nb.add(tab, text="  Tile Stitch / Stitch + Fit  ")
+        tab.columnconfigure(0, weight=1)
+
+        ff = _section(tab, "Input Files")
+        ff.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ff.columnconfigure(1, weight=1)
+        self.sv_xlif    = tk.StringVar()
+        self.sv_ptu_dir = tk.StringVar()
+        self.sv_out_st  = tk.StringVar()
+
+        _row(ff, "XLIF metadata *",      self.sv_xlif,    0,
+             lambda: _browse_file(self.sv_xlif, "XLIF file",
+                                  [("XLIF", "*.xlif"), ("All", "*.*")]))
+        _row(ff, "PTU tile directory *", self.sv_ptu_dir, 1,
+             lambda: _browse_dir(self.sv_ptu_dir, "PTU tile directory"))
+        _row(ff, "Base output dir *",    self.sv_out_st,  2,
+             lambda: _browse_dir(self.sv_out_st, "Output directory"))
+
+        ttk.Label(ff, text="(A sub-folder named after the ROI will be created inside)",
+                  foreground="grey").grid(row=3, column=1, columnspan=2,
+                                         sticky="w", padx=4)
+        self.bv_rotate = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ff, text="Rotate tiles 90° CW (recommended for Leica)",
+                        variable=self.bv_rotate).grid(
+            row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(4, 0))
+
+        self.bv_do_fit = tk.BooleanVar(value=False)
+        ttk.Checkbutton(tab, text="Also perform FLIM fitting after stitching",
+                        variable=self.bv_do_fit,
+                        command=self._fit_toggled).grid(
+            row=1, column=0, sticky="w", padx=6, pady=(4, 2))
+
+        self._fit_frame = ttk.Frame(tab)
+        self._fit_frame.columnconfigure(0, weight=1)
+        self._fit_frame.grid(row=2, column=0, sticky="ew")
+        self._build_stitch_fit(self._fit_frame)
+        self._fit_frame.grid_remove()
+
+        self._btn_st = ttk.Button(tab, text="▶  Run Tile Stitch",
+                                  command=self._run_stitch)
+        self._btn_st.grid(row=3, column=0, pady=8, ipadx=20, ipady=4)
+
+    def _build_stitch_fit(self, parent):
+        self._irf_st = IRFWidget(parent, default="irf_xlsx")
+        self._irf_st.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self._irf_st.frame.columnconfigure(1, weight=1)
+
+        fp = _section(parent, "Fitting Parameters")
+        fp.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+
+        ttk.Label(fp, text="Exponential components:").grid(
+            row=0, column=0, sticky="w", **PAD)
+        self.iv_nexp_st = tk.IntVar(value=2)
+        for n in (1, 2, 3):
+            ttk.Radiobutton(fp, text=str(n), variable=self.iv_nexp_st,
+                            value=n).grid(row=0, column=n, sticky="w", padx=4)
+
+        self.bv_perpix = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fp, text="Per-pixel fitting (produces lifetime maps; slower)",
+                        variable=self.bv_perpix,
+                        command=self._perpix_toggled).grid(
+            row=1, column=0, columnspan=4, sticky="w", **PAD)
+
+        self._pxf = ttk.Frame(fp)
+        self._pxf.grid(row=2, column=0, columnspan=4, sticky="ew", padx=20)
+
+
+        # Weighted map export options
+        self.bv_save_tau_weighted = tk.BooleanVar(value=True)
+        self.bv_save_int_weighted = tk.BooleanVar(value=True)
+        self.bv_save_amp_weighted = tk.BooleanVar(value=False)
+        self.bv_save_ind = tk.BooleanVar(value=False)
+
+        ttk.Checkbutton(self._pxf, text="Export τ-weighted map",
+                        variable=self.bv_save_tau_weighted).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(self._pxf, text="Export intensity-weighted map",
+                        variable=self.bv_save_int_weighted).grid(row=0, column=1, sticky="w")
+        ttk.Checkbutton(self._pxf, text="Export amplitude-weighted map",
+                        variable=self.bv_save_amp_weighted).grid(row=0, column=2, sticky="w")
+        ttk.Checkbutton(self._pxf, text="Save individual component maps (τ₁, τ₂, a₁, a₂)",
+                        variable=self.bv_save_ind).grid(row=0, column=3, sticky="w")
+
+        self.sv_tau_lo = tk.StringVar()
+        self.sv_tau_hi = tk.StringVar()
+        self.sv_int_lo = tk.StringVar()
+        self.sv_int_hi = tk.StringVar()
+
+        # Range controls for weighted maps
+        ttk.Label(self._pxf, text="Lifetime display (ns):").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_tau_lo, width=7).grid(row=1, column=1, padx=4)
+        ttk.Label(self._pxf, text="to").grid(row=1, column=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_tau_hi, width=7).grid(row=1, column=3, padx=4)
+        ttk.Label(self._pxf, text="(blank = auto)", foreground="grey").grid(row=1, column=4, padx=4)
+
+        ttk.Label(self._pxf, text="Intensity display:").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_int_lo, width=7).grid(row=2, column=1, padx=4)
+        ttk.Label(self._pxf, text="to").grid(row=2, column=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_int_hi, width=7).grid(row=2, column=3, padx=4)
+        ttk.Label(self._pxf, text="(blank = auto)", foreground="grey").grid(row=2, column=4, padx=4)
+
+        self._pxf.grid_remove()
+
+        fm = _section(parent, "Masking & Thresholding")
+        fm.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+
+        self.bv_thr_st = tk.BooleanVar(value=False)
+        self.sv_thr_st = tk.StringVar()
+        ttk.Checkbutton(fm, text="Intensity threshold (min photons/px):",
+                        variable=self.bv_thr_st,
+                        command=lambda: _tog(self.bv_thr_st, self._thr_st_e)).grid(
+            row=0, column=0, sticky="w", **PAD)
+        self._thr_st_e = ttk.Entry(fm, textvariable=self.sv_thr_st,
+                                   width=8, state="disabled")
+        self._thr_st_e.grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(fm, text="(leave blank for no threshold)",
+                  foreground="grey").grid(row=0, column=2, sticky="w")
+
+    def _fit_toggled(self):
+        if self.bv_do_fit.get():
+            self._fit_frame.grid()
+            self._btn_st.configure(text="▶  Run Stitch + Fit")
+        else:
+            self._fit_frame.grid_remove()
+            self._btn_st.configure(text="▶  Run Tile Stitch")
+
+    def _perpix_toggled(self):
+        if self.bv_perpix.get():
+            self._pxf.grid()
+        else:
+            self._pxf.grid_remove()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 3 – Phasor
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _build_phasor_tab(self):
+        tab = ttk.Frame(self._nb, padding=10)
+        self._nb.add(tab, text="  Phasor Analysis  ")
+        tab.columnconfigure(0, weight=1)
+
+        fm = _section(tab, "Input Mode")
+        fm.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        fm.columnconfigure(1, weight=1)
+
+        self.sv_ph_mode = tk.StringVar(value="new")
+        ttk.Radiobutton(fm, text="Analyse a new PTU file",
+                        variable=self.sv_ph_mode, value="new",
+                        command=self._ph_mode_changed).grid(
+            row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Radiobutton(fm, text="Resume a saved session (.npz)",
+                        variable=self.sv_ph_mode, value="session",
+                        command=self._ph_mode_changed).grid(
+            row=1, column=0, sticky="w", padx=4, pady=2)
+
+        self._ph_new = ttk.Frame(tab)
+        self._ph_new.columnconfigure(0, weight=1)
+        self._ph_new.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        fn = _section(self._ph_new, "New Analysis")
+        fn.grid(row=0, column=0, sticky="ew")
+        fn.columnconfigure(1, weight=1)
+        self.sv_ph_ptu = tk.StringVar()
+        self.sv_ph_irf = tk.StringVar()
+        _row(fn, "PTU file *",          self.sv_ph_ptu, 0,
+             lambda: _browse_file(self.sv_ph_ptu, "PTU file",
+                                  [("PTU", "*.ptu"), ("All", "*.*")]))
+        _row(fn, "IRF XLSX (optional)", self.sv_ph_irf, 1,
+             lambda: _browse_file(self.sv_ph_irf, "IRF XLSX",
+                                  [("Excel", "*.xlsx"), ("All", "*.*")]))
+
+        self._ph_sess = ttk.Frame(tab)
+        self._ph_sess.columnconfigure(0, weight=1)
+        self._ph_sess.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        fs = _section(self._ph_sess, "Resume Session")
+        fs.grid(row=0, column=0, sticky="ew")
+        fs.columnconfigure(1, weight=1)
+        self.sv_ph_session = tk.StringVar()
+        _row(fs, "Session file (.npz) *", self.sv_ph_session, 0,
+             lambda: _browse_file(self.sv_ph_session, "Session file",
+                                  [("NPZ", "*.npz"), ("All", "*.*")]))
+        self._ph_sess.grid_remove()
+
+        fo = _section(tab, "Display Options")
+        fo.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(fo, text="Min photons (fraction):").grid(
+            row=0, column=0, sticky="w", **PAD)
+        self.sv_ph_minph = tk.StringVar(value="0.01")
+        ttk.Entry(fo, textvariable=self.sv_ph_minph, width=8).grid(
+            row=0, column=1, sticky="w", padx=4)
+        ttk.Label(fo, text="Max cursors:").grid(row=0, column=2, sticky="w", padx=8)
+        self.sv_ph_maxc = tk.StringVar(value="6")
+        ttk.Entry(fo, textvariable=self.sv_ph_maxc, width=4).grid(
+            row=0, column=3, sticky="w", padx=4)
+        ttk.Label(fo,
+                  text="The phasor tool opens in its own interactive matplotlib window.",
+                  foreground="grey").grid(
+            row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(4, 0))
+
+        self._btn_ph = ttk.Button(tab, text="▶  Launch Phasor Tool",
+                                  command=self._run_phasor)
+        self._btn_ph.grid(row=4, column=0, pady=8, ipadx=20, ipady=4)
+
+    def _ph_mode_changed(self):
+        if self.sv_ph_mode.get() == "new":
+            self._ph_new.grid()
+            self._ph_sess.grid_remove()
+        else:
+            self._ph_new.grid_remove()
+            self._ph_sess.grid()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Run handlers – flimkit imports happen here, safely after package init
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _run_fov(self):
+        ptu = self.sv_ptu.get().strip()
+        if not ptu or not Path(ptu).exists():
+            messagebox.showerror("Missing input", "Please select a valid PTU file.")
+            return
+
+        from flimkit.interactive import _run_flim_fit
+
+        cfg = _C()
+        irf = self._irf_fov.get_args(xlsx_fallback=self.sv_xlsx.get().strip())
+
+        a = argparse.Namespace()
+        a.ptu           = ptu
+        a.xlsx          = self.sv_xlsx.get().strip() or None
+        a.debug_xlsx    = False
+        a.print_config  = False
+        a.irf           = irf["irf"]
+        a.irf_xlsx      = irf["irf_xlsx"]
+        a.estimate_irf  = irf["estimate_irf"]
+        a.no_xlsx_irf   = irf["no_xlsx_irf"]
+        a.irf_bins      = cfg["IRF_BINS"]
+        a.irf_fit_width = cfg["IRF_FIT_WIDTH"]
+        a.irf_fwhm      = cfg["IRF_FWHM"]
+        a.nexp          = self.iv_nexp_fov.get()
+        a.tau_min       = cfg["Tau_min"]
+        a.tau_max       = cfg["Tau_max"]
+        a.mode          = self.sv_mode_fov.get()
+        a.binning       = cfg["binning_factor"]
+        a.min_photons   = cfg["MIN_PHOTONS_PERPIX"]
+        a.optimizer     = cfg["Optimizer"]
+        a.restarts      = cfg["lm_restarts"]
+        a.de_population = cfg["de_population"]
+        a.de_maxiter    = cfg["de_maxiter"]
+        a.workers       = cfg["n_workers"]
+        a.no_polish     = False
+        a.channel       = cfg["channels"]
+        a.out           = self.sv_out_fov.get().strip() or cfg["OUT_NAME"]
+        a.no_plots      = False
+        a.cell_mask     = self.bv_cell.get()
+        a.intensity_threshold = _thresh(self.bv_thr_fov, self.sv_thr_fov)
+
+        out_dir = str(Path(a.out).parent) \
+                  if Path(a.out).parent != Path(".") \
+                  else str(Path(ptu).parent)
+        self._launch(lambda: _run_flim_fit(a), out_dir)
+
+    def _run_stitch(self):
+        xlif     = self.sv_xlif.get().strip()
+        ptu_dir  = self.sv_ptu_dir.get().strip()
+        out_base = self.sv_out_st.get().strip()
+
+        for val, name in [(xlif, "XLIF file"),
+                          (ptu_dir, "PTU directory"),
+                          (out_base, "Output directory")]:
+            if not val:
+                messagebox.showerror("Missing input", f"Please specify the {name}.")
+                return
+
+        from flimkit.PTU.stitch import stitch_flim_tiles
+        from flimkit.interactive import _run_stitch_and_fit
+
+        roi_name   = Path(xlif).stem.replace(" ", "_")
+        output_dir = str(Path(out_base) / roi_name)
+
+        a = argparse.Namespace()
+        a.xlif         = xlif
+        a.ptu_dir      = ptu_dir
+        a.output_dir   = output_dir
+        a.ptu_basename = Path(xlif).stem
+        a.rotate_tiles = self.bv_rotate.get()
+
+        # Always fill in all advanced options, so both workflows get them
+        cfg = _C()
+        irf = self._irf_st.get_args()
+        a.irf           = irf["irf"]
+        a.irf_xlsx      = irf["irf_xlsx"]
+        a.estimate_irf  = irf["estimate_irf"] if irf["estimate_irf"] != "none" else "gaussian"
+        a.nexp          = self.iv_nexp_st.get()
+        a.tau_min       = cfg["Tau_min"]
+        a.tau_max       = cfg["Tau_max"]
+        a.mode          = "both" if self.bv_perpix.get() else "summed"
+        a.binning       = cfg["binning_factor"]
+        a.min_photons   = cfg["MIN_PHOTONS_PERPIX"]
+        a.optimizer     = "de"
+        a.restarts      = cfg["lm_restarts"]
+        a.de_population = cfg["de_population"]
+        a.de_maxiter    = cfg["de_maxiter"]
+        a.workers       = cfg["n_workers"]
+        a.no_polish     = False
+        a.channel       = cfg["channels"]
+        a.irf_fwhm      = cfg["IRF_FWHM"]
+        a.irf_bins      = cfg["IRF_BINS"]
+        a.irf_fit_width = cfg["IRF_FIT_WIDTH"]
+        a.no_plots      = False
+        a.save_individual        = self.bv_save_ind.get()
+        a.save_tau_weighted      = self.bv_save_tau_weighted.get()
+        a.save_int_weighted      = self.bv_save_int_weighted.get()
+        a.save_amp_weighted      = self.bv_save_amp_weighted.get()
+        a.tau_display_min        = _flt(self.sv_tau_lo)
+        a.tau_display_max        = _flt(self.sv_tau_hi)
+        a.intensity_display_min  = _flt(self.sv_int_lo)
+        a.intensity_display_max  = _flt(self.sv_int_hi)
+        a.intensity_threshold    = _thresh(self.bv_thr_st, self.sv_thr_st)
+
+        def on_done(result):
+            self._set_buttons("normal")
+            self._res.set_status("✓  Stitching complete.")
+            self._res._nb.select(0)
+            # Parse fit summary from captured output and display in summary tab
+            captured = "".join(self._buf)
+            rows = _parse_summary(captured)
+            if rows:
+                self._res.populate_summary(rows)
+            # Optionally: load images, update log, etc.
+
+        def task(progress_callback, cancel_event):
+            if not self.bv_do_fit.get():
+                # Tile stitching only
+                return stitch_flim_tiles(
+                    xlif_path=a.xlif,
+                    ptu_dir=a.ptu_dir,
+                    output_dir=a.output_dir,
+                    ptu_basename=a.ptu_basename,
+                    rotate_tiles=a.rotate_tiles,
+                    verbose=True,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                )
+            else:
+                # Stitch + fit: pass progress/cancel to stitch, then fit
+                return _run_stitch_and_fit(a, progress_callback=progress_callback, cancel_event=cancel_event)
+
+        self._set_buttons("disabled")
+        self.run_with_progress(task, task_name="Stitching", on_done=on_done)
+
+    def _run_phasor(self):
+        try:
+            min_ph  = float(self.sv_ph_minph.get() or 0.01)
+            max_cur = int(self.sv_ph_maxc.get()    or 6)
+        except ValueError:
+            messagebox.showerror("Invalid input",
+                                 "Min photons and max cursors must be numeric.")
+            return
+
+        from flimkit.phasor_launcher import launch_phasor
+
+        if self.sv_ph_mode.get() == "new":
+            ptu = self.sv_ph_ptu.get().strip()
+            if not ptu or not Path(ptu).exists():
+                messagebox.showerror("Missing input", "Please select a valid PTU file.")
+                return
+            irf = self.sv_ph_irf.get().strip() or None
+            fn  = lambda: launch_phasor(ptu_path=ptu, irf_path=irf,
+                                        min_photons=min_ph, max_cursors=max_cur)
+        else:
+            sess = self.sv_ph_session.get().strip()
+            if not sess or not Path(sess).exists():
+                messagebox.showerror("Missing input",
+                                     "Please select a valid .npz session file.")
+                return
+            fn = lambda: launch_phasor(session_path=sess,
+                                       min_photons=min_ph, max_cursors=max_cur)
+
+        # ── The phasor tool opens its own matplotlib figure via plt.show(),
+        #    which requires the main Tk thread.  We call it directly here
+        #    (inside a Tk callback) so TkAgg drives it as a normal Toplevel.
+        #    The main GUI window stays open; its buttons are re-enabled once
+        #    the phasor window is closed.
+        self._set_buttons("disabled")
+        self._res.set_status("⏳  Phasor tool running…  (close the phasor window to return)")
+        self._res._nb.select(0)
+        try:
+            fn()
+            self._res.set_status("✓  Phasor tool closed.")
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            self._res.set_status(f"✗  Phasor error: {exc}")
+            messagebox.showerror("Phasor error", str(exc))
+        finally:
+            self._set_buttons("normal")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Thread runner
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _launch(self, fn, output_dir=None):
+        self._buf.clear()
+        self._set_buttons("disabled")
+        self._res.set_status("⏳  Running...")
+        self._res._nb.select(0)
+
+        def _worker():
+            try:
+                fn()
+                captured = "".join(self._buf)
+                rows     = _parse_summary(captured)
+                self.root.after(0, lambda: self._on_done(rows, output_dir))
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self.root.after(0, lambda: self._res.set_status(f"✗  Error: {exc}"))
+            finally:
+                self.root.after(0, lambda: self._set_buttons("normal"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_done(self, rows, output_dir):
+        self._res.set_status("✓  Finished.")
+        if rows:
+            self._res.populate_summary(rows)
+        if output_dir:
+            self._res.load_images(output_dir)
+
+    def _set_buttons(self, state):
+        for btn in (self._btn_fov, self._btn_st, self._btn_ph):
+            btn.configure(state=state)
+
+    def _on_close(self):
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+        self.root.destroy()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def launch_gui():
+    root = tk.Tk()
+    style = ttk.Style(root)
+    for theme in ("clam", "alt", "default"):
+        if theme in style.theme_names():
+            style.theme_use(theme)
+            break
+    FLIMKitGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    launch_gui()

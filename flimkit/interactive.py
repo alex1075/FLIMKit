@@ -258,14 +258,12 @@ def _run_tile_stitch(args):
     return result
 
 
-def _run_stitch_and_fit(args):
+def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
     """Execute combined stitch + fit workflow."""
-    
     # Step 1: Stitch tiles
     print(f"\n{'='*60}")
     print(f"  STEP 1: TILE STITCHING")
     print(f"{'='*60}")
-    
     stitch_result = stitch_flim_tiles(
         xlif_path=Path(args.xlif),
         ptu_dir=Path(args.ptu_dir),
@@ -273,6 +271,8 @@ def _run_stitch_and_fit(args):
         ptu_basename=args.ptu_basename,
         rotate_tiles=args.rotate_tiles,
         verbose=True,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
     )
     
     if stitch_result['tiles_processed'] == 0:
