@@ -215,7 +215,11 @@ def save_assembled_maps(
         f.write("PER-TILE FIT — GLOBAL TAU SUMMARY\n")
         f.write("=" * 60 + "\n\n")
         f.write(f"ROI: {roi_name}\n")
-        f.write(f"Pixels fitted: {global_summary.get('n_pixels_fitted', 'N/A'):,}\n\n")
+        n_pixels_fitted = global_summary.get('n_pixels_fitted', 'N/A')
+        if isinstance(n_pixels_fitted, int):
+            f.write(f"Pixels fitted: {n_pixels_fitted:,}\n\n")
+        else:
+            f.write(f"Pixels fitted: {n_pixels_fitted}\n\n")
         f.write("Amplitude-weighted mean lifetime (global):\n")
         f.write(f"  tau_mean  = {global_summary.get('tau_mean_amp_global_ns', float('nan')):.4f} ns\n")
         f.write(f"  tau_std   = {global_summary.get('tau_std_amp_global_ns',  float('nan')):.4f} ns\n")
