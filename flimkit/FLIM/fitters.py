@@ -163,10 +163,18 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
 
         if polish:
             print("  Running final LM polish...")
-            pol = least_squares(residuals, popt_work, bounds=(lo, hi), method="trf",
-                                max_nfev=5000, ftol=1e-13, xtol=1e-13, gtol=1e-13)
-            popt_work = pol.x
-            message  += f"; polished cost={pol.cost:.4e}"
+            # Clip strictly inside bounds — DE can land exactly on a bound
+            # which causes least_squares to raise "Initial guess outside bounds"
+            eps = 1e-10
+            popt_work = np.clip(popt_work, lo + eps, hi - eps)
+            try:
+                pol = least_squares(residuals, popt_work, bounds=(lo, hi),
+                                    method="trf", max_nfev=5000,
+                                    ftol=1e-13, xtol=1e-13, gtol=1e-13)
+                popt_work = pol.x
+                message  += f"; polished cost={pol.cost:.4e}"
+            except ValueError as e:
+                print(f"  Warning: LM polish failed ({e}) — using DE result")
     else:
         raise ValueError(f"Unknown optimizer: {optimizer!r}")
 

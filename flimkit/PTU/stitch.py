@@ -389,3 +389,231 @@ def load_flim_for_fitting(
         stack = flim_memmap
     
     return stack, tcspc_res, n_bins
+
+
+# ── Per-tile fitting pipeline ──────────────────────────────────────────────────
+
+def _resolve_tile_irf(ptu_name: str,
+                      irf_xlsx_dir=None,
+                      irf_xlsx_map=None):
+    """
+    Return the xlsx path to use as IRF for this tile, or None to fall back
+    to rising-edge estimation.
+
+    Args:
+        ptu_name:     tile filename, e.g. "R_2_s43.ptu"
+        irf_xlsx_dir: directory containing per-tile xlsx files named to match
+                      the PTU stem, e.g. irf_xlsx_dir/R_2_s43.xlsx
+                      (populate once the per-tile IRF xlsx format is known)
+        irf_xlsx_map: explicit dict {ptu_name: Path} — takes priority over dir
+
+    Returns:
+        Path or None
+    """
+    stem = Path(ptu_name).stem
+
+    # Explicit map takes priority
+    if irf_xlsx_map and ptu_name in irf_xlsx_map:
+        return irf_xlsx_map[ptu_name]
+    if irf_xlsx_map and stem in irf_xlsx_map:
+        return irf_xlsx_map[stem]
+
+    # Directory lookup
+    if irf_xlsx_dir is not None:
+        candidate = Path(irf_xlsx_dir) / f"{stem}.xlsx"
+        if candidate.exists():
+            return candidate
+
+    # TODO: add additional lookup strategies here once the xlsx structure
+    # is known (e.g. single multi-sheet workbook, naming convention, etc.)
+    return None
+
+
+def fit_flim_tiles(
+    xlif_path: Path,
+    ptu_dir: Path,
+    output_dir: Path,
+    args,                       # argparse.Namespace with fitting parameters
+    ptu_basename: str = "R 2",
+    rotate_tiles: bool = True,
+    irf_xlsx_dir=None,          # per-tile IRF xlsx directory (optional)
+    irf_xlsx_map=None,          # explicit {ptu_name: xlsx_path} dict (optional)
+    verbose: bool = True,
+    progress_callback=None,
+    cancel_event=None,
+) -> list:
+    """
+    Fit each FLIM tile independently and return results for canvas assembly.
+
+    Rather than stitching photon counts and fitting the ensemble (which suffers
+    from inter-tile IRF mismatch), this function fits each tile with its own
+    IRF — either from a matched xlsx or estimated from the tile's own rising
+    edge — then returns the per-tile pixel_maps ready for assemble_tile_maps().
+
+    No intermediate 65 GB memmap is created.  Peak RAM is ~one tile at a time
+    plus the assembled 2D canvas maps.
+
+    Args:
+        xlif_path:      XLIF metadata file (tile positions)
+        ptu_dir:        directory containing PTU tile files
+        output_dir:     where to write assembled outputs
+        args:           argparse.Namespace — same fitting args as _run_flim_fit.
+                        args.ptu and args.irf_xlsx will be overwritten per tile.
+        ptu_basename:   PTU filename base (e.g. "R 2")
+        rotate_tiles:   apply 90° CW rotation to each tile
+        irf_xlsx_dir:   optional directory of per-tile IRF xlsx files
+        irf_xlsx_map:   optional explicit {ptu_name: Path} IRF lookup
+        verbose:        print progress
+        progress_callback: optional callable(i, total)
+        cancel_event:   optional threading.Event to abort
+
+    Returns:
+        List of tile result dicts, each with:
+            'pixel_maps', 'global_summary', 'pixel_y', 'pixel_x',
+            'tile_h', 'tile_w', 'ptu_name'
+    """
+    from ..utils.xml_utils import (
+        parse_xlif_tile_positions,
+        get_pixel_size_from_xlif,
+        compute_tile_pixel_positions,
+    )
+    from .decode import get_flim_histogram_from_ptufile
+    import argparse, copy
+
+    xlif_path  = Path(xlif_path)
+    ptu_dir    = Path(ptu_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"  PER-TILE FLIM FITTING")
+        print(f"{'='*60}")
+        print(f"  XLIF:   {xlif_path}")
+        print(f"  PTUs:   {ptu_dir}")
+        print(f"  Output: {output_dir}")
+
+    # Parse tile positions from XLIF
+    tile_positions = parse_xlif_tile_positions(xlif_path, ptu_basename)
+    pixel_size_m, _ = get_pixel_size_from_xlif(xlif_path)
+    tile_positions, canvas_width, canvas_height = compute_tile_pixel_positions(
+        tile_positions, pixel_size_m,
+        # tile pixel width — peek at first tile
+        _peek_tile_width(ptu_dir, tile_positions, rotate_tiles)
+    )
+
+    if verbose:
+        print(f"  Tiles:  {len(tile_positions)}")
+        print(f"  Canvas: {canvas_height} × {canvas_width} px\n")
+
+    tile_results   = []
+    tiles_skipped  = 0
+    total          = len(tile_positions)
+
+    for i, t in enumerate(tqdm(tile_positions,
+                                desc='  Fitting tiles',
+                                disable=not verbose)):
+        if cancel_event is not None and cancel_event.is_set():
+            print("\n  Cancelled by user.")
+            break
+        if progress_callback is not None:
+            progress_callback(i, total)
+
+        ptu_path = ptu_dir / t['file']
+        if not ptu_path.exists():
+            if verbose:
+                tqdm.write(f"  [{i+1}/{total}] MISSING: {t['file']} — skipping")
+            tiles_skipped += 1
+            continue
+
+        # Build per-tile args — deep copy so we don't mutate the caller's namespace
+        tile_args = copy.copy(args)
+        tile_args.ptu  = str(ptu_path)
+        tile_args.out  = str(output_dir / Path(t['file']).stem)
+        tile_args.no_plots = True   # individual tile plots would be overwhelming
+        tile_args.no_polish = True  # LM polish crashes when DE lands on a bound
+
+        # IRF resolution — xlsx if available, otherwise rising-edge estimate
+        irf_xlsx = _resolve_tile_irf(t['file'], irf_xlsx_dir, irf_xlsx_map)
+        if irf_xlsx is not None:
+            tile_args.irf_xlsx    = str(irf_xlsx)
+            tile_args.estimate_irf = 'none'
+            if verbose:
+                tqdm.write(f"  [{i+1}/{total}] {t['file']}  IRF: {irf_xlsx.name}")
+        else:
+            tile_args.irf_xlsx    = None
+            # Fall back to parametric rising-edge estimate — works well per tile
+            if not hasattr(tile_args, 'estimate_irf') or tile_args.estimate_irf == 'none':
+                tile_args.estimate_irf = 'parametric'
+            if verbose:
+                tqdm.write(f"  [{i+1}/{total}] {t['file']}  IRF: {tile_args.estimate_irf}")
+
+        try:
+            # Quick photon count check — skip empty/background-only tiles before
+            # attempting IRF estimation (which fails on flat noise decays).
+            from .reader import PTUFile as _PTUFile
+            _ptu_check = _PTUFile(str(ptu_path), verbose=False)
+            _total_photons = int(_ptu_check.summed_decay(channel=None).sum())
+            _min_photons_tile = getattr(args, 'min_photons_tile',
+                                        getattr(args, 'min_photons', 50) * 100)
+            if _total_photons < _min_photons_tile:
+                if verbose:
+                    tqdm.write(f"  [{i+1}/{total}] SKIP {t['file']} "
+                               f"— only {_total_photons:,} photons (empty tile?)")
+                tiles_skipped += 1
+                continue
+
+            # _run_flim_fit now returns a dict — import here to avoid circular import
+            from ..interactive import _run_flim_fit
+            import contextlib, io
+            # Suppress all per-tile output — stdout and stderr (includes tqdm bars).
+            # Errors are caught by the except block below and printed via tqdm.write.
+            _buf = io.StringIO()
+            with contextlib.redirect_stdout(_buf),                  contextlib.redirect_stderr(_buf):
+                result = _run_flim_fit(tile_args)
+
+            # Peek tile spatial dimensions from pixel_maps or PTU
+            pm = result.get('pixel_maps')
+            if pm is not None and 'intensity' in pm:
+                th, tw = pm['intensity'].shape[:2]
+            else:
+                th = tw = _peek_tile_width(ptu_dir, [t], rotate_tiles)
+
+            tile_results.append({
+                'ptu_name':     t['file'],
+                'pixel_y':      t['pixel_y'],
+                'pixel_x':      t['pixel_x'],
+                'tile_h':       th,
+                'tile_w':       tw,
+                'pixel_maps':   pm,
+                'global_summary': result.get('global_summary'),
+                'strategy':     result.get('strategy'),
+            })
+
+        except Exception as e:
+            import traceback, sys
+            if verbose:
+                # tqdm.write keeps the progress bar stable
+                tqdm.write(f"  [{i+1}/{total}] ERROR: {t['file']}: {e}",
+                           file=sys.stderr)
+                tqdm.write(traceback.format_exc(), file=sys.stderr)
+            tiles_skipped += 1
+            continue
+
+    if verbose:
+        print(f"\n  Fitted {len(tile_results)}/{total} tiles "
+              f"({tiles_skipped} skipped)")
+
+    return tile_results, canvas_height, canvas_width
+
+
+def _peek_tile_width(ptu_dir, tile_positions, rotate_tiles):
+    """Load the first available tile just to get its pixel width."""
+    from .decode import get_flim_histogram_from_ptufile
+    for t in tile_positions:
+        p = Path(ptu_dir) / t['file']
+        if p.exists():
+            _, meta = get_flim_histogram_from_ptufile(p, rotate_cw=rotate_tiles,
+                                                       binning=1, channel=None)
+            return meta['tile_shape'][1]   # width
+    raise FileNotFoundError("No tile PTU files found to determine tile width")

@@ -296,40 +296,75 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
 
     print(f"  Mapped: {stack.shape} @ {tcspc_res*1e12:.2f} ps/bin")
 
-    # Step 3: Prepare for fitting (create mock PTU object with necessary attributes)
+    # Step 3: Load weight map for overlap normalisation of per-pixel stack
+    weight_candidates = sorted(Path(args.output_dir).glob("*_weight_map.npy"))
+    if weight_candidates:
+        weight_map = np.load(str(weight_candidates[0])).astype(np.float32)
+        weight_map = np.clip(weight_map, 1.0, None)  # avoid division by zero
+        print(f"  Loaded weight map: max overlap = {int(weight_map.max())} tiles")
+    else:
+        weight_map = None
+        print("  No weight map found — overlap normalisation skipped")
+
+    # Step 4: Prepare for fitting (create mock PTU object with necessary attributes)
     class StitchedData:
         """Mock PTU object for stitched data."""
-        def __init__(self, stack, tcspc_res, n_bins):
+        def __init__(self, stack, tcspc_res, n_bins, weight_map=None):
             self.n_bins = n_bins
             self.tcspc_res = tcspc_res
             self.time_ns = np.arange(n_bins) * tcspc_res * 1e9
             self.photon_channel = None  # Already channel-selected
             self._stack = stack
-        
+            self._weight_map = weight_map  # (ny, nx) float32, >=1
+
         def summed_decay(self, channel=None):
-            """Return summed decay."""
+            """Return summed decay (raw counts, no normalisation)."""
             return self._stack.sum(axis=(0, 1))
-        
+
         def pixel_stack(self, channel=None, binning=1):
-            """Return pixel stack."""
+            """Return pixel stack normalised by tile overlap count.
+
+            The raw FLIM cube sums photons from all overlapping tiles, so
+            overlap pixels have proportionally higher counts. Dividing by
+            the weight map puts every pixel on an equivalent single-tile
+            scale before per-pixel fitting, removing seam artefacts.
+            """
+            ny, nx, nt = self._stack.shape
+
             if binning == 1:
-                return self._stack
+                if self._weight_map is not None:
+                    out = np.empty((ny, nx, nt), dtype=np.float32)
+                    CHUNK = 64
+                    for r0 in tqdm(range(0, ny, CHUNK),
+                                   desc='  Normalising overlap (pixel stack)',
+                                   unit='chunk'):
+                        r1 = min(r0 + CHUNK, ny)
+                        w  = self._weight_map[r0:r1, :, np.newaxis]
+                        out[r0:r1] = self._stack[r0:r1].astype(np.float32) / w
+                    return out
+                else:
+                    return self._stack
             else:
-                # Simple binning
-                ny, nx, nt = self._stack.shape
                 new_ny = ny // binning
                 new_nx = nx // binning
-                binned = np.zeros((new_ny, new_nx, nt), dtype=self._stack.dtype)
+                binned = np.zeros((new_ny, new_nx, nt), dtype=np.float32)
                 for i in tqdm(range(new_ny), desc='  Binning rows'):
                     for j in range(new_nx):
-                        binned[i, j, :] = self._stack[
+                        patch = self._stack[
                             i*binning:(i+1)*binning,
-                            j*binning:(j+1)*binning,
-                            :
-                        ].sum(axis=(0, 1))
+                            j*binning:(j+1)*binning, :
+                        ].astype(np.float32)
+                        binned[i, j, :] = patch.sum(axis=(0, 1))
+                        if self._weight_map is not None:
+                            w = self._weight_map[
+                                i*binning:(i+1)*binning,
+                                j*binning:(j+1)*binning
+                            ].mean()
+                            if w > 0:
+                                binned[i, j, :] /= w
                 return binned
-    
-    ptu = StitchedData(stack, tcspc_res, n_bins)
+
+    ptu = StitchedData(stack, tcspc_res, n_bins, weight_map=weight_map)
 
     # ── Build tissue mask + summed decay via chunked memmap reads ──────────
     # Never materialise the full cube — read CHUNK_ROWS rows at a time.
@@ -913,6 +948,16 @@ def _run_flim_fit(args):
 
     print("\nDone.\n")
 
+    # Return results so callers (e.g. fit_flim_tiles) can consume them
+    return {
+        'pixel_maps':     pixel_maps     if args.mode in ("perPixel", "both") else None,
+        'global_summary': global_summary,
+        'global_popt':    global_popt,
+        'tcspc_res':      ptu.tcspc_res,
+        'n_bins':         ptu.n_bins,
+        'strategy':       strategy,
+    }
+
 
 def single_FOV_flim_fit(interactive=False):
     """
@@ -1019,10 +1064,28 @@ def stitch_tiles(interactive=False):
 def stitch_and_fit(interactive=False):
     """
     Entry point for combined stitch + fit workflow.
+    In interactive mode, first asks which fitting pipeline to use:
+      - Global fit: stitch all tiles into one cube, fit the summed decay
+      - Per-tile fit: fit each tile independently, assemble results (recommended)
     """
     if interactive:
-        args = stitch_and_fit_inquire()
-        _run_stitch_and_fit(args)
+        print("\n--- Stitched ROI Fitting ---")
+        pipeline_q = [inquirer.List(
+            'pipeline',
+            message="Which fitting pipeline?",
+            choices=[
+                'Per-tile (recommended) — fit each tile independently, no IRF mismatch',
+                'Global (legacy)        — stitch then fit summed decay',
+            ]
+        )]
+        pipeline = inquirer.prompt(pipeline_q)['pipeline']
+
+        if pipeline.startswith('Per-tile'):
+            args = tile_fit_inquire()
+            _run_tile_fit(args)
+        else:
+            args = stitch_and_fit_inquire()
+            _run_stitch_and_fit(args)
     else:
         # Command-line argument parsing
         ap = argparse.ArgumentParser(
@@ -1083,3 +1146,258 @@ def stitch_and_fit(interactive=False):
         args.save_weighted = not args.no_save_weighted
         
         _run_stitch_and_fit(args)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Per-tile fitting pipeline
+# ══════════════════════════════════════════════════════════════════════════════
+
+def tile_fit_inquire():
+    """Interactive prompt for per-tile fitting parameters."""
+    print("\n--- Per-Tile FLIM Fitting ---")
+    print("Fits each tile independently with its own IRF, then assembles")
+    print("the results into a full-ROI canvas.  Avoids inter-tile IRF mismatch.\n")
+
+    # Reuse stitch_tiles_inquire for tile location / geometry
+    stitch_args = stitch_tiles_inquire()
+
+    print("\nFitting Parameters")
+
+    # IRF source
+    print("\nIRF estimation options:")
+    print("  1. 'parametric' - fit Gaussian + exponential tail to rising edge (default)")
+    print("  2. 'raw'        - non-parametric IRF from raw decay")
+    print("  3. 'irf_xlsx_dir' - per-tile xlsx directory (fill in once format is known)")
+    method_q = [inquirer.List('method',
+                              message="Choose IRF method",
+                              choices=['parametric', 'raw', 'irf_xlsx_dir'])]
+    estimate_irf = inquirer.prompt(method_q)['method']
+
+    irf_xlsx_dir = None
+    if estimate_irf == 'irf_xlsx_dir':
+        irf_xlsx_dir = input("Enter path to directory containing per-tile IRF xlsx files: ").strip()
+        if not irf_xlsx_dir or not Path(irf_xlsx_dir).exists():
+            print("  Warning: directory not found, falling back to parametric")
+            estimate_irf = 'parametric'
+            irf_xlsx_dir = None
+
+    # Number of exponentials
+    nexp_q = [inquirer.List('nexp',
+                            message="Number of exponential components",
+                            choices=['1', '2', '3'],
+                            default='2')]
+    nexp = int(inquirer.prompt(nexp_q)['nexp'])
+
+    # Intensity threshold
+    thresh_q = yes_no_question("Apply intensity threshold to exclude low-signal pixels?")
+    if thresh_q == 'y':
+        val = input("  Min photon intensity per pixel (Enter for none): ").strip()
+        intensity_threshold = int(val) if val else None
+    else:
+        intensity_threshold = None
+
+    # Display ranges for output maps
+    tau_range_q = yes_no_question("Set lifetime display range for tau images?")
+    if tau_range_q == 'y':
+        tau_min_display = input(f"  Min tau (ns, Enter=auto): ").strip()
+        tau_max_display = input(f"  Max tau (ns, Enter=auto): ").strip()
+        tau_min_display = float(tau_min_display) if tau_min_display else None
+        tau_max_display = float(tau_max_display) if tau_max_display else None
+    else:
+        tau_min_display = TAU_DISPLAY_MIN
+        tau_max_display = TAU_DISPLAY_MAX
+
+    # Build args namespace — shares fitting defaults with single-FOV path
+    args = argparse.Namespace()
+
+    # Stitching / geometry
+    args.xlif         = stitch_args.xlif
+    args.ptu_dir      = stitch_args.ptu_dir
+    args.output_dir   = stitch_args.output_dir
+    args.ptu_basename = stitch_args.ptu_basename
+    args.rotate_tiles = stitch_args.rotate_tiles
+
+    # IRF
+    args.estimate_irf  = estimate_irf
+    args.irf_xlsx_dir  = irf_xlsx_dir
+    args.irf           = None
+    args.irf_xlsx      = None
+    args.irf_bins      = IRF_BINS
+    args.irf_fit_width = IRF_FIT_WIDTH
+    args.irf_fwhm      = IRF_FWHM
+
+    # Fitting
+    args.nexp        = nexp
+    args.tau_min     = Tau_min
+    args.tau_max     = Tau_max
+    args.mode        = 'both'        # always do per-pixel for tile fitting
+    args.binning     = binning_factor
+    args.min_photons = MIN_PHOTONS_PERPIX
+    args.optimizer   = 'de'
+    args.restarts    = lm_restarts
+    args.de_population = de_population
+    args.de_maxiter    = de_maxiter
+    args.workers       = n_workers
+    args.no_polish     = False
+    args.channel       = channels
+    args.no_plots      = True        # suppress per-tile plots; ROI plots generated at end
+    args.cell_mask     = False
+    args.intensity_threshold = intensity_threshold
+    args.no_xlsx_irf   = True
+    args.debug_xlsx    = False
+    args.print_config  = False
+    args.xlsx          = None
+    args.out           = None        # set per-tile in fit_flim_tiles
+
+    # Output
+    args.tau_display_min = tau_min_display
+    args.tau_display_max = tau_max_display
+
+    return args
+
+
+def _run_tile_fit(args, progress_callback=None, cancel_event=None):
+    """
+    Execute per-tile fitting pipeline:
+        1. Fit each tile independently via fit_flim_tiles()
+        2. Assemble pixel maps onto canvas via assemble_tile_maps()
+        3. Derive global tau summary via derive_global_tau()
+        4. Save outputs via save_assembled_maps()
+    """
+    from .PTU.stitch import fit_flim_tiles
+    from .FLIM.assemble import assemble_tile_maps, derive_global_tau, save_assembled_maps
+
+    roi_name = args.ptu_basename.replace(' ', '_')
+
+    print(f"\n{'='*60}")
+    print(f"  STEP 1: PER-TILE FITTING")
+    print(f"{'='*60}")
+
+    tile_results, canvas_height, canvas_width = fit_flim_tiles(
+        xlif_path     = Path(args.xlif),
+        ptu_dir       = Path(args.ptu_dir),
+        output_dir    = Path(args.output_dir),
+        args          = args,
+        ptu_basename  = args.ptu_basename,
+        rotate_tiles  = args.rotate_tiles,
+        irf_xlsx_dir  = getattr(args, 'irf_xlsx_dir', None),
+        irf_xlsx_map  = getattr(args, 'irf_xlsx_map', None),
+        verbose       = True,
+        progress_callback = progress_callback,
+        cancel_event  = cancel_event,
+    )
+
+    if not tile_results:
+        raise RuntimeError("No tiles were successfully fitted.")
+
+    print(f"\n{'='*60}")
+    print(f"  STEP 2: ASSEMBLING CANVAS")
+    print(f"{'='*60}")
+
+    canvas = assemble_tile_maps(
+        tile_results   = tile_results,
+        canvas_height  = canvas_height,
+        canvas_width   = canvas_width,
+        n_exp          = args.nexp,
+    )
+
+    print(f"\n{'='*60}")
+    print(f"  STEP 3: GLOBAL TAU SUMMARY")
+    print(f"{'='*60}")
+
+    global_summary = derive_global_tau(canvas, n_exp=args.nexp)
+
+    # Print summary
+    print(f"  Pixels fitted:  {global_summary.get('n_pixels_fitted', 0):,}")
+    print(f"  tau_mean (amp-weighted): "
+          f"{global_summary.get('tau_mean_amp_global_ns', float('nan')):.3f} ± "
+          f"{global_summary.get('tau_std_amp_global_ns',  float('nan')):.3f} ns")
+    for k in range(1, args.nexp + 1):
+        tau_k = global_summary.get(f'tau{k}_mean_ns')
+        a_k   = global_summary.get(f'a{k}_mean_frac')
+        if tau_k is not None:
+            print(f"  tau{k}: {tau_k:.3f} ns   a{k}: {a_k:.3f}")
+
+    print(f"\n{'='*60}")
+    print(f"  STEP 4: SAVING OUTPUTS")
+    print(f"{'='*60}")
+
+    save_assembled_maps(
+        canvas          = canvas,
+        global_summary  = global_summary,
+        output_dir      = Path(args.output_dir),
+        roi_name        = roi_name,
+        n_exp           = args.nexp,
+        tau_display_min = getattr(args, 'tau_display_min', None),
+        tau_display_max = getattr(args, 'tau_display_max', None),
+    )
+
+    print(f"\n{'='*60}")
+    print(f"  PER-TILE FITTING COMPLETE")
+    print(f"{'='*60}\n")
+
+    return canvas, global_summary
+
+
+def tile_fit(interactive=False):
+    """Entry point for per-tile fitting pipeline."""
+    if interactive:
+        args = tile_fit_inquire()
+        _run_tile_fit(args)
+    else:
+        ap = argparse.ArgumentParser(
+            description="Per-tile FLIM fitting — fits each tile independently, "
+                        "assembles canvas maps, derives global tau."
+        )
+        ap.add_argument("--xlif",         required=True)
+        ap.add_argument("--ptu-dir",      required=True)
+        ap.add_argument("--output-dir",   required=True)
+        ap.add_argument("--ptu-basename", default=None)
+        ap.add_argument("--rotate-tiles", action="store_true", default=True)
+        ap.add_argument("--no-rotate",    action="store_true")
+        ap.add_argument("--irf-xlsx-dir", default=None,
+                        help="Directory of per-tile IRF xlsx files")
+        ap.add_argument("--estimate-irf", default="parametric",
+                        choices=["parametric", "raw"])
+        ap.add_argument("--nexp",         type=int, default=n_exp, choices=[1, 2, 3])
+        ap.add_argument("--tau-min",      type=float, default=Tau_min)
+        ap.add_argument("--tau-max",      type=float, default=Tau_max)
+        ap.add_argument("--binning",      type=int, default=binning_factor)
+        ap.add_argument("--min-photons",  type=int, default=MIN_PHOTONS_PERPIX)
+        ap.add_argument("--optimizer",    default='de', choices=["lm_multistart", "de"])
+        ap.add_argument("--restarts",     type=int, default=lm_restarts)
+        ap.add_argument("--de-population",type=int, default=de_population)
+        ap.add_argument("--de-maxiter",   type=int, default=de_maxiter)
+        ap.add_argument("--workers",      type=int, default=n_workers)
+        ap.add_argument("--no-polish",    action="store_true")
+        ap.add_argument("--channel",      type=int, default=channels)
+        ap.add_argument("--irf-fwhm",     type=float, default=IRF_FWHM)
+        ap.add_argument("--irf-bins",     type=int,   default=IRF_BINS)
+        ap.add_argument("--irf-fit-width",type=float, default=IRF_FIT_WIDTH)
+        ap.add_argument("--intensity-threshold", default=None)
+        ap.add_argument("--tau-display-min", type=float, default=None)
+        ap.add_argument("--tau-display-max", type=float, default=None)
+
+        args = ap.parse_args()
+
+        if args.no_rotate:
+            args.rotate_tiles = False
+        if args.ptu_basename is None:
+            args.ptu_basename = Path(args.xlif).stem
+
+        # Fill fields _run_flim_fit expects
+        args.irf          = None
+        args.irf_xlsx     = None
+        args.irf_xlsx_map = None
+        args.irf_xlsx_dir = args.irf_xlsx_dir
+        args.mode         = 'both'
+        args.no_plots     = True
+        args.cell_mask    = False
+        args.no_xlsx_irf  = True
+        args.debug_xlsx   = False
+        args.print_config = False
+        args.xlsx         = None
+        args.out          = None
+        args.no_polish    = args.no_polish
+
+        _run_tile_fit(args)
