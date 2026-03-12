@@ -20,3 +20,6 @@ htmlcov/
 *.xlif
 Results/
 .vscode/
+*.npy
+*.npz
+*.ipynb_checkpoints
