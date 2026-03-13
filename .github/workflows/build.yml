@@ -69,12 +69,16 @@ jobs:
           --add-data "flimkit:flimkit"
           gui.py
 
+      - name: Package macOS app bundle
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/FLIMKit.app dist/FLIMKit-macos.zip
+
       - name: Upload artifact (macOS .app)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/FLIMKit.app
+          path: dist/FLIMKit-macos.zip
           retention-days: 30
 
       - name: Upload artifact (Linux / Windows)
@@ -99,14 +103,21 @@ jobs:
         with:
           path: artifacts/
 
-      - name: Zip each build
+      - name: Prepare release archives
         run: |
+          mkdir -p release
           cd artifacts
-          for d in */; do zip -r "${d%/}.zip" "$d"; done
+          for d in */; do
+            if ls "$d"*.zip >/dev/null 2>&1; then
+              cp "$d"*.zip ../release/
+            else
+              zip -r "../release/${d%/}.zip" "$d"
+            fi
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag }}
-          files: artifacts/*.zip
+          files: release/*.zip
