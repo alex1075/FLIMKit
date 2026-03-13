@@ -61,6 +61,44 @@ python main.py
 
 Presents an interactive menu with all available workflows (FLIM fitting, phasor analysis, tile stitching).
 
+### Machine IRF setup (required)
+
+Before routine FLIM fitting, create a machine IRF once for your system/session from paired PTU and XLSX files.
+
+Recommended path:
+1. Launch the GUI with `python gui.py`.
+2. Open the `Machine IRF Builder` tab.
+3. Select a folder containing matched `<name>.ptu` and `<name>.xlsx` pairs.
+4. Build and save `machine_irf_default.npy` under `flimkit/machine_irf/`.
+
+Programmatic alternative:
+
+```python
+from flimkit.FLIM.irf_tools import build_machine_irf_from_folder
+
+build_machine_irf_from_folder(
+  folder="/path/to/pairs",
+  align_anchor="peak",
+  reducer="median",
+  save=True,
+  confirm_save=True,
+  output_name="machine_irf_default",
+)
+```
+
+Once this file exists, interactive fitting supports `machine_irf` as an IRF method for:
+- single FOV fitting
+- stitch + fit workflow
+- per-tile ROI fit workflow
+
+Minimum pair count guidance (from notebook subsampling):
+- The simple 10%-of-N=20 plateau rule gave a minimum practical N of 4, but this was based only on weighted lifetime MAE and is noisy/non-monotonic across random splits.
+- Chi-squared stability improved at larger N, with variance dropping most clearly around N=18-20.
+- If your goal is only learning peak-placement rule: 4-6 pairs can work.
+- If your goal is stable machine IRF shape plus placement across conditions: use at least 10-12 pairs.
+- For robust production behavior across objectives/samples: target 15-20 pairs.
+- Practical default: avoid fewer than about 10 pairs unless your dataset is very homogeneous.
+
 ### FLIM fitting (CLI)
 
 ```bash
@@ -69,7 +107,7 @@ python fit_cli.py --ptu path/to/file.ptu --irf-xlsx path/to/irf.xlsx --nexp 2 --
 
 For all options: `python fit_cli.py --help`
 
-> **Tip:** While FLIMKit can estimate an IRF from the decay curve, using an IRF exported from the LAS X FLIM tail-fit graph (right-click → export) is strongly recommended.
+> Tip: If you are using the interactive or GUI fitting flows, generate a machine IRF first and select the `machine_irf` method during fitting.
 
 ### Phasor analysis (CLI)
 
@@ -124,6 +162,7 @@ The interactive phasor tool provides:
 │   ├── configs.py                 # Default fitting parameters
 │   ├── interactive.py             # Guided FLIM fitting launcher (inquirer)
 │   ├── phasor_launcher.py         # Guided phasor analysis launcher (inquirer)
+│   ├── machine_irf/               # Saved machine IRF files (.npy/.csv/.json) - not provided, must be generated per system/session
 │   │
 │   ├── PTU/                       # ── PTU file I/O ─────────────────────────
 │   │   ├── __init__.py

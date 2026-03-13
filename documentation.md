@@ -13,6 +13,7 @@
 3. [Quick Start](#quick-start)
 4. [Workflows](#workflows)
    - [Guided Terminal UI](#guided-terminal-ui-mainpy)
+   - [Machine IRF Setup (Required)](#machine-irf-setup-required)
    - [FLIM Reconvolution Fitting (CLI)](#flim-reconvolution-fitting-cli)
    - [Phasor Analysis (CLI)](#phasor-analysis-cli)
    - [Python API](#python-api)
@@ -117,6 +118,8 @@ python fit_cli.py --ptu data.ptu --irf-xlsx irf.xlsx --nexp 2
 python phasor_cli.py --ptu data.ptu --irf irf.xlsx
 ```
 
+Before routine interactive fitting, create a machine IRF once for your system/session (see Machine IRF Setup below).
+
 ### 3. Python API
 
 ```python
@@ -144,6 +147,56 @@ python main.py
 | Phasor analysis | Opens the interactive phasor cursor tool |
 | Reconstruct a FOV and FLIM FIT | Stitches multi-tile PTU data from XLIF metadata, then runs fitting on the mosaic. The ROI name is extracted from the XLIF filename (e.g., `R 2.xlif` → `R_2`) and used to name the output subdirectory and all exported files. |
 | Just stitch multiple tiles together | Produces intensity images and FLIM histogram cubes without fitting. Outputs are placed in a subdirectory named after the ROI. |
+
+---
+
+### Machine IRF Setup (Required)
+
+For reconvolution fitting in interactive and GUI workflows, create a machine IRF first and reuse it across files from the same setup.
+
+#### GUI method (recommended)
+
+1. Launch the GUI:
+
+```bash
+python gui.py
+```
+
+2. Open the `Machine IRF Builder` tab.
+3. Select a folder containing matched `<name>.ptu` and `<name>.xlsx` pairs.
+4. Choose anchor/reducer and build the IRF.
+5. Save as `machine_irf_default` into `flimkit/machine_irf/`.
+
+#### Python API method
+
+```python
+from flimkit.FLIM.irf_tools import build_machine_irf_from_folder
+
+result = build_machine_irf_from_folder(
+    folder="/path/to/pairs",
+    align_anchor="peak",
+    reducer="median",
+    save=True,
+    confirm_save=True,
+    output_name="machine_irf_default",
+)
+```
+
+The default runtime path is `flimkit/machine_irf/machine_irf_default.npy`.
+
+#### Minimum Pair Count by Target Quality
+
+From the notebook subsampling run:
+- The simple 10%-of-N=20 plateau rule reported minimum practical N = 4.
+- That rule used only weighted lifetime MAE and is noisy/non-monotonic across random splits.
+- Chi-squared stability improves with larger N, with variance dropping clearly at N=18-20.
+
+Practical recommendation:
+- Peak-placement rule learning only: 4-6 pairs can work.
+- Stable machine IRF shape plus placement across conditions: use at least 10-12 pairs.
+- Robust production behavior across objectives/samples: target 15-20 pairs.
+
+Operational default: avoid fewer than about 10 pairs unless your data are highly homogeneous.
 
 ---
 
@@ -184,8 +237,8 @@ python fit_cli.py [OPTIONS]
 | `--min-photons INT` | Minimum photons per pixel for per-pixel fitting (default: 10) |
 | `--optimizer {lm_multistart,de}` | Optimiser for summed fitting (default: `de`) |
 | `--restarts INT` | Number of restarts for LM optimiser (default: 8) |
-| `--de-population INT` | DE population size (default: 50) |
-| `--de-maxiter INT` | DE maximum iterations (default: 10000) |
+| `--de-population INT` | DE population size (default: 30) |
+| `--de-maxiter INT` | DE maximum iterations (default: 5000) |
 | `--workers INT` | Number of CPU cores for DE (-1 = all) |
 | `--no-polish` | Skip polishing step after DE optimisation |
 | `--cost-function {poisson,chi2}` | Cost function for summed fit (default: `poisson`) |
@@ -423,9 +476,24 @@ Default fitting parameters are defined in `flimkit/configs.py`. All can be overr
 | Parameter | Default | Description |
 |---|---|---|
 | `lm_restarts` | 8 | Levenberg–Marquardt multi-start restarts |
-| `de_population` | 50 | DE population size |
-| `de_maxiter` | 10000 | DE maximum iterations |
+| `de_population` | 30 | DE population size |
+| `de_maxiter` | 5000 | DE maximum iterations |
 | `n_workers` | -1 | CPU cores for DE (-1 = all available) |
+
+### Machine IRF Settings
+
+| Parameter | Default | Description |
+|---|---|---|
+| `MACHINE_IRF_DIR` | `flimkit/machine_irf` | Directory containing saved machine IRF artifacts |
+| `MACHINE_IRF_DEFAULT_PATH` | `flimkit/machine_irf/machine_irf_default.npy` | Default machine IRF file used at runtime |
+| `MACHINE_IRF_ALIGN_ANCHOR` | `'peak'` | Landmark used during machine IRF construction |
+| `MACHINE_IRF_REDUCER` | `'median'` | Aggregation mode used during machine IRF construction |
+| `MACHINE_IRF_FIT_STRATEGY` | `'fixed'` | Runtime strategy selected for machine IRF fitting |
+| `MACHINE_IRF_FIT_BG` | `True` | Fit background offset when using machine IRF |
+| `MACHINE_IRF_FIT_SIGMA` | `False` | Fit additional Gaussian broadening when using machine IRF |
+| `MACHINE_IRF_FIT_TAIL` | `False` | Fit exponential tail when using machine IRF |
+| `MACHINE_IRF_DE_POPULATION` | 30 | DE population for machine IRF strategy |
+| `MACHINE_IRF_DE_MAXITER` | 5000 | DE max iterations for machine IRF strategy |
 
 ### IRF Settings
 
@@ -529,6 +597,8 @@ navy → blue → cyan → green → yellow → red
 - **`estimate_irf_from_decay_parametric(decay, ...)`** — Parametric IRF estimation (Gaussian + exponential tail fit)
 - **`compare_irfs(irf1, irf2, ...)`** — Visual comparison of two IRF estimates
 - **`build_full_irf(irf_prompt, ...)`** — Construct the complete IRF with optional broadening and tail
+- **`discover_ptu_xlsx_pairs(folder)`** — Discover paired `<name>.ptu` and `<name>.xlsx` files for machine IRF construction
+- **`build_machine_irf_from_folder(folder, ...)`** — Build and optionally save a machine IRF (`.npy/.csv/.json`) from paired PTU/XLSX data
 
 ---
 
@@ -765,6 +835,7 @@ Phasor sessions are saved as `.npz` archives containing:
 | `ModuleNotFoundError: No module named 'phasorpy'` | Install dependencies: `pip install -r requirements.txt` |
 | `ValueError: Not a PTU/PQTTTR file` | Ensure the file is a valid PicoQuant PTU file |
 | `No TileScanInfo found in XLIF` | XLIF file may not contain tile metadata; verify it's from a tile scan acquisition |
+| `FileNotFoundError: Machine IRF file not found` | Build a machine IRF first in the GUI `Machine IRF Builder` tab or with `build_machine_irf_from_folder(...)`, then point fitting to the saved `.npy` file |
 | IRF fitting gives poor results | Try `--irf-xlsx` with a dedicated IRF export from LAS X |
 | Per-pixel fitting is very slow | Increase `--binning` (e.g., 2 or 4) to reduce resolution, or reduce `--de-maxiter` |
 | Phasor points are scattered | Check IRF calibration; uncalibrated data will not lie on the universal semicircle |
