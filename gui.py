@@ -570,6 +570,34 @@ class ResultsPanel:
 
 class FLIMKitGUI:
 
+    def _make_scroll_tab(self, title: str) -> ttk.Frame:
+        """Create a notebook tab whose contents are vertically scrollable."""
+        outer = ttk.Frame(self._nb)
+        self._nb.add(outer, text=title)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
+        vbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+
+        inner = ttk.Frame(canvas, padding=10)
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(_evt=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(evt):
+            canvas.itemconfigure(window_id, width=evt.width)
+
+        inner.bind("<Configure>", _on_inner_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        return inner
+
     def _fit_window_to_screen(self):
         """Clamp window geometry to visible screen bounds.
 
@@ -668,8 +696,7 @@ class FLIMKitGUI:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _build_fov_tab(self):
-        tab = ttk.Frame(self._nb, padding=10)
-        self._nb.add(tab, text="  Single FOV Fit  ")
+        tab = self._make_scroll_tab("  Single FOV Fit  ")
         tab.columnconfigure(0, weight=1)
 
         ff = _section(tab, "Input Files")
@@ -739,8 +766,7 @@ class FLIMKitGUI:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _build_stitch_tab(self):
-        tab = ttk.Frame(self._nb, padding=10)
-        self._nb.add(tab, text="  Tile Stitch / Fit  ")
+        tab = self._make_scroll_tab("  Tile Stitch / Fit  ")
         tab.columnconfigure(0, weight=1)
 
         ff = _section(tab, "Input Files")
@@ -906,8 +932,7 @@ class FLIMKitGUI:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _build_machine_irf_tab(self):
-        tab = ttk.Frame(self._nb, padding=10)
-        self._nb.add(tab, text="  Machine IRF Builder  ")
+        tab = self._make_scroll_tab("  Machine IRF Builder  ")
         tab.columnconfigure(0, weight=1)
 
         cfg = _C()
@@ -984,8 +1009,7 @@ class FLIMKitGUI:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _build_phasor_tab(self):
-        tab = ttk.Frame(self._nb, padding=10)
-        self._nb.add(tab, text="  Phasor Analysis  ")
+        tab = self._make_scroll_tab("  Phasor Analysis  ")
         tab.columnconfigure(0, weight=1)
 
         fm = _section(tab, "Input Mode")
