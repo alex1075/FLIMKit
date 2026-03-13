@@ -184,6 +184,24 @@ result = build_machine_irf_from_folder(
 
 The default runtime path is `flimkit/machine_irf/machine_irf_default.npy`.
 
+#### Running as a Compiled Executable (Mac / Windows / Linux app)
+
+When launched as a PyInstaller-compiled app the package directory is read-only, so machine IRF files are stored in the user's home directory instead:
+
+| Platform | Save location |
+|---|---|
+| macOS | `~/.flimkit/machine_irf/` |
+| Windows | `C:\Users\<name>\.flimkit\machine_irf\` |
+| Linux | `~/.flimkit/machine_irf/` |
+
+The directory is created automatically on first save. The default IRF resolution order is:
+1. `~/.flimkit/machine_irf/machine_irf_default.npy` (user-saved, takes priority)
+2. Bundled factory default inside the app (used on a fresh install with no saved IRF)
+
+This means a new user can open the app and run fits immediately using the bundled default, then replace it with their own machine IRF via the **Machine IRF Builder** tab. No manual file copying is needed.
+
+> **Note for Python source users:** behaviour is unchanged — files are still saved to `flimkit/machine_irf/` inside the project directory.
+
 #### Minimum Pair Count by Target Quality
 
 From the notebook subsampling run:
@@ -484,8 +502,8 @@ Default fitting parameters are defined in `flimkit/configs.py`. All can be overr
 
 | Parameter | Default | Description |
 |---|---|---|
-| `MACHINE_IRF_DIR` | `flimkit/machine_irf` | Directory containing saved machine IRF artifacts |
-| `MACHINE_IRF_DEFAULT_PATH` | `flimkit/machine_irf/machine_irf_default.npy` | Default machine IRF file used at runtime |
+| `MACHINE_IRF_DIR` | `flimkit/machine_irf` (source) / `~/.flimkit/machine_irf` (compiled exe) | Directory used for saving machine IRF artifacts |
+| `MACHINE_IRF_DEFAULT_PATH` | User copy if present, else bundled default | Default machine IRF file resolved at startup |
 | `MACHINE_IRF_ALIGN_ANCHOR` | `'peak'` | Landmark used during machine IRF construction |
 | `MACHINE_IRF_REDUCER` | `'median'` | Aggregation mode used during machine IRF construction |
 | `MACHINE_IRF_FIT_STRATEGY` | `'fixed'` | Runtime strategy selected for machine IRF fitting |
