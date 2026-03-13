@@ -9,9 +9,9 @@ on:
       publish_release:
         description: "Publish artifacts to a GitHub Release"
         required: false
-        default: "false"
+        default: "true"
       release_tag:
-        description: "Release tag to create/update when publish_release=true (e.g. v1.0.1)"
+        description: "Release tag to create/update when publish_release=true (e.g. v1.0.0). If empty, uses the pushed tag if triggered by a tag push."
         required: false
         default: ""
 
