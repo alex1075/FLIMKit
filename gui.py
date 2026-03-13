@@ -570,6 +570,37 @@ class ResultsPanel:
 
 class FLIMKitGUI:
 
+    def _fit_window_to_screen(self):
+        """Clamp window geometry to visible screen bounds.
+
+        Some Linux window managers can place/rescale Tk windows off-screen when
+        the requested size jumps after showing additional controls.
+        """
+        self.root.update_idletasks()
+
+        sw = max(1, int(self.root.winfo_screenwidth()))
+        sh = max(1, int(self.root.winfo_screenheight()))
+
+        # Leave a small safety margin so decorations stay visible.
+        max_w = max(520, sw - 40)
+        max_h = max(420, sh - 40)
+
+        req_w = int(self.root.winfo_reqwidth())
+        req_h = int(self.root.winfo_reqheight())
+        cur_w = int(self.root.winfo_width())
+        cur_h = int(self.root.winfo_height())
+
+        target_w = min(max(cur_w, req_w, 760), max_w)
+        target_h = min(max(cur_h, req_h, 700), max_h)
+
+        x = int(self.root.winfo_x())
+        y = int(self.root.winfo_y())
+        x = min(max(0, x), max(0, sw - target_w))
+        y = min(max(0, y), max(0, sh - target_h))
+
+        self.root.maxsize(sw, sh)
+        self.root.geometry(f"{target_w}x{target_h}+{x}+{y}")
+
     def run_with_progress(self, task_fn, task_name="Working…", on_done=None):
         """Run a function in a thread, showing a pop-out progress window with cancel."""
         win = ProgressWindow(self.root, task_name=task_name)
@@ -626,6 +657,9 @@ class FLIMKitGUI:
         redir = _Redirect(self._res.log, self._buf)
         sys.stdout = redir
         sys.stderr = redir
+
+        # Ensure initial window fits within current screen bounds.
+        self.root.after_idle(self._fit_window_to_screen)
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -858,12 +892,14 @@ class FLIMKitGUI:
             self._fit_frame.grid()
             self._tile_extras_frame.grid()
             self._btn_st.configure(text="▶  Run Per-Tile Fit")
+        self.root.after_idle(self._fit_window_to_screen)
 
     def _perpix_toggled(self):
         if self.bv_perpix.get():
             self._pxf.grid()
         else:
             self._pxf.grid_remove()
+        self.root.after_idle(self._fit_window_to_screen)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 3 – Machine IRF Builder
@@ -1020,6 +1056,7 @@ class FLIMKitGUI:
         else:
             self._ph_new.grid_remove()
             self._ph_sess.grid()
+        self.root.after_idle(self._fit_window_to_screen)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Run handlers – flimkit imports happen here, safely after package init
