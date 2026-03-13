@@ -54,7 +54,7 @@ Both workflows can be launched through:
 
 ### System Requirements
 
-- **Python ≥ 3.11**
+- **Python ≥ 3.14**
 - macOS, Linux, or Windows
 
 ### Dependencies

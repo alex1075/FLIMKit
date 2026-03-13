@@ -13,7 +13,7 @@ Both workflows can be launched through a guided terminal UI (`main.py`), standal
 
 ## Requirements
 
-- Python ≥ 3.11
+- Python ≥ 3.14
 - See [requirements.txt](requirements.txt) for the full list. 
 
 Key dependencies:

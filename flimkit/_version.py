@@ -1,4 +1,4 @@
-__version__ = "0.5.2"
+__version__ = "0.6.2"
 
 roadmap = '''Flim program roadmap:
 Version history:
