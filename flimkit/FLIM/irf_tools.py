@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 from ..PTU.reader import PTUFile
 from ..utils.xlsx_tools import load_xlsx
+from ..configs import MACHINE_IRF_DIR as _DEFAULT_MACHINE_IRF_DIR
 
 
 def _leading_edge_crossing(arr: np.ndarray, frac: float = 0.5) -> int:
@@ -150,7 +151,7 @@ def build_machine_irf_from_folder(
                 "Set confirm_save=True after explicit user confirmation."
             )
         if output_dir is None:
-            output_dir = Path(__file__).resolve().parents[1] / "machine_irf"
+            output_dir = _DEFAULT_MACHINE_IRF_DIR
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 

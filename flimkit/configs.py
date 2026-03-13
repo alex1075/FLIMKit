@@ -1,3 +1,4 @@
+import sys
 from matplotlib.colors import LinearSegmentedColormap
 from pathlib import Path
 
@@ -43,8 +44,30 @@ IRF_BINS = 21 # Number of bins to use for the IRF when fitting with the "summed"
 Estimate_IRF = "none" # Options are "raw", "parametric", and "none". Set to "raw" to use the raw IRF from the data, "parametric" to fit a parametric function to the IRF, or "none" to not estimate the IRF (e.g. if you have a separate IRF file or are using a system with a very narrow IRF that doesn't need to be accounted for). Override with --estimate-irf when running the code.
 
 # Machine IRF defaults (spreadsheet-free workflow)
-MACHINE_IRF_DIR = Path(__file__).resolve().parent / "machine_irf"
-MACHINE_IRF_DEFAULT_PATH = MACHINE_IRF_DIR / "machine_irf_default.npy"
+
+# True when launched as a PyInstaller-compiled executable.
+_is_frozen = getattr(sys, "frozen", False)
+
+# Bundled read-only resources — always accessible via __file__ (even when frozen,
+# PyInstaller extracts them to a temp dir that __file__ still points into).
+_BUNDLED_MACHINE_IRF_DIR = Path(__file__).resolve().parent / "machine_irf"
+
+# Writable location for user-generated IRF files.
+# When frozen the package dir is inside a read-only bundle, so saves go to
+# ~/.flimkit/machine_irf/ instead.  When running from source the behaviour is
+# unchanged (saves alongside the package).
+USER_MACHINE_IRF_DIR = Path.home() / ".flimkit" / "machine_irf"
+MACHINE_IRF_DIR = USER_MACHINE_IRF_DIR if _is_frozen else _BUNDLED_MACHINE_IRF_DIR
+
+# Default IRF path used when no explicit path is given.
+# When frozen: prefer a user-saved copy (if it exists), else fall back to the
+# bundled factory default so a fresh install still works out of the box.
+_user_default = USER_MACHINE_IRF_DIR / "machine_irf_default.npy"
+MACHINE_IRF_DEFAULT_PATH = (
+    (_user_default if _user_default.exists() else _BUNDLED_MACHINE_IRF_DIR / "machine_irf_default.npy")
+    if _is_frozen
+    else _BUNDLED_MACHINE_IRF_DIR / "machine_irf_default.npy"
+)
 MACHINE_IRF_ALIGN_ANCHOR = "peak"   # learned Leica-style placement anchor
 MACHINE_IRF_REDUCER = "median"      # aggregation across paired IRFs
 MACHINE_IRF_FIT_STRATEGY = "fixed"  # notebook-chosen default: fixed machine IRF
