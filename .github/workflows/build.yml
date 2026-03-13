@@ -69,7 +69,16 @@ jobs:
           --add-data "flimkit:flimkit"
           gui.py
 
-      - name: Upload artifact
+      - name: Upload artifact (macOS .app)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/FLIMKit.app
+          retention-days: 30
+
+      - name: Upload artifact (Linux / Windows)
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
