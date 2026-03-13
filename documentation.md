@@ -200,6 +200,8 @@ The directory is created automatically on first save. The default IRF resolution
 
 This means a new user can open the app and run fits immediately using the bundled default, then replace it with their own machine IRF via the **Machine IRF Builder** tab. No manual file copying is needed.
 
+> **Restart required after first save:** the default IRF path is resolved once at startup. After saving a new machine IRF, restart the app so it picks up your saved version as the new default.
+
 > **Note for Python source users:** behaviour is unchanged — files are still saved to `flimkit/machine_irf/` inside the project directory.
 
 #### Minimum Pair Count by Target Quality
