@@ -243,16 +243,21 @@ def _thresh(bvar: tk.BooleanVar, sv: tk.StringVar):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class IRFWidget:
+    # Sentinel to detect that the path was auto-filled (not user-entered)
+    _AUTO_FILL = object()
+
     CHOICES = [
         ("Leica analytical model (XLSX)  [recommended]", "irf_xlsx"),
+        ("Machine IRF (.npy pre-built)",                 "machine_irf"),
         ("Scatter PTU (measured IRF)",                   "file"),
         ("Estimate from decay – raw",                    "raw"),
         ("Estimate from decay – parametric",             "parametric"),
         ("Gaussian (fallback)",                          "gaussian"),
     ]
 
-    def __init__(self, parent, default="irf_xlsx", xlsx_var=None):
+    def __init__(self, parent, default="irf_xlsx", xlsx_var=None, machine_irf_default: str = ""):
         self.xlsx_var  = xlsx_var
+        self._machine_irf_default = machine_irf_default
         self.sv_method = tk.StringVar(value=default)
         self.sv_path   = tk.StringVar()
 
@@ -271,9 +276,7 @@ class IRFWidget:
         self._path_e.grid(row=r, column=1, sticky="ew", padx=4, pady=3)
         self._path_btn = ttk.Button(
             self.frame, text="Browse...",
-            command=lambda: _browse_file(
-                self.sv_path, "Select IRF file",
-                [("PTU / XLSX", "*.ptu *.xlsx"), ("All", "*.*")]))
+            command=self._browse_irf_path)
         self._path_btn.grid(row=r, column=2, padx=4, pady=3)
 
         self._note = ttk.Label(
@@ -284,7 +287,20 @@ class IRFWidget:
 
         self._update()
 
+    def _browse_irf_path(self):
+        if self.sv_method.get() == "machine_irf":
+            _browse_file(self.sv_path, "Select machine IRF",
+                         [("NumPy array", "*.npy"), ("All", "*.*")])
+        else:
+            _browse_file(self.sv_path, "Select IRF file",
+                         [("PTU / XLSX", "*.ptu *.xlsx"), ("All", "*.*")])
+
     def _show_browse(self):
+        method = self.sv_method.get()
+        self._path_lbl.config(
+            text="Machine IRF (.npy) path" if method == "machine_irf" else "IRF / XLSX path")
+        if method == "machine_irf" and not self.sv_path.get().endswith(".npy"):
+            self.sv_path.set(self._machine_irf_default)
         self._path_lbl.grid()
         self._path_e.grid()
         self._path_btn.grid()
@@ -306,7 +322,7 @@ class IRFWidget:
         method = self.sv_method.get()
         if method == "irf_xlsx":
             self._show_note() if self.xlsx_var is not None else self._show_browse()
-        elif method == "file":
+        elif method in ("file", "machine_irf"):
             self._show_browse()
         else:
             self._hide_all()
@@ -320,13 +336,15 @@ class IRFWidget:
         if method == "irf_xlsx":
             xlsx = (self.xlsx_var.get().strip() if self.xlsx_var else None) \
                    or xlsx_fallback or path
-            return dict(irf=None, irf_xlsx=xlsx, estimate_irf="none", no_xlsx_irf=False)
+            return dict(irf=None, irf_xlsx=xlsx, estimate_irf="none", no_xlsx_irf=False, machine_irf=None)
+        elif method == "machine_irf":
+            return dict(irf=None, irf_xlsx=None, estimate_irf="machine_irf", no_xlsx_irf=True, machine_irf=path)
         elif method == "file":
-            return dict(irf=path, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True)
+            return dict(irf=path, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True, machine_irf=None)
         elif method in ("raw", "parametric"):
-            return dict(irf=None, irf_xlsx=None, estimate_irf=method, no_xlsx_irf=True)
+            return dict(irf=None, irf_xlsx=None, estimate_irf=method, no_xlsx_irf=True, machine_irf=None)
         else:
-            return dict(irf=None, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True)
+            return dict(irf=None, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True, machine_irf=None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -632,7 +650,8 @@ class FLIMKitGUI:
              lambda: _browse_file(self.sv_xlsx, "XLSX file",
                                   [("Excel", "*.xlsx"), ("All", "*.*")]))
 
-        self._irf_fov = IRFWidget(tab, default="irf_xlsx", xlsx_var=self.sv_xlsx)
+        self._irf_fov = IRFWidget(tab, default="irf_xlsx", xlsx_var=self.sv_xlsx,
+                                   machine_irf_default=str(_C()["MACHINE_IRF_DEFAULT_PATH"]))
         self._irf_fov.grid(row=1, column=0, sticky="ew", pady=(0, 6))
 
         fp = _section(tab, "Fitting Parameters")
@@ -730,7 +749,8 @@ class FLIMKitGUI:
         self._btn_st.grid(row=3, column=0, pady=8, ipadx=20, ipady=4)
 
     def _build_stitch_fit(self, parent):
-        self._irf_st = IRFWidget(parent, default="irf_xlsx")
+        self._irf_st = IRFWidget(parent, default="irf_xlsx",
+                                  machine_irf_default=str(_C()["MACHINE_IRF_DEFAULT_PATH"]))
         self._irf_st.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self._irf_st.frame.columnconfigure(1, weight=1)
 
@@ -998,6 +1018,7 @@ class FLIMKitGUI:
         a.irf_xlsx      = irf["irf_xlsx"]
         a.estimate_irf  = irf["estimate_irf"]
         a.no_xlsx_irf   = irf["no_xlsx_irf"]
+        a.machine_irf   = irf.get("machine_irf") or str(_C()["MACHINE_IRF_DEFAULT_PATH"])
         a.irf_bins      = cfg["IRF_BINS"]
         a.irf_fit_width = cfg["IRF_FIT_WIDTH"]
         a.irf_fwhm      = cfg["IRF_FWHM"]
@@ -1054,7 +1075,9 @@ class FLIMKitGUI:
         irf = self._irf_st.get_args()
         a.irf           = irf["irf"]
         a.irf_xlsx      = irf["irf_xlsx"]
+        a.no_xlsx_irf   = irf["no_xlsx_irf"]
         a.estimate_irf  = irf["estimate_irf"] if irf["estimate_irf"] != "none" else "gaussian"
+        a.machine_irf   = irf.get("machine_irf") or str(cfg["MACHINE_IRF_DEFAULT_PATH"])
         a.nexp          = self.iv_nexp_st.get()
         a.tau_min       = cfg["Tau_min"]
         a.tau_max       = cfg["Tau_max"]
