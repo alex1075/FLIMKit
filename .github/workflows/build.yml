@@ -1,0 +1,79 @@
+name: Build FLIMKit App
+
+on:
+  push:
+    tags:
+      - "v*"          # trigger on version tags like v1.0.0
+  workflow_dispatch:  # also allow manual trigger from GitHub UI
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: FLIMKit-linux
+          - os: windows-latest
+            artifact_name: FLIMKit-windows
+          - os: macos-latest
+            artifact_name: FLIMKit-macos
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      # tkinter is not bundled with the GitHub Actions macOS Python — install it
+      - name: Install tkinter (macOS only)
+        if: runner.os == 'macOS'
+        run: brew install python-tk@3.11
+
+      - name: Build with PyInstaller
+        run: >
+          pyinstaller
+          --name FLIMKit
+          --windowed
+          --onedir
+          --add-data "flimkit:flimkit"
+          gui.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/FLIMKit/
+          retention-days: 30
+
+  # Optional: create a GitHub Release and attach the zipped builds when a tag is pushed
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Zip each build
+        run: |
+          cd artifacts
+          for d in */; do zip -r "${d%/}.zip" "$d"; done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
