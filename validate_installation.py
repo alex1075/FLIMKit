@@ -489,6 +489,141 @@ def test_phasor_pipeline():
         return False
 
 
+def test_tile_fit_pipeline():
+    """Test the per-tile fit → assemble → save pipeline with mocked PTU I/O."""
+    print_header("Testing Per-Tile Fit Pipeline")
+
+    try:
+        import numpy as np
+        import tempfile
+
+        TILE_H, TILE_W = 64, 64
+        TRUE_TAU1_NS = 2.0
+        rng = np.random.default_rng(42)
+
+        def _pixel_maps(n_exp=1):
+            pm = {
+                'intensity': rng.poisson(500, (TILE_H, TILE_W)).astype(np.float32),
+                'chi2':      rng.uniform(0.8, 1.5, (TILE_H, TILE_W)).astype(np.float32),
+            }
+            for k in range(1, n_exp + 1):
+                if k == 1:
+                    # Deterministic synthetic ground truth for validation reporting.
+                    pm[f'tau{k}'] = rng.normal(TRUE_TAU1_NS, 0.05, (TILE_H, TILE_W)).astype(np.float32)
+                    pm[f'a{k}']   = np.ones((TILE_H, TILE_W), dtype=np.float32)
+                else:
+                    pm[f'tau{k}'] = rng.uniform(1.0, 4.0, (TILE_H, TILE_W)).astype(np.float32)
+                    pm[f'a{k}']   = rng.uniform(0.3, 0.7, (TILE_H, TILE_W)).astype(np.float32)
+            return pm
+
+        # 2×2 grid of synthetic tile results
+        positions = [(0, 0), (0, TILE_W), (TILE_H, 0), (TILE_H, TILE_W)]
+        tile_results = [
+            {
+                'ptu_name':       f'R_2_s{i+1}.ptu',
+                'pixel_y':        py,
+                'pixel_x':        px,
+                'tile_h':         TILE_H,
+                'tile_w':         TILE_W,
+                'pixel_maps':     _pixel_maps(n_exp=1),
+                'global_summary': {
+                    'n_pixels_fitted':        TILE_H * TILE_W,
+                    'tau_mean_amp_global_ns': 2.1,
+                    'tau1_mean_ns':           2.0,
+                    'a1_mean_frac':           1.0,
+                },
+                'strategy': 'parametric',
+            }
+            for i, (py, px) in enumerate(positions)
+        ]
+        canvas_h = 2 * TILE_H
+        canvas_w = 2 * TILE_W
+
+        # ── Step 1: assemble_tile_maps ────────────────────────────────────────
+        from flimkit.FLIM.assemble import assemble_tile_maps, derive_global_tau, save_assembled_maps
+
+        canvas = assemble_tile_maps(tile_results, canvas_h, canvas_w, n_exp=1)
+        assert 'intensity'    in canvas, "canvas missing 'intensity'"
+        assert 'tau_mean_amp' in canvas, "canvas missing 'tau_mean_amp'"
+        assert canvas['intensity'].shape == (canvas_h, canvas_w)
+        print_success(f"Step 1: Tiles assembled into {canvas_h}×{canvas_w} canvas")
+
+        # ── Step 2: derive_global_tau ─────────────────────────────────────────
+        gs = derive_global_tau(canvas, n_exp=1)
+        assert gs['n_pixels_fitted'] > 0
+        tau = gs['tau_mean_amp_global_ns']
+        assert 0.1 < tau < 15.0, f"Unreasonable global τ: {tau}"
+        print_success(f"Step 2: Global τ = {tau:.2f} ns ({gs['n_pixels_fitted']} px fitted)")
+
+        # ── Step 3: save_assembled_maps ───────────────────────────────────────
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            save_assembled_maps(canvas, gs, out, roi_name='R_2', n_exp=1)
+
+            missing = [f for f in [
+                'R_2_intensity.tif', 'R_2_tau_mean_amp.tif',
+                'R_2_intensity.npy', 'R_2_tau_mean_amp.npy',
+                'R_2_global_summary.txt',
+            ] if not (out / f).exists()]
+            assert not missing, f"Missing output files: {missing}"
+            print_success("Step 3: TIFFs, NPYs, and summary text written")
+
+        # ── Step 4: _run_tile_fit end-to-end (fit_flim_tiles patched) ─────────
+        try:
+            import argparse
+            from flimkit.interactive import _run_tile_fit
+            from flimkit.configs import (
+                Tau_min, Tau_max, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM,
+                channels, lm_restarts, de_population, de_maxiter,
+            )
+
+            with tempfile.TemporaryDirectory() as tmp:
+                args = argparse.Namespace(
+                    xlif='dummy.xlif', ptu_dir='dummy_ptu', ptu_basename='R 2',
+                    output_dir=tmp, rotate_tiles=True,
+                    estimate_irf='parametric', irf=None, irf_xlsx=None,
+                    irf_xlsx_dir=None, irf_xlsx_map=None, machine_irf=None,
+                    irf_bins=IRF_BINS, irf_fit_width=IRF_FIT_WIDTH, irf_fwhm=IRF_FWHM,
+                    no_xlsx_irf=True, nexp=1, tau_min=Tau_min, tau_max=Tau_max,
+                    mode='both', binning=4, min_photons=10,
+                    optimizer='lm_multistart', restarts=1,
+                    de_population=de_population, de_maxiter=de_maxiter,
+                    workers=1, no_polish=True, channel=channels, no_plots=True,
+                    cell_mask=False, debug_xlsx=False, print_config=False,
+                    xlsx=None, out=None, intensity_threshold=None,
+                    tau_display_min=None, tau_display_max=None,
+                )
+
+                with patch('flimkit.PTU.stitch.fit_flim_tiles',
+                           return_value=(tile_results, canvas_h, canvas_w)):
+                    result_canvas, result_gs = _run_tile_fit(args)
+
+                assert 'intensity' in result_canvas
+                assert result_gs['n_pixels_fitted'] > 0
+                out = Path(tmp)
+                roi = 'R_2'
+                assert (out / f'{roi}_intensity.tif').exists()
+                assert (out / f'{roi}_tau_mean_amp.tif').exists()
+                tau1_fit = result_gs.get('tau1_mean_ns')
+                assert tau1_fit is not None, "tau1_mean_ns missing from tile-fit summary"
+                rel_tau1 = abs(tau1_fit - TRUE_TAU1_NS) / TRUE_TAU1_NS
+                assert rel_tau1 < 0.10, f"Tile-fit tau1 error too high: {rel_tau1:.0%}"
+                print_success(
+                    f"Step 4: Tile-fit summary "
+                    f"(τ₁={tau1_fit:.2f} vs {TRUE_TAU1_NS} ns [{rel_tau1:.0%}])"
+                )
+
+        except ImportError as e:
+            print_warning(f"Step 4: _run_tile_fit unavailable ({e})")
+
+        return True
+
+    except Exception as e:
+        print_error(f"Per-tile fit pipeline test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
 def main():
     """Run all validation checks."""
     print(f"\n{Colors.BOLD}FLIM Pipeline Installation Validation{Colors.END}")
@@ -504,6 +639,7 @@ def main():
     results.append(("Tile Stitching", test_stitching()))
     results.append(("Complete Workflow", test_complete_workflow()))
     results.append(("Phasor Pipeline", test_phasor_pipeline()))
+    results.append(("Per-Tile Fit Pipeline", test_tile_fit_pipeline()))
     
     print_header("Validation Summary")
     

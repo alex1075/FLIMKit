@@ -606,6 +606,281 @@ class TestDataIntegrity:
             pytest.skip("Required modules not available")
 
 
+class TestPerTileFitPipeline:
+    """Test the per-tile fit → assemble → save pipeline.
+
+    The tests are structured in three layers:
+      1. Component tests: call assemble_tile_maps / derive_global_tau /
+         save_assembled_maps directly with synthetic data — no PTU I/O needed.
+      2. Integration test: patch fit_flim_tiles to return synthetic tile_results
+         and verify _run_tile_fit completes end-to-end and saves the right files.
+      3. Machine-IRF variant: same integration test with estimate_irf='machine_irf'.
+    """
+
+    N_BINS  = 256
+    TCSPC   = 97e-12   # seconds per bin
+    TILE_H  = 64       # small tiles for speed
+    TILE_W  = 64
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _pixel_maps(self, h=None, w=None, n_exp=1):
+        """Build a minimal pixel_maps dict that assemble_tile_maps accepts."""
+        h = h or self.TILE_H
+        w = w or self.TILE_W
+        pm = {
+            'intensity': np.random.poisson(500, (h, w)).astype(np.float32),
+            'chi2':      np.random.uniform(0.8, 1.5, (h, w)).astype(np.float32),
+        }
+        for k in range(1, n_exp + 1):
+            pm[f'tau{k}'] = np.random.uniform(1.0, 4.0, (h, w)).astype(np.float32)
+            pm[f'a{k}']   = np.random.uniform(0.3, 0.7, (h, w)).astype(np.float32)
+        return pm
+
+    def _tile_results(self, layout="2x2", n_exp=1):
+        """Build synthetic tile_results for a given layout."""
+        rows, cols = map(int, layout.split('x'))
+        results = []
+        for r in range(rows):
+            for c in range(cols):
+                pm = self._pixel_maps(n_exp=n_exp)
+                results.append({
+                    'ptu_name':       f'R_2_s{r*cols+c+1}.ptu',
+                    'pixel_y':        r * self.TILE_H,
+                    'pixel_x':        c * self.TILE_W,
+                    'tile_h':         self.TILE_H,
+                    'tile_w':         self.TILE_W,
+                    'pixel_maps':     pm,
+                    'global_summary': {
+                        'n_pixels_fitted':       self.TILE_H * self.TILE_W,
+                        'tau_mean_amp_global_ns': 2.1,
+                        'tau_std_amp_global_ns':  0.3,
+                        **{f'tau{k}_mean_ns': 2.0 for k in range(1, n_exp + 1)},
+                        **{f'a{k}_mean_frac': 1.0 / n_exp for k in range(1, n_exp + 1)},
+                    },
+                    'strategy': 'parametric',
+                })
+        canvas_h = rows * self.TILE_H
+        canvas_w = cols * self.TILE_W
+        return results, canvas_h, canvas_w
+
+    def _base_args(self, output_dir, n_exp=1):
+        """Minimal args namespace for _run_tile_fit."""
+        import argparse
+        try:
+            from flimkit.configs import (
+                Tau_min, Tau_max, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM,
+                channels, lm_restarts, de_population, de_maxiter,
+            )
+        except ImportError:
+            pytest.skip("flimkit.configs not available")
+
+        return argparse.Namespace(
+            xlif='dummy.xlif', ptu_dir='dummy_ptu', ptu_basename='R 2',
+            output_dir=str(output_dir), rotate_tiles=True,
+            estimate_irf='parametric', irf=None, irf_xlsx=None,
+            irf_xlsx_dir=None, irf_xlsx_map=None, machine_irf=None,
+            irf_bins=IRF_BINS, irf_fit_width=IRF_FIT_WIDTH, irf_fwhm=IRF_FWHM,
+            no_xlsx_irf=True, nexp=n_exp, tau_min=Tau_min, tau_max=Tau_max,
+            mode='both', binning=4, min_photons=10,
+            optimizer='lm_multistart', restarts=1,
+            de_population=de_population, de_maxiter=de_maxiter,
+            workers=1, no_polish=True, channel=channels, no_plots=True,
+            cell_mask=False, debug_xlsx=False, print_config=False,
+            xlsx=None, out=None, intensity_threshold=None,
+            tau_display_min=None, tau_display_max=None,
+        )
+
+    # ── 1. component tests ─────────────────────────────────────────────────────
+
+    def test_assemble_tile_maps_basic(self):
+        """assemble_tile_maps places tiles correctly on the canvas."""
+        try:
+            from flimkit.FLIM.assemble import assemble_tile_maps
+        except ImportError as e:
+            pytest.skip(f"assemble not available: {e}")
+
+        tile_results, ch, cw = self._tile_results("2x2", n_exp=1)
+        canvas = assemble_tile_maps(tile_results, ch, cw, n_exp=1)
+
+        assert 'intensity'    in canvas
+        assert 'tau_mean_amp' in canvas
+        assert 'tau1'         in canvas
+        assert canvas['intensity'].shape    == (ch, cw)
+        assert canvas['tau_mean_amp'].shape == (ch, cw)
+        # All pixels should have been filled (no NaN gaps for a gapless 2×2)
+        assert np.all(canvas['intensity'] >= 0)
+        assert np.sum(np.isfinite(canvas['tau1'])) > 0
+
+    def test_assemble_tile_maps_biexp(self):
+        """assemble_tile_maps works for 2-component fits."""
+        try:
+            from flimkit.FLIM.assemble import assemble_tile_maps
+        except ImportError as e:
+            pytest.skip(f"assemble not available: {e}")
+
+        tile_results, ch, cw = self._tile_results("2x2", n_exp=2)
+        canvas = assemble_tile_maps(tile_results, ch, cw, n_exp=2)
+
+        assert 'tau1' in canvas and 'tau2' in canvas
+        assert 'a1'   in canvas and 'a2'   in canvas
+        assert canvas['tau1'].shape == (ch, cw)
+
+    def test_derive_global_tau_single_exp(self):
+        """derive_global_tau extracts meaningful stats from a canvas."""
+        try:
+            from flimkit.FLIM.assemble import assemble_tile_maps, derive_global_tau
+        except ImportError as e:
+            pytest.skip(f"assemble not available: {e}")
+
+        tile_results, ch, cw = self._tile_results("2x2", n_exp=1)
+        canvas = assemble_tile_maps(tile_results, ch, cw, n_exp=1)
+        gs = derive_global_tau(canvas, n_exp=1)
+
+        assert 'n_pixels_fitted'       in gs
+        assert 'tau_mean_amp_global_ns' in gs
+        assert 'tau1_mean_ns'           in gs
+        assert gs['n_pixels_fitted']   > 0
+        tau = gs['tau_mean_amp_global_ns']
+        assert 0.1 < tau < 15.0, f"Unreasonable global tau: {tau}"
+
+    def test_save_assembled_maps_creates_files(self):
+        """save_assembled_maps writes intensity TIFF, tau TIFF, numpy maps, and summary."""
+        try:
+            from flimkit.FLIM.assemble import assemble_tile_maps, derive_global_tau, save_assembled_maps
+        except ImportError as e:
+            pytest.skip(f"assemble not available: {e}")
+
+        tile_results, ch, cw = self._tile_results("2x2", n_exp=1)
+        canvas = assemble_tile_maps(tile_results, ch, cw, n_exp=1)
+        gs     = derive_global_tau(canvas, n_exp=1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            save_assembled_maps(canvas, gs, out, roi_name='R_2', n_exp=1)
+
+            assert (out / 'R_2_intensity.tif').exists(),     "intensity TIFF missing"
+            assert (out / 'R_2_tau_mean_amp.tif').exists(),  "tau TIFF missing"
+            assert (out / 'R_2_intensity.npy').exists(),     "intensity .npy missing"
+            assert (out / 'R_2_tau_mean_amp.npy').exists(),  "tau .npy missing"
+            assert (out / 'R_2_global_summary.txt').exists(),"global summary missing"
+
+    # ── 2. integration test with patched fit_flim_tiles ────────────────────────
+
+    def test_run_tile_fit_end_to_end(self):
+        """_run_tile_fit completes and writes output files when fit_flim_tiles is patched."""
+        try:
+            from flimkit.interactive import _run_tile_fit
+            from flimkit.FLIM.assemble import assemble_tile_maps, derive_global_tau
+        except ImportError as e:
+            pytest.skip(f"Required module not available: {e}")
+
+        from unittest.mock import patch
+
+        tile_results, ch, cw = self._tile_results("2x2", n_exp=1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self._base_args(Path(tmp))
+
+            with patch('flimkit.PTU.stitch.fit_flim_tiles',
+                       return_value=(tile_results, ch, cw)):
+                canvas, global_summary = _run_tile_fit(args)
+
+            assert 'intensity'    in canvas
+            assert 'tau_mean_amp' in canvas
+            assert global_summary['n_pixels_fitted'] > 0
+            tau = global_summary['tau_mean_amp_global_ns']
+            assert 0.1 < tau < 15.0, f"Unreasonable tau: {tau}"
+
+            # Output files must exist
+            out = Path(args.output_dir)
+            roi = args.ptu_basename.replace(' ', '_')
+            assert (out / f'{roi}_intensity.tif').exists(),    "intensity TIFF missing"
+            assert (out / f'{roi}_tau_mean_amp.tif').exists(), "tau TIFF missing"
+            assert (out / f'{roi}_global_summary.txt').exists()
+
+    def test_run_tile_fit_canvas_dimensions(self):
+        """Canvas is sized to the tile layout, not a fixed constant."""
+        try:
+            from flimkit.interactive import _run_tile_fit
+        except ImportError as e:
+            pytest.skip(f"Required module not available: {e}")
+
+        from unittest.mock import patch
+
+        # Use a 3×2 layout to verify non-square canvas handling
+        tile_results, ch, cw = self._tile_results("3x2", n_exp=1)
+        expected_h = 3 * self.TILE_H
+        expected_w = 2 * self.TILE_W
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self._base_args(Path(tmp))
+            args.ptu_basename = 'R 3'
+
+            with patch('flimkit.PTU.stitch.fit_flim_tiles',
+                       return_value=(tile_results, ch, cw)):
+                canvas, _ = _run_tile_fit(args)
+
+            h, w = canvas['intensity'].shape
+            assert h == expected_h and w == expected_w, (
+                f"Expected {expected_h}×{expected_w}, got {h}×{w}"
+            )
+
+    def test_run_tile_fit_biexp_summary(self):
+        """With nexp=2 the global summary exposes tau1, tau2, a1, a2 stats."""
+        try:
+            from flimkit.interactive import _run_tile_fit
+        except ImportError as e:
+            pytest.skip(f"Required module not available: {e}")
+
+        from unittest.mock import patch
+
+        tile_results, ch, cw = self._tile_results("2x2", n_exp=2)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self._base_args(Path(tmp), n_exp=2)
+
+            with patch('flimkit.PTU.stitch.fit_flim_tiles',
+                       return_value=(tile_results, ch, cw)):
+                _, global_summary = _run_tile_fit(args)
+
+            assert 'tau1_mean_ns' in global_summary, "tau1_mean_ns missing"
+            assert 'tau2_mean_ns' in global_summary, "tau2_mean_ns missing"
+
+    # ── 3. machine-IRF variant ─────────────────────────────────────────────────
+
+    def test_run_tile_fit_with_machine_irf(self):
+        """estimate_irf='machine_irf' path does not crash and produces valid output."""
+        try:
+            from flimkit.interactive import _run_tile_fit
+        except ImportError as e:
+            pytest.skip(f"Required module not available: {e}")
+
+        from unittest.mock import patch
+
+        tile_results, ch, cw = self._tile_results("2x2", n_exp=1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Write a Gaussian machine IRF .npy
+            sigma   = 3.0 / 2.3548
+            bins    = np.arange(self.N_BINS, dtype=float)
+            irf_arr = np.exp(-0.5 * ((bins - 30) / sigma) ** 2)
+            irf_arr /= irf_arr.sum()
+            mirf_path = Path(tmp) / 'machine_irf_test.npy'
+            np.save(str(mirf_path), irf_arr.astype(np.float64))
+
+            args = self._base_args(Path(tmp))
+            args.estimate_irf = 'machine_irf'
+            args.machine_irf  = str(mirf_path)
+
+            with patch('flimkit.PTU.stitch.fit_flim_tiles',
+                       return_value=(tile_results, ch, cw)):
+                canvas, gs = _run_tile_fit(args)
+
+            assert 'intensity' in canvas
+            assert gs['n_pixels_fitted'] > 0
+
+
 def test_installation_check():
     """Test that all required modules can be imported."""
     required_modules = [

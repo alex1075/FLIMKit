@@ -706,7 +706,7 @@ class FLIMKitGUI:
 
     def _build_stitch_tab(self):
         tab = ttk.Frame(self._nb, padding=10)
-        self._nb.add(tab, text="  Tile Stitch / Stitch + Fit  ")
+        self._nb.add(tab, text="  Tile Stitch / Fit  ")
         tab.columnconfigure(0, weight=1)
 
         ff = _section(tab, "Input Files")
@@ -732,11 +732,18 @@ class FLIMKitGUI:
                         variable=self.bv_rotate).grid(
             row=4, column=0, columnspan=3, sticky="w", padx=4, pady=(4, 0))
 
-        self.bv_do_fit = tk.BooleanVar(value=False)
-        ttk.Checkbutton(tab, text="Also perform FLIM fitting after stitching",
-                        variable=self.bv_do_fit,
-                        command=self._fit_toggled).grid(
-            row=1, column=0, sticky="w", padx=6, pady=(4, 2))
+        # Pipeline mode
+        fp = _section(tab, "Pipeline")
+        fp.grid(row=1, column=0, sticky="ew", pady=(4, 2))
+        self.sv_pipeline = tk.StringVar(value="stitch_only")
+        for r, (val, lbl) in enumerate([
+            ("stitch_only", "Stitch tiles only"),
+            ("stitch_fit",  "Stitch then fit full ROI"),
+            ("tile_fit",    "Per-tile fit  [recommended — fits each tile independently]"),
+        ]):
+            ttk.Radiobutton(fp, text=lbl, variable=self.sv_pipeline,
+                            value=val, command=self._pipeline_changed).grid(
+                row=r, column=0, sticky="w", padx=4, pady=1)
 
         self._fit_frame = ttk.Frame(tab)
         self._fit_frame.columnconfigure(0, weight=1)
@@ -824,13 +831,33 @@ class FLIMKitGUI:
         ttk.Label(fm, text="(leave blank for no threshold)",
                   foreground="grey").grid(row=0, column=2, sticky="w")
 
-    def _fit_toggled(self):
-        if self.bv_do_fit.get():
-            self._fit_frame.grid()
-            self._btn_st.configure(text="▶  Run Stitch + Fit")
-        else:
+        # Per-tile extras (shown only in tile_fit pipeline mode)
+        self._tile_extras_frame = ttk.Frame(parent)
+        self._tile_extras_frame.columnconfigure(0, weight=1)
+        self._tile_extras_frame.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        fte = _section(self._tile_extras_frame, "Per-Tile IRF Directory (optional)")
+        fte.grid(row=0, column=0, sticky="ew")
+        fte.columnconfigure(1, weight=1)
+        self.sv_tile_irf_dir = tk.StringVar()
+        _row(fte, "IRF XLSX dir", self.sv_tile_irf_dir, 0,
+             lambda: _browse_dir(self.sv_tile_irf_dir, "Directory of per-tile IRF xlsx files"))
+        ttk.Label(fte, text="One <tile_name>.xlsx per tile; leave blank to use IRF method above",
+                  foreground="grey").grid(row=1, column=1, columnspan=2, sticky="w", padx=4)
+        self._tile_extras_frame.grid_remove()
+
+    def _pipeline_changed(self):
+        mode = self.sv_pipeline.get()
+        if mode == "stitch_only":
             self._fit_frame.grid_remove()
             self._btn_st.configure(text="▶  Run Tile Stitch")
+        elif mode == "stitch_fit":
+            self._fit_frame.grid()
+            self._tile_extras_frame.grid_remove()
+            self._btn_st.configure(text="▶  Run Stitch + Fit")
+        else:  # tile_fit
+            self._fit_frame.grid()
+            self._tile_extras_frame.grid()
+            self._btn_st.configure(text="▶  Run Per-Tile Fit")
 
     def _perpix_toggled(self):
         if self.bv_perpix.get():
@@ -1057,8 +1084,8 @@ class FLIMKitGUI:
                 messagebox.showerror("Missing input", f"Please specify the {name}.")
                 return
 
+        pipeline = self.sv_pipeline.get()
         from flimkit.PTU.stitch import stitch_flim_tiles
-        from flimkit.interactive import _run_stitch_and_fit
 
         roi_name   = Path(xlif).stem.replace(" ", "_")
         output_dir = str(Path(out_base) / roi_name)
@@ -1070,7 +1097,6 @@ class FLIMKitGUI:
         a.ptu_basename = Path(xlif).stem
         a.rotate_tiles = self.bv_rotate.get()
 
-        # Always fill in all advanced options, so both workflows get them
         cfg = _C()
         irf = self._irf_st.get_args()
         a.irf           = irf["irf"]
@@ -1081,7 +1107,6 @@ class FLIMKitGUI:
         a.nexp          = self.iv_nexp_st.get()
         a.tau_min       = cfg["Tau_min"]
         a.tau_max       = cfg["Tau_max"]
-        a.mode          = "both" if self.bv_perpix.get() else "summed"
         a.binning       = cfg["binning_factor"]
         a.min_photons   = cfg["MIN_PHOTONS_PERPIX"]
         a.optimizer     = "de"
@@ -1094,31 +1119,42 @@ class FLIMKitGUI:
         a.irf_fwhm      = cfg["IRF_FWHM"]
         a.irf_bins      = cfg["IRF_BINS"]
         a.irf_fit_width = cfg["IRF_FIT_WIDTH"]
-        a.no_plots      = False
-        a.save_individual        = self.bv_save_ind.get()
-        a.save_tau_weighted      = self.bv_save_tau_weighted.get()
-        a.save_int_weighted      = self.bv_save_int_weighted.get()
-        a.save_amp_weighted      = self.bv_save_amp_weighted.get()
         a.tau_display_min        = _flt(self.sv_tau_lo)
         a.tau_display_max        = _flt(self.sv_tau_hi)
         a.intensity_display_min  = _flt(self.sv_int_lo)
         a.intensity_display_max  = _flt(self.sv_int_hi)
         a.intensity_threshold    = _thresh(self.bv_thr_st, self.sv_thr_st)
+        a.save_individual        = self.bv_save_ind.get()
+        a.save_tau_weighted      = self.bv_save_tau_weighted.get()
+        a.save_int_weighted      = self.bv_save_int_weighted.get()
+        a.save_amp_weighted      = self.bv_save_amp_weighted.get()
+
+        if pipeline == "tile_fit":
+            # Per-tile: each tile gets its own fit; per-pixel forced; no per-tile plots
+            a.mode         = "both"
+            a.no_plots     = True
+            a.cell_mask    = False
+            a.debug_xlsx   = False
+            a.print_config = False
+            a.xlsx         = None
+            a.out          = None
+            a.irf_xlsx_dir = self.sv_tile_irf_dir.get().strip() or None
+        else:
+            a.mode    = "both" if self.bv_perpix.get() else "summed"
+            a.no_plots = False
+            a.irf_xlsx_dir = None
 
         def on_done(result):
             self._set_buttons("normal")
-            self._res.set_status("✓  Stitching complete.")
+            self._res.set_status("✓  Complete.")
             self._res._nb.select(0)
-            # Parse fit summary from captured output and display in summary tab
             captured = "".join(self._buf)
             rows = _parse_summary(captured)
             if rows:
                 self._res.populate_summary(rows)
-            # Optionally: load images, update log, etc.
 
         def task(progress_callback, cancel_event):
-            if not self.bv_do_fit.get():
-                # Tile stitching only
+            if pipeline == "stitch_only":
                 return stitch_flim_tiles(
                     xlif_path=a.xlif,
                     ptu_dir=a.ptu_dir,
@@ -1129,12 +1165,19 @@ class FLIMKitGUI:
                     progress_callback=progress_callback,
                     cancel_event=cancel_event,
                 )
-            else:
-                # Stitch + fit: pass progress/cancel to stitch, then fit
-                return _run_stitch_and_fit(a, progress_callback=progress_callback, cancel_event=cancel_event)
+            elif pipeline == "stitch_fit":
+                from flimkit.interactive import _run_stitch_and_fit
+                return _run_stitch_and_fit(a, progress_callback=progress_callback,
+                                           cancel_event=cancel_event)
+            else:  # tile_fit
+                from flimkit.interactive import _run_tile_fit
+                return _run_tile_fit(a, progress_callback=progress_callback,
+                                     cancel_event=cancel_event)
 
         self._set_buttons("disabled")
-        self.run_with_progress(task, task_name="Stitching", on_done=on_done)
+        task_name = {"stitch_only": "Stitching", "stitch_fit": "Stitch + Fit",
+                     "tile_fit": "Per-Tile Fit"}[pipeline]
+        self.run_with_progress(task, task_name=task_name, on_done=on_done)
 
     def _run_phasor(self):
         try:

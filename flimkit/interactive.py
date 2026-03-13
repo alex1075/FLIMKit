@@ -1408,16 +1408,23 @@ def _run_tile_fit(args, progress_callback=None, cancel_event=None):
 
     global_summary = derive_global_tau(canvas, n_exp=args.nexp)
 
-    # Print summary
-    print(f"  Pixels fitted:  {global_summary.get('n_pixels_fitted', 0):,}")
-    print(f"  tau_mean (amp-weighted): "
-          f"{global_summary.get('tau_mean_amp_global_ns', float('nan')):.3f} ± "
-          f"{global_summary.get('tau_std_amp_global_ns',  float('nan')):.3f} ns")
+    # Print summary in _parse_summary-compatible Greek-letter format
+    n_px     = global_summary.get('n_pixels_fitted', 0)
+    tau_mean = global_summary.get('tau_mean_amp_global_ns', float('nan'))
+    tau_std  = global_summary.get('tau_std_amp_global_ns',  float('nan'))
+    tau_med  = global_summary.get('tau_median_amp_global_ns', float('nan'))
+    print(f"\n{'─'*60}")
+    print(f"  Per-tile fit: {args.nexp}-exp | {n_px:,} pixels")
+    print(f"{'─'*60}")
     for k in range(1, args.nexp + 1):
-        tau_k = global_summary.get(f'tau{k}_mean_ns')
-        a_k   = global_summary.get(f'a{k}_mean_frac')
-        if tau_k is not None:
-            print(f"  tau{k}: {tau_k:.3f} ns   a{k}: {a_k:.3f}")
+        tau_k = global_summary.get(f'tau{k}_mean_ns', float('nan'))
+        a_k   = global_summary.get(f'a{k}_mean_frac', float('nan'))
+        print(f"  τ{k} = {tau_k:8.4f} ns   α{k} = {a_k:.3e}   f{k} = {a_k:.4f}")
+    print(f"  τ_mean (amplitude-weighted)  = {tau_mean:.4f} ns")
+    print(f"  τ_mean (median, amp-wtd)     = {tau_med:.4f} ns")
+    print(f"  τ σ (pixel distribution)     = {tau_std:.4f} ns")
+    print(f"  n pixels fitted              = {n_px}")
+    print(f"  ✓ Optimizer: per-pixel (per-tile fit)")
 
     print(f"\n{'='*60}")
     print(f"  STEP 4: SAVING OUTPUTS")
