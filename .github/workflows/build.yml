@@ -63,7 +63,7 @@ jobs:
           pyinstaller
           --name FLIMKit
           --windowed
-          --onedir
+          --onefile
           --hidden-import tkinter
           --hidden-import tkinter.ttk
           --add-data "flimkit:flimkit"
@@ -73,7 +73,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/FLIMKit/
+          path: dist/
           retention-days: 30
 
   # Optional: create a GitHub Release and attach the zipped builds when a tag is pushed
