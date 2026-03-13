@@ -23,3 +23,5 @@ Results/
 *.npy
 *.npz
 *.ipynb_checkpoints
+*.json
+*.csv

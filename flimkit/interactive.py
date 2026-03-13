@@ -6,7 +6,8 @@ from tqdm import tqdm
 import matplotlib
 from .configs import (
     n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message, INTENSITY_THRESHOLD,
-    TAU_DISPLAY_MIN, TAU_DISPLAY_MAX, INTENSITY_DISPLAY_MIN, INTENSITY_DISPLAY_MAX)
+    TAU_DISPLAY_MIN, TAU_DISPLAY_MAX, INTENSITY_DISPLAY_MIN, INTENSITY_DISPLAY_MAX,
+    MACHINE_IRF_DEFAULT_PATH, MACHINE_IRF_FIT_BG, MACHINE_IRF_FIT_SIGMA, MACHINE_IRF_FIT_TAIL)
 from .PTU.reader import PTUFile
 from .PTU.stitch import stitch_flim_tiles, load_flim_for_fitting  
 from .utils.xml_utils import parse_xlif_tile_positions 
@@ -23,6 +24,38 @@ from .utils.enhanced_outputs import (
     create_complete_output_package
 )
 from .image.tools import make_intensity_image, make_cell_mask, apply_intensity_threshold, pick_intensity_threshold
+
+
+def _load_machine_irf_prompt(machine_irf_path, n_bins, decay_peak_bin):
+    """Load a machine IRF, map it to PTU bins, and align its peak to decay peak."""
+    irf_path = Path(machine_irf_path) if machine_irf_path else Path(MACHINE_IRF_DEFAULT_PATH)
+    if not irf_path.exists():
+        raise FileNotFoundError(f"Machine IRF file not found: {irf_path}")
+
+    irf_prompt = np.asarray(np.load(str(irf_path)), dtype=float).ravel()
+    if irf_prompt.size == 0:
+        raise ValueError(f"Machine IRF file is empty: {irf_path}")
+
+    irf_prompt = np.maximum(irf_prompt, 0.0)
+    if irf_prompt.size > n_bins:
+        irf_prompt = irf_prompt[:n_bins]
+    elif irf_prompt.size < n_bins:
+        padded = np.zeros(n_bins, dtype=float)
+        padded[:irf_prompt.size] = irf_prompt
+        irf_prompt = padded
+
+    s = irf_prompt.sum()
+    if s <= 0:
+        raise ValueError(f"Machine IRF has zero total intensity after processing: {irf_path}")
+    irf_prompt /= s
+
+    current_peak = int(np.argmax(irf_prompt))
+    shift = int(decay_peak_bin) - current_peak
+    if shift != 0:
+        irf_prompt = np.roll(irf_prompt, shift)
+
+    strategy = f"machine_irf ({irf_path.name}) peak_aligned_to_decay"
+    return irf_prompt, strategy
 
 def yes_no_question(question):
     """Ask a yes/no question using inquirer and return 'y' or 'n'."""
@@ -88,16 +121,18 @@ def stitch_and_fit_inquire():
     print("\nIRF estimation options:")
     print("  1. 'irf_xlsx'   - analytical Gaussian+tail fit from XLSX (recommended)")
     print("  2. 'file'       - measured IRF image (scatter PTU)")
-    print("  3. 'raw'        - non-parametric IRF from raw decay")
-    print("  4. 'parametric' - fit Gaussian + exponential tail")
-    print("  5. 'gaussian'   - simple Gaussian IRF (fastest)")
+    print("  3. 'machine_irf' - prebuilt machine IRF (.npy), peak-aligned to decay")
+    print("  4. 'raw'        - non-parametric IRF from raw decay")
+    print("  5. 'parametric' - fit Gaussian + exponential tail")
+    print("  6. 'gaussian'   - simple Gaussian IRF (fastest)")
     method_q = [inquirer.List('method',
                               message="Choose IRF estimation method",
-                              choices=['irf_xlsx', 'file', 'raw', 'parametric', 'gaussian'])]
+                              choices=['irf_xlsx', 'file', 'machine_irf', 'raw', 'parametric', 'gaussian'])]
     estimate_irf = inquirer.prompt(method_q)['method']
     
     irf_path = None
     irf_xlsx_path = None
+    machine_irf_path = None
     if estimate_irf == 'irf_xlsx':
         irf_xlsx_path = input("Enter path to IRF XLSX file: ").strip()
         if not irf_xlsx_path or not Path(irf_xlsx_path).exists():
@@ -110,6 +145,16 @@ def stitch_and_fit_inquire():
             print("  Warning: IRF file not found, falling back to Gaussian")
             estimate_irf = 'gaussian'
             irf_path = None
+    elif estimate_irf == 'machine_irf':
+        _default_machine = str(MACHINE_IRF_DEFAULT_PATH)
+        machine_irf_path = input(
+            f"Enter path to machine IRF .npy (Enter for default: {_default_machine}): "
+        ).strip()
+        machine_irf_path = machine_irf_path if machine_irf_path else _default_machine
+        if not Path(machine_irf_path).exists():
+            print("  Warning: machine IRF file not found, falling back to Gaussian")
+            estimate_irf = 'gaussian'
+            machine_irf_path = None
     
     # Number of exponentials
     nexp_q = [inquirer.List('nexp',
@@ -196,6 +241,7 @@ def stitch_and_fit_inquire():
     # Fitting parameters
     args.irf = irf_path
     args.irf_xlsx = irf_xlsx_path
+    args.machine_irf = machine_irf_path
     args.estimate_irf = estimate_irf
     args.nexp = nexp
     args.tau_min = Tau_min
@@ -470,6 +516,15 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
         fit_bg    = True
         print(f"  IRF peak bin after pre-shift = {np.argmax(irf_prompt)}")
 
+    elif args.estimate_irf == "machine_irf":
+        irf_prompt, strategy = _load_machine_irf_prompt(
+            getattr(args, 'machine_irf', None), n_bins, decay_peak_bin
+        )
+        has_tail = MACHINE_IRF_FIT_TAIL
+        fit_sigma = MACHINE_IRF_FIT_SIGMA
+        fit_bg = MACHINE_IRF_FIT_BG
+        print(f"  IRF: {strategy}")
+
     elif args.estimate_irf == "raw":
         from .FLIM.irf_tools import estimate_irf_from_decay_raw
         irf_prompt = estimate_irf_from_decay_raw(
@@ -633,17 +688,27 @@ def single_FOV_flim_fit_inquire():
             # Ask for alternative IRF source
             print("\nIRF estimation options:")
             print("  1. 'file'   - measured IRF image (scatter PTU)")
-            print("  2. 'raw'    - non‑parametric IRF from raw decay")
-            print("  3. 'parametric' - fit Gaussian + exponential tail to rising edge")
-            print("  4. 'none'   - do not estimate IRF (not recommended)")
+            print("  2. 'machine_irf' - prebuilt machine IRF (.npy)")
+            print("  3. 'raw'    - non‑parametric IRF from raw decay")
+            print("  4. 'parametric' - fit Gaussian + exponential tail to rising edge")
+            print("  5. 'none'   - do not estimate IRF (not recommended)")
             method_q = [inquirer.List('method',
                                       message="Choose IRF estimation method",
-                                      choices=['file', 'raw', 'parametric', 'none'])]
+                                      choices=['file', 'machine_irf', 'raw', 'parametric', 'none'])]
             estimate_irf = inquirer.prompt(method_q)['method']
             if estimate_irf == 'file':
                 irf_path = input("Enter path to IRF PTU file: ").strip()
+                machine_irf_path = None
+            elif estimate_irf == 'machine_irf':
+                _default_machine = str(MACHINE_IRF_DEFAULT_PATH)
+                machine_irf_path = input(
+                    f"Enter path to machine IRF .npy (Enter for default: {_default_machine}): "
+                ).strip()
+                machine_irf_path = machine_irf_path if machine_irf_path else _default_machine
+                irf_path = None
             else:
                 irf_path = None
+                machine_irf_path = None
     else:
         xlif_path = None
         use_xlsx_irf = False
@@ -651,12 +716,21 @@ def single_FOV_flim_fit_inquire():
         print("\nNo XLSX file – IRF must be estimated or provided separately.")
         method_q = [inquirer.List('method',
                                   message="Choose IRF estimation method",
-                                  choices=['file', 'raw', 'parametric', 'none'])]
+                                  choices=['file', 'machine_irf', 'raw', 'parametric', 'none'])]
         estimate_irf = inquirer.prompt(method_q)['method']
         if estimate_irf == 'file':
             irf_path = input("Enter path to IRF PTU file: ").strip()
+            machine_irf_path = None
+        elif estimate_irf == 'machine_irf':
+            _default_machine = str(MACHINE_IRF_DEFAULT_PATH)
+            machine_irf_path = input(
+                f"Enter path to machine IRF .npy (Enter for default: {_default_machine}): "
+            ).strip()
+            machine_irf_path = machine_irf_path if machine_irf_path else _default_machine
+            irf_path = None
         else:
             irf_path = None
+            machine_irf_path = None
 
     # Build an argparse.Namespace that mimics the command‑line arguments
     import argparse
@@ -665,6 +739,7 @@ def single_FOV_flim_fit_inquire():
     args.xlsx = xlif_path
     args.no_xlsx_irf = (xlif_path is not None and not use_xlsx_irf)   # only relevant if xlsx exists
     args.irf = irf_path
+    args.machine_irf = machine_irf_path if 'machine_irf_path' in locals() else None
     # When user chose to use the xlsx IRF, route through the analytical path
     args.irf_xlsx = xlif_path if use_xlsx_irf else None
     args.estimate_irf = estimate_irf
@@ -844,6 +919,15 @@ def _run_flim_fit(args):
         fit_bg    = True
         print(f"  IRF peak bin after pre-shift = {np.argmax(irf_prompt)}")
 
+    elif args.estimate_irf == "machine_irf":
+        irf_prompt, strategy = _load_machine_irf_prompt(
+            getattr(args, 'machine_irf', None), ptu.n_bins, decay_peak_bin
+        )
+        has_tail = MACHINE_IRF_FIT_TAIL
+        fit_sigma = MACHINE_IRF_FIT_SIGMA
+        fit_bg = MACHINE_IRF_FIT_BG
+        print(f"  IRF: {strategy}")
+
     elif xlsx is not None and xlsx['irf_t'] is not None and not args.no_xlsx_irf:
         # xlsx IRF: sparse rising-edge, tail and sigma needed
         irf_prompt = irf_from_xlsx(xlsx, ptu.n_bins, ptu.tcspc_res)
@@ -988,9 +1072,11 @@ def single_FOV_flim_fit(interactive=False):
                              "system-specific (not FOV-specific) so export once per "
                              "session and reuse across all PTU files. Independent of "
                              "--xlsx which is for overlay/comparison only.")
-        ap.add_argument("--estimate-irf", choices=["raw", "parametric", "none"],
+        ap.add_argument("--estimate-irf", choices=["raw", "parametric", "machine_irf", "none"],
                         default=Estimate_IRF,
                         help="If no direct IRF provided, estimate from the decay rising edge.")
+        ap.add_argument("--machine-irf", default=str(MACHINE_IRF_DEFAULT_PATH),
+                help="Path to prebuilt machine IRF .npy (used when --estimate-irf machine_irf).")
         ap.add_argument("--irf-bins",      type=int,   default=IRF_BINS)
         ap.add_argument("--irf-fit-width", type=float, default=IRF_FIT_WIDTH)
         ap.add_argument("--irf-fwhm", type=float, default=IRF_FWHM,
@@ -1103,8 +1189,10 @@ def stitch_and_fit(interactive=False):
         
         # Fitting args
         ap.add_argument("--irf", default=None, help="Scatter PTU for IRF")
-        ap.add_argument("--estimate-irf", choices=["raw", "parametric", "gaussian"], 
+        ap.add_argument("--estimate-irf", choices=["raw", "parametric", "machine_irf", "gaussian"], 
                        default="gaussian")
+        ap.add_argument("--machine-irf", default=str(MACHINE_IRF_DEFAULT_PATH),
+                help="Path to prebuilt machine IRF .npy (used when --estimate-irf machine_irf).")
         ap.add_argument("--nexp", type=int, default=n_exp, choices=[1, 2, 3])
         ap.add_argument("--tau-min", type=float, default=Tau_min)
         ap.add_argument("--tau-max", type=float, default=Tau_max)
@@ -1167,13 +1255,25 @@ def tile_fit_inquire():
     print("\nIRF estimation options:")
     print("  1. 'parametric' - fit Gaussian + exponential tail to rising edge (default)")
     print("  2. 'raw'        - non-parametric IRF from raw decay")
-    print("  3. 'irf_xlsx_dir' - per-tile xlsx directory (fill in once format is known)")
+    print("  3. 'machine_irf' - prebuilt machine IRF (.npy), reused for all tiles")
+    print("  4. 'irf_xlsx_dir' - per-tile xlsx directory (fill in once format is known)")
     method_q = [inquirer.List('method',
                               message="Choose IRF method",
-                              choices=['parametric', 'raw', 'irf_xlsx_dir'])]
+                              choices=['parametric', 'raw', 'machine_irf', 'irf_xlsx_dir'])]
     estimate_irf = inquirer.prompt(method_q)['method']
 
     irf_xlsx_dir = None
+    machine_irf_path = None
+    if estimate_irf == 'machine_irf':
+        _default_machine = str(MACHINE_IRF_DEFAULT_PATH)
+        machine_irf_path = input(
+            f"Enter path to machine IRF .npy (Enter for default: {_default_machine}): "
+        ).strip()
+        machine_irf_path = machine_irf_path if machine_irf_path else _default_machine
+        if not Path(machine_irf_path).exists():
+            print("  Warning: machine IRF file not found, falling back to parametric")
+            estimate_irf = 'parametric'
+            machine_irf_path = None
     if estimate_irf == 'irf_xlsx_dir':
         irf_xlsx_dir = input("Enter path to directory containing per-tile IRF xlsx files: ").strip()
         if not irf_xlsx_dir or not Path(irf_xlsx_dir).exists():
@@ -1220,6 +1320,7 @@ def tile_fit_inquire():
     # IRF
     args.estimate_irf  = estimate_irf
     args.irf_xlsx_dir  = irf_xlsx_dir
+    args.machine_irf   = machine_irf_path
     args.irf           = None
     args.irf_xlsx      = None
     args.irf_bins      = IRF_BINS
@@ -1358,7 +1459,9 @@ def tile_fit(interactive=False):
         ap.add_argument("--irf-xlsx-dir", default=None,
                         help="Directory of per-tile IRF xlsx files")
         ap.add_argument("--estimate-irf", default="parametric",
-                        choices=["parametric", "raw"])
+                        choices=["parametric", "raw", "machine_irf"])
+        ap.add_argument("--machine-irf", default=str(MACHINE_IRF_DEFAULT_PATH),
+                        help="Path to prebuilt machine IRF .npy (used when --estimate-irf machine_irf).")
         ap.add_argument("--nexp",         type=int, default=n_exp, choices=[1, 2, 3])
         ap.add_argument("--tau-min",      type=float, default=Tau_min)
         ap.add_argument("--tau-max",      type=float, default=Tau_max)
@@ -1390,6 +1493,7 @@ def tile_fit(interactive=False):
         args.irf_xlsx     = None
         args.irf_xlsx_map = None
         args.irf_xlsx_dir = args.irf_xlsx_dir
+        args.machine_irf  = args.machine_irf
         args.mode         = 'both'
         args.no_plots     = True
         args.cell_mask    = False

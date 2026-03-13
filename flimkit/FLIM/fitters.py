@@ -166,7 +166,7 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
             # Clip strictly inside bounds — DE can land exactly on a bound
             # which causes least_squares to raise "Initial guess outside bounds"
             eps = 1e-10
-            popt_work = np.clip(popt_work, lo + eps, hi - eps)
+            popt_work = np.clip(popt_work, np.asarray(lo) + eps, np.asarray(hi) - eps)
             try:
                 pol = least_squares(residuals, popt_work, bounds=(lo, hi),
                                     method="trf", max_nfev=5000,

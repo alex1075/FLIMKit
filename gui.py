@@ -44,6 +44,8 @@ def _C() -> dict:
             de_maxiter, n_workers, OUT_NAME, IRF_BINS, IRF_FIT_WIDTH,
             IRF_FWHM, channels, TAU_DISPLAY_MIN, TAU_DISPLAY_MAX,
             INTENSITY_DISPLAY_MIN, INTENSITY_DISPLAY_MAX,
+            MACHINE_IRF_DIR, MACHINE_IRF_DEFAULT_PATH,
+            MACHINE_IRF_ALIGN_ANCHOR, MACHINE_IRF_REDUCER,
         )
         _cfg.update(
             n_exp=n_exp, Tau_min=Tau_min, Tau_max=Tau_max, D_mode=D_mode,
@@ -56,6 +58,10 @@ def _C() -> dict:
             TAU_DISPLAY_MIN=TAU_DISPLAY_MIN, TAU_DISPLAY_MAX=TAU_DISPLAY_MAX,
             INTENSITY_DISPLAY_MIN=INTENSITY_DISPLAY_MIN,
             INTENSITY_DISPLAY_MAX=INTENSITY_DISPLAY_MAX,
+            MACHINE_IRF_DIR=MACHINE_IRF_DIR,
+            MACHINE_IRF_DEFAULT_PATH=MACHINE_IRF_DEFAULT_PATH,
+            MACHINE_IRF_ALIGN_ANCHOR=MACHINE_IRF_ALIGN_ANCHOR,
+            MACHINE_IRF_REDUCER=MACHINE_IRF_REDUCER,
         )
     return _cfg
 
@@ -593,6 +599,7 @@ class FLIMKitGUI:
 
         self._build_fov_tab()
         self._build_stitch_tab()
+        self._build_machine_irf_tab()
         self._build_phasor_tab()
 
         self._res = ResultsPanel(root)
@@ -812,7 +819,85 @@ class FLIMKitGUI:
             self._pxf.grid_remove()
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 3 – Phasor
+    # TAB 3 – Machine IRF Builder
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _build_machine_irf_tab(self):
+        tab = ttk.Frame(self._nb, padding=10)
+        self._nb.add(tab, text="  Machine IRF Builder  ")
+        tab.columnconfigure(0, weight=1)
+
+        cfg = _C()
+
+        ff = _section(tab, "Source Data")
+        ff.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ff.columnconfigure(1, weight=1)
+        self.sv_mirf_src = tk.StringVar()
+        _row(
+            ff,
+            "PTU/XLSX folder *",
+            self.sv_mirf_src,
+            0,
+            lambda: _browse_dir(self.sv_mirf_src, "Folder with paired .ptu and .xlsx"),
+        )
+        ttk.Label(
+            ff,
+            text="Builder uses matching <name>.ptu + <name>.xlsx pairs.",
+            foreground="grey",
+        ).grid(row=1, column=1, columnspan=2, sticky="w", padx=4)
+
+        fp = _section(tab, "Build Settings")
+        fp.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        fp.columnconfigure(1, weight=1)
+
+        self.sv_mirf_anchor = tk.StringVar(value=cfg["MACHINE_IRF_ALIGN_ANCHOR"])
+        self.sv_mirf_reducer = tk.StringVar(value=cfg["MACHINE_IRF_REDUCER"])
+
+        ttk.Label(fp, text="Align anchor:").grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Combobox(
+            fp,
+            textvariable=self.sv_mirf_anchor,
+            values=["peak", "halfmax", "onset10", "slope"],
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="w", padx=4)
+
+        ttk.Label(fp, text="Reducer:").grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Combobox(
+            fp,
+            textvariable=self.sv_mirf_reducer,
+            values=["median", "mean"],
+            state="readonly",
+            width=12,
+        ).grid(row=1, column=1, sticky="w", padx=4)
+
+        fo = _section(tab, "Output")
+        fo.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        fo.columnconfigure(1, weight=1)
+        self.sv_mirf_out_dir = tk.StringVar(value=str(cfg["MACHINE_IRF_DIR"]))
+        self.sv_mirf_name = tk.StringVar(value="machine_irf_default")
+
+        _row(
+            fo,
+            "Output directory *",
+            self.sv_mirf_out_dir,
+            0,
+            lambda: _browse_dir(self.sv_mirf_out_dir, "Machine IRF output directory"),
+        )
+        ttk.Label(fo, text="Base filename:").grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Entry(fo, textvariable=self.sv_mirf_name, width=35).grid(
+            row=1, column=1, columnspan=2, sticky="ew", padx=4
+        )
+
+        self._btn_mirf = ttk.Button(
+            tab,
+            text="▶  Build Machine IRF",
+            command=self._run_build_machine_irf,
+        )
+        self._btn_mirf.grid(row=3, column=0, pady=8, ipadx=20, ipady=4)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 4 – Phasor
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _build_phasor_tab(self):
@@ -1075,6 +1160,40 @@ class FLIMKitGUI:
         finally:
             self._set_buttons("normal")
 
+    def _run_build_machine_irf(self):
+        src_dir = self.sv_mirf_src.get().strip()
+        out_dir = self.sv_mirf_out_dir.get().strip()
+        out_name = self.sv_mirf_name.get().strip()
+        anchor = self.sv_mirf_anchor.get().strip()
+        reducer = self.sv_mirf_reducer.get().strip()
+
+        if not src_dir or not Path(src_dir).exists():
+            messagebox.showerror("Missing input", "Please select a valid PTU/XLSX source folder.")
+            return
+        if not out_dir:
+            messagebox.showerror("Missing input", "Please select an output directory.")
+            return
+        if not out_name:
+            messagebox.showerror("Missing input", "Please enter an output base filename.")
+            return
+
+        from flimkit.FLIM.irf_tools import build_machine_irf_from_folder
+
+        def task_fn():
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            return build_machine_irf_from_folder(
+                folder=src_dir,
+                align_anchor=anchor,
+                reducer=reducer,
+                save=True,
+                confirm_save=True,
+                output_name=out_name,
+                output_dir=out_dir,
+                verbose=True,
+            )
+
+        self._launch(task_fn, output_dir=out_dir)
+
     # ═══════════════════════════════════════════════════════════════════════════
     # Thread runner
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1108,7 +1227,7 @@ class FLIMKitGUI:
             self._res.load_images(output_dir)
 
     def _set_buttons(self, state):
-        for btn in (self._btn_fov, self._btn_st, self._btn_ph):
+        for btn in (self._btn_fov, self._btn_st, self._btn_mirf, self._btn_ph):
             btn.configure(state=state)
 
     def _on_close(self):

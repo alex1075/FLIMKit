@@ -1,4 +1,5 @@
 from matplotlib.colors import LinearSegmentedColormap
+from pathlib import Path
 
 FLIM_CMAP = LinearSegmentedColormap.from_list(
     "flim", ["#000080","#0000ff","#00ffff","#00ff00","#ffff00","#ff0000"]
@@ -31,8 +32,8 @@ Optimizer = "de"
 lm_restarts = 8
 
 # Default settings for DE optimizer:
-de_population = 50
-de_maxiter = 10000   
+de_population = 30
+de_maxiter = 5000
 n_workers = -1 # Use all available CPU cores for DE optimization. Override with --workers when running the code.
 
 # IRF settings:
@@ -40,6 +41,18 @@ IRF_FWHM = None # Set to None to use the default of 1 bin width from the PTU fil
 IRF_FIT_WIDTH = 1.5 # ns - width of the region around time zero to use for fitting the IRF. Adjust as needed for other systems.
 IRF_BINS = 21 # Number of bins to use for the IRF when fitting with the "summed" mode. Adjust as needed for other systems and bin widths. Should be an odd number to have a bin centered on time zero.
 Estimate_IRF = "none" # Options are "raw", "parametric", and "none". Set to "raw" to use the raw IRF from the data, "parametric" to fit a parametric function to the IRF, or "none" to not estimate the IRF (e.g. if you have a separate IRF file or are using a system with a very narrow IRF that doesn't need to be accounted for). Override with --estimate-irf when running the code.
+
+# Machine IRF defaults (spreadsheet-free workflow)
+MACHINE_IRF_DIR = Path(__file__).resolve().parent / "machine_irf"
+MACHINE_IRF_DEFAULT_PATH = MACHINE_IRF_DIR / "machine_irf_default.npy"
+MACHINE_IRF_ALIGN_ANCHOR = "peak"   # learned Leica-style placement anchor
+MACHINE_IRF_REDUCER = "median"      # aggregation across paired IRFs
+MACHINE_IRF_FIT_STRATEGY = "fixed"  # notebook-chosen default: fixed machine IRF
+MACHINE_IRF_FIT_BG = True
+MACHINE_IRF_FIT_SIGMA = False
+MACHINE_IRF_FIT_TAIL = False
+MACHINE_IRF_DE_POPULATION = 30
+MACHINE_IRF_DE_MAXITER = 5000
 
 # Cost function for summed fit. Options are "poisson" (recommended) and "chi2" (legacy).
 # "poisson" uses Poisson deviance (C-statistic) on raw counts — statistically correct.
@@ -82,6 +95,12 @@ IRF FWHM: {IRF_FWHM} ns
 IRF fit width: {IRF_FIT_WIDTH} ns
 IRF bins: {IRF_BINS}
 IRF estimation method: {Estimate_IRF}
+Machine IRF default path: {MACHINE_IRF_DEFAULT_PATH}
+Machine IRF align anchor: {MACHINE_IRF_ALIGN_ANCHOR}
+Machine IRF reducer: {MACHINE_IRF_REDUCER}
+Machine IRF fit strategy: {MACHINE_IRF_FIT_STRATEGY}
+Machine IRF fit bg/sigma/tail: {MACHINE_IRF_FIT_BG}/{MACHINE_IRF_FIT_SIGMA}/{MACHINE_IRF_FIT_TAIL}
+Machine IRF DE population/maxiter: {MACHINE_IRF_DE_POPULATION}/{MACHINE_IRF_DE_MAXITER}
 Channels to fit: {channels}
 Output directory: {OUT_NAME}
 Change any of these defaults by passing the corresponding argument when running the code. 

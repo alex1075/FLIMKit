@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib
 import argparse
 from flimkit.PTU.reader import PTUFile
-from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm, irf_from_scatter_ptu, irf_from_xlsx, irf_from_xlsx_analytical, estimate_irf_from_decay_parametric, estimate_irf_from_decay_raw, compare_irfs
+from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm, irf_from_scatter_ptu, irf_from_xlsx, irf_from_xlsx_analytical, estimate_irf_from_decay_parametric, estimate_irf_from_decay_raw, reconstruct_irf_from_decay, compare_irfs
 from flimkit.FLIM.fitters import fit_summed, fit_per_pixel, MIN_PHOTONS_PERPIX
 from flimkit.utils.plotting import plot_summed, plot_pixel_maps, plot_lifetime_histogram
 from flimkit.utils.misc import print_summary
