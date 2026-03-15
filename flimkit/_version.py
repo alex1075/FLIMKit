@@ -1,4 +1,4 @@
-__version__ = "0.6.2"
+__version__ = "0.8.2"
 
 roadmap = '''Flim program roadmap:
 Version history:
@@ -11,4 +11,7 @@ Will be updated to 0.2.0 when ROI stitching works
 0.3.0 -> ROI stiching + fitting 
 0.4.0 -> batch processing of multiple ROIs or FOVs
 0.5.0 -> tbd
-Need to add Phasor once added to the codebase, and update version to 1.0. And added some tests.'''
+Need to add Phasor once added to the codebase, and update version to 1.0. And added some tests.
+0.8.0 -> added per-tile machine IRF fitting workflow, updated docs and examples
+0.8.1 -> added some error handling and user prompts to per-tile machine IRF workflow
+0.8.2 -> added some more error handling and user prompts to per-tile machine IRF workflow, and updated example notebook'''
