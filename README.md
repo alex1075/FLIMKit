@@ -221,8 +221,8 @@ The interactive phasor tool provides:
 - [x] Reconstruction of multi-tile ROIs
 - [x] Phasor analysis with interactive cursors, peak detection, and save/load
 - [X] Documentation and tests
-- [~] Fitting multi-tile ROIs and exporting tau-fitted images/data
-- [ ] GUI development for easier use
+- [x] Fitting multi-tile ROIs and exporting tau-fitted images/data
+- [ ] GUI development for easier use (WIP)
 
 ## Contact
 
