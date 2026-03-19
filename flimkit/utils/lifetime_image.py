@@ -21,9 +21,9 @@ def make_lifetime_image(
     tau_min_ns: float = 0.0,
     tau_max_ns: float = 5.0,
     smooth_sigma_px: float = 2.0,
-    intensity_percentile_lo: float = 1.0,
+    intensity_percentile_lo: float = 0.0,
     intensity_percentile_hi: float = 99.0,
-    gamma: float = 0.5,
+    gamma: float = 0.4,
     dpi: int = 200,
     verbose: bool = True,
 ) -> Path:
@@ -100,11 +100,22 @@ def make_lifetime_image(
         0.0, 1.0)
 
     int_vals = int_map[valid]
-    lo = np.percentile(int_vals, intensity_percentile_lo)
-    hi = np.percentile(int_vals, intensity_percentile_hi)
+    # lo=0 — never clip the low end; dim tissue stays dim but visible.
+    # Clipping lo to a non-zero percentile turns the dimmest real tissue black.
+    lo = 0.0
+    hi = float(np.percentile(int_vals, intensity_percentile_hi))
+    hi = max(hi, 1e-6)
+
+    # Hard-clip to hi only — removes outlier bright pixels (tile edges, cell
+    # clusters) that would otherwise compress bulk tissue toward zero.
+    int_clipped = np.clip(int_map, 0.0, hi)
     int_norm = np.power(
-        np.clip((int_map - lo) / (hi - lo + 1e-12), 0.0, 1.0), gamma)
+        np.clip(int_clipped / hi, 0.0, 1.0), gamma)
     int_norm[~valid] = 0.0
+
+    if verbose:
+        print(f"  intensity  lo=0  hi={hi:.1f}  "
+              f"median={np.median(int_vals):.1f}  gamma={gamma}")
 
     rgb = FLIM_CMAP(tau_norm)[..., :3]
     rgb *= int_norm[..., np.newaxis]
@@ -156,3 +167,103 @@ def make_lifetime_image(
               f"n={valid.sum():,}")
 
     return png_path
+
+def make_component_rgb_tiff(
+    canvas: dict,
+    output_dir: Path,
+    roi_name: str,
+    n_exp: int,
+    intensity_percentile_hi: float = 99.0,
+    verbose: bool = True,
+) -> Path:
+    """
+    Save a per-component amplitude RGB TIFF.
+
+    Each colour channel encodes the spatial amplitude of one lifetime component,
+    scaled independently to the full uint16 range:
+
+        1-exp:  R = a1
+        2-exp:  R = a1,  G = a2
+        3-exp:  R = a1,  G = a2,  B = a3
+
+    Amplitudes are first normalised by local intensity (fraction of total signal
+    in each component) so the image shows composition rather than raw count.
+    Pixels with no fit are 0 in all channels (black).
+
+    Parameters
+    ----------
+    canvas   : output of assemble_tile_maps
+    output_dir, roi_name : where to save
+    n_exp    : number of exponential components (1–3)
+    intensity_percentile_hi : upper clip percentile per channel (default 99.0)
+    verbose  : print saved path
+
+    Returns
+    -------
+    Path to saved TIFF
+    """
+    try:
+        import tifffile as _tifffile
+    except ImportError:
+        raise ImportError("tifffile is required — pip install tifffile")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    intensity = np.asarray(canvas['intensity'], dtype=float)
+    H, W = intensity.shape
+    channels = []
+
+    for k in range(1, n_exp + 1):
+        amp_key = f'a{k}'
+        amp = canvas.get(amp_key)
+        if amp is None:
+            channels.append(np.zeros((H, W), dtype=np.uint16))
+            continue
+
+        amp = np.asarray(amp, dtype=float)
+        fitted = np.isfinite(amp) & (intensity > 0)
+
+        # Express as amplitude fraction (composition) to remove intensity bias
+        total_amp = np.zeros((H, W), dtype=float)
+        for j in range(1, n_exp + 1):
+            a_j = canvas.get(f'a{j}')
+            if a_j is not None:
+                total_amp += np.where(np.isfinite(a_j), a_j, 0.0)
+
+        with np.errstate(invalid='ignore', divide='ignore'):
+            frac = np.where((fitted) & (total_amp > 0), amp / total_amp, np.nan)
+
+        # Scale to uint16 — clip outliers at hi percentile
+        vals = frac[np.isfinite(frac)]
+        if vals.size > 0:
+            hi = float(np.percentile(vals, intensity_percentile_hi))
+            hi = max(hi, 1e-9)
+            ch_u16 = np.where(
+                np.isfinite(frac),
+                np.clip(frac / hi, 0.0, 1.0) * 65535,
+                0.0
+            ).astype(np.uint16)
+        else:
+            ch_u16 = np.zeros((H, W), dtype=np.uint16)
+
+        channels.append(ch_u16)
+
+    # Pad to 3 channels (RGB) with zeros for unused channels
+    while len(channels) < 3:
+        channels.append(np.zeros((H, W), dtype=np.uint16))
+
+    # Stack as (H, W, 3) RGB
+    rgb_u16 = np.stack(channels[:3], axis=-1)
+
+    labels = ['R=τ₁', 'G=τ₂', 'B=τ₃']
+    channel_info = '  '.join(labels[:n_exp])
+
+    tiff_path = output_dir / f"{roi_name}_component_rgb.tif"
+    _tifffile.imwrite(str(tiff_path), rgb_u16, photometric='rgb')
+
+    if verbose:
+        print(f"  ✓ component RGB TIFF → {tiff_path}")
+        print(f"    {channel_info}  (amplitude fraction, uint16)")
+
+    return tiff_path

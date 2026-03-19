@@ -57,11 +57,18 @@ def assemble_tile_maps(
     keys_amp    = [f'a{k}'   for k in range(1, n_exp + 1)]
     keys_all    = keys_scalar + keys_tau + keys_amp
 
-    # Accumulate weighted numerator and denominator separately
-    wsum     = {k: np.zeros((H, W), dtype=np.float64) for k in keys_all}
-    wt       = np.zeros((H, W), dtype=np.float64)    # Σ intensity (weight)
+    # Accumulate weighted numerator and TWO denominators:
+    #   wt_fitted[key]  — Σ intensity only where that key is finite (fitted)
+    #   wt_intensity    — Σ intensity for ALL pixels (for the intensity canvas)
+    #
+    # Bug fixed: previously wt used all photons as denominator for every key,
+    # so unfitted pixels (NaN tau) produced 0/photons = 0.0 instead of NaN.
+    # Now tau/amplitude keys only divide by fitted-pixel weight, giving NaN
+    # wherever no tile fitted that pixel — regardless of photon count.
+    wsum       = {k: np.zeros((H, W), dtype=np.float64) for k in keys_all}
+    wt_fitted  = {k: np.zeros((H, W), dtype=np.float64) for k in keys_all}
     intensity_sum = np.zeros((H, W), dtype=np.float32)
-    coverage = np.zeros((H, W), dtype=np.uint16)
+    coverage   = np.zeros((H, W), dtype=np.uint16)
 
     for tr in tile_results:
         pm = tr.get('pixel_maps')
@@ -78,7 +85,6 @@ def assemble_tile_maps(
             pm.get('intensity', np.zeros((th, tw), dtype=np.float32)),
             dtype=np.float64)[:dy, :dx]
 
-        wt[y0:y1, x0:x1]            += tile_int
         intensity_sum[y0:y1, x0:x1] += tile_int.astype(np.float32)
         coverage[y0:y1, x0:x1]      += 1
 
@@ -87,24 +93,25 @@ def assemble_tile_maps(
             if src is None:
                 continue
             src = np.asarray(src, dtype=np.float64)[:dy, :dx]
-            # NaN pixels (unfitted) contribute zero weight so they don't
-            # corrupt neighbours — only fitted pixels are averaged
-            valid = np.isfinite(src)
-            wsum[key][y0:y1, x0:x1] += np.where(valid, src * tile_int, 0.0)
-
-    # Normalise: divide weighted sum by total weight
-    safe_wt = np.where(wt > 0, wt, np.nan)
+            # Only accumulate weight and value where this pixel was fitted
+            # (src is finite).  Unfitted pixels (NaN) contribute nothing to
+            # either numerator or denominator → result is NaN, not 0.
+            fitted = np.isfinite(src)
+            w_here = np.where(fitted, tile_int, 0.0)
+            wsum[key][y0:y1, x0:x1]      += np.where(fitted, src * tile_int, 0.0)
+            wt_fitted[key][y0:y1, x0:x1] += w_here
 
     canvas = {
+        # Intensity: mean photon count per tile (all pixels, not just fitted)
         'intensity': (intensity_sum / np.where(coverage > 0, coverage, 1)
                       ).astype(np.float32),
         'coverage':  coverage.astype(np.float32),
     }
 
     for key in keys_all:
-        result = (wsum[key] / safe_wt).astype(np.float32)
-        # Pixels with no coverage stay NaN (float32 NaN propagates correctly)
-        canvas[key] = result
+        safe_wt = np.where(wt_fitted[key] > 0, wt_fitted[key], np.nan)
+        canvas[key] = (wsum[key] / safe_wt).astype(np.float32)
+        # → NaN for every pixel where no tile fitted that pixel
 
     n_overlap = int((coverage > 1).sum())
     pct = n_overlap / (H * W) * 100
@@ -197,41 +204,50 @@ def save_assembled_maps(
     for key, arr in canvas.items():
         np.save(str(output_dir / f"{roi_name}_{key}.npy"), arr)
 
-    # ── Intensity TIFF ─────────────────────────────────────────────────────────
+    # ── Intensity TIFF (uint16) ────────────────────────────────────────────────
+    # Use percentile-based clipping so a handful of very bright pixels (cell
+    # clusters, tile-overlap edges) do not compress the bulk of tissue to
+    # near-zero.  Display range overrides take priority when provided.
     intensity = canvas['intensity']
-    max_val   = intensity.max()
-    if max_val > 0:
-        i_min = intensity_display_min or 0.0
-        i_max = intensity_display_max or max_val
+    pos       = intensity[intensity > 0]
+    if pos.size > 0:
+        # lo=0 so dim tissue is never clipped to black.
+        # hi=99.5th percentile clips only the top 0.5% of bright outliers.
+        i_min = float(intensity_display_min) if intensity_display_min is not None else 0.0
+        i_max = float(intensity_display_max) if intensity_display_max is not None                 else float(np.percentile(pos, 99.0))
+        i_max = max(i_max, i_min + 1e-6)
         intensity_scaled = np.clip(
-            (intensity - i_min) / (i_max - i_min) * 65535, 0, 65535
+            np.clip(intensity, 0.0, i_max) / i_max * 65535,
+            0, 65535
         ).astype(np.uint16)
     else:
         intensity_scaled = np.zeros_like(intensity, dtype=np.uint16)
+        i_min, i_max = 0.0, 0.0
     tifffile.imwrite(str(output_dir / f"{roi_name}_intensity.tif"), intensity_scaled)
+    print(f"  intensity display range: {i_min:.1f} – {i_max:.1f} counts")
 
-    # ── tau_mean_amp TIFF (float32, ns) ────────────────────────────────────────
-    # Save as float32 so downstream tools see actual lifetime values in ns.
-    # Also save a uint16 scaled version for quick viewing.
+    # ── tau_mean_amp TIFF (uint16) ─────────────────────────────────────────────
+    # 0     → tau_min (or 0 if auto)
+    # 65535 → tau_max (or nanmax if auto)
+    # 0     → unfitted pixels (NaN → 0 before cast)
+    # This matches the convention used by Leica LAS X FLIM exports.
     tau_map = canvas['tau_mean_amp']
     finite  = np.isfinite(tau_map)
 
-    # float32 TIFF — raw ns values, NaN → 0
-    tau_f32 = np.where(finite, tau_map, 0.0).astype(np.float32)
-    tifffile.imwrite(str(output_dir / f"{roi_name}_tau_mean_amp.tif"), tau_f32)
+    t_min = float(tau_display_min) if tau_display_min is not None \
+            else float(np.nanpercentile(tau_map[finite], 0.5) if finite.any() else 0.0)
+    t_max = float(tau_display_max) if tau_display_max is not None \
+            else float(np.nanpercentile(tau_map[finite], 99.5) if finite.any() else 1.0)
+    t_max = max(t_max, t_min + 1e-6)
 
-    # uint16 scaled TIFF — for display, NaN replaced before cast to avoid warning
-    t_min = tau_display_min if tau_display_min is not None else float(np.nanmin(tau_map))
-    t_max = tau_display_max if tau_display_max is not None else float(np.nanmax(tau_map))
-    if t_max > t_min:
-        tau_norm   = np.where(finite,
-                              (tau_map - t_min) / (t_max - t_min) * 65535,
-                              0.0)
-        tau_scaled = np.clip(tau_norm, 0, 65535).astype(np.uint16)
-    else:
-        tau_scaled = np.zeros_like(tau_map, dtype=np.uint16)
-    tifffile.imwrite(
-        str(output_dir / f"{roi_name}_tau_mean_amp_display.tif"), tau_scaled)
+    tau_u16 = np.where(
+        finite,
+        np.clip((tau_map - t_min) / (t_max - t_min) * 65535, 0, 65535),
+        0                            # unfitted → 0 (black), never NaN cast
+    ).astype(np.uint16)
+    tifffile.imwrite(str(output_dir / f"{roi_name}_tau_mean_amp.tif"), tau_u16)
+    print(f"  tau_mean_amp display range: {t_min:.3f} – {t_max:.3f} ns  "
+          f"→  0 – 65535")
 
     # ── Global summary text ────────────────────────────────────────────────────
     summary_path = output_dir / f"{roi_name}_global_summary.txt"
@@ -257,6 +273,13 @@ def save_assembled_maps(
                 f.write(f"  tau{k} = {tau_k:.4f} ns   "
                         f"a{k} = {a_k:.3f} (mean amplitude fraction)\n")
         f.write("\n" + "=" * 60 + "\n")
+
+    # ── Component RGB TIFF ────────────────────────────────────────────────────
+    try:
+        from .utils.lifetime_image import make_component_rgb_tiff
+        make_component_rgb_tiff(canvas, output_dir, roi_name, n_exp, verbose=True)
+    except Exception as _e:
+        print(f"  ⚠ component RGB skipped: {_e}")
 
     print(f"  ✓ Assembled maps saved to {output_dir}")
     print(f"  ✓ Global summary: {summary_path.name}")
