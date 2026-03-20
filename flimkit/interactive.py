@@ -284,6 +284,8 @@ def _run_tile_stitch(args):
         output_dir=Path(args.output_dir),
         ptu_basename=args.ptu_basename,
         rotate_tiles=args.rotate_tiles,
+        register_tiles=getattr(args, 'register_tiles', True),
+        reg_max_shift_px=getattr(args, 'reg_max_shift_px', 80),
         verbose=True,
     )
     
@@ -314,6 +316,8 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
         output_dir=Path(args.output_dir),
         ptu_basename=args.ptu_basename,
         rotate_tiles=args.rotate_tiles,
+        register_tiles=getattr(args, 'register_tiles', True),
+        reg_max_shift_px=getattr(args, 'reg_max_shift_px', 80),
         verbose=True,
         progress_callback=progress_callback,
         cancel_event=cancel_event,
@@ -1159,7 +1163,9 @@ def tile_fit_inquire():
     args.ptu_dir      = stitch_args.ptu_dir
     args.output_dir   = stitch_args.output_dir
     args.ptu_basename = stitch_args.ptu_basename
-    args.rotate_tiles = stitch_args.rotate_tiles
+    args.rotate_tiles    = stitch_args.rotate_tiles
+    args.register_tiles  = True    # phase-corr Y registration (recommended)
+    args.reg_max_shift_px = 120
 
     args.estimate_irf  = estimate_irf
     args.irf_xlsx_dir  = irf_xlsx_dir
@@ -1216,7 +1222,7 @@ def _run_tile_fit(args, progress_callback=None, cancel_event=None):
     print(f"  STEP 1: PER-TILE FITTING")
     print(f"{'='*60}")
 
-    tile_results, canvas_height, canvas_width = fit_flim_tiles(
+    tile_results, canvas_height, canvas_width, corrected_positions = fit_flim_tiles(
         xlif_path     = Path(args.xlif),
         ptu_dir       = Path(args.ptu_dir),
         output_dir    = Path(args.output_dir),
@@ -1322,6 +1328,10 @@ def tile_fit(interactive=False):
         ap.add_argument("--ptu-basename", default=None)
         ap.add_argument("--rotate-tiles", action="store_true", default=True)
         ap.add_argument("--no-rotate",    action="store_true")
+        ap.add_argument("--no-register",  action="store_true",
+                        help="Disable phase-correlation Y registration between tile columns")
+        ap.add_argument("--reg-max-shift", type=int, default=120,
+                        help="Max Y search range for registration (px)")
         ap.add_argument("--irf-xlsx-dir", default=None)
         ap.add_argument("--estimate-irf", default="parametric",
                         choices=["parametric", "raw", "machine_irf"])
@@ -1352,6 +1362,8 @@ def tile_fit(interactive=False):
         if args.ptu_basename is None:
             args.ptu_basename = Path(args.xlif).stem
 
+        args.register_tiles   = not args.no_register
+        args.reg_max_shift_px = args.reg_max_shift
         args.irf          = None
         args.irf_xlsx     = None
         args.irf_xlsx_map = None

@@ -1,18 +1,3 @@
-"""Automatic peak-finding on 2-D phasor histograms.
-
-Smooths the (G, S) histogram with a Gaussian kernel, detects local maxima,
-and converts them to apparent phase / modulation lifetimes.
-
-Usage
------
-::
-
-    from flimkit.phasor.peaks import find_phasor_peaks, plot_phasor_peaks
-
-    peaks = find_phasor_peaks(real_cal, imag_cal, mean, frequency)
-    fig   = plot_phasor_peaks(peaks, real_cal, imag_cal, mean, frequency)
-"""
-
 from __future__ import annotations
 
 import numpy as np

@@ -1,23 +1,3 @@
-"""
-flimkit/PTU/stitch.py
-=====================
-FLIM tile stitching and per-tile fitting pipeline.
-
-fit_flim_tiles() uses a two-pass pooled machine IRF strategy:
-
-  Pass 1 — summed_decay() only (no pixel stacks). Accumulates a pooled
-            decay across all tiles, runs fit_summed once to get consensus
-            τ values and a single pooled_irf.
-
-  Pass 2 — raw_pixel_stack() one tile at a time. All tiles use the same
-            consensus τ and pooled_irf → identical convolution basis →
-            smooth amplitude maps with no inter-tile seams.
-
-This replaces the previous per-tile independent fitting approach which
-called _run_flim_fit per tile, giving different τ per tile and causing
-visible seams in assembled lifetime maps.
-"""
-
 from __future__ import annotations
 
 import json
@@ -45,6 +25,9 @@ def stitch_flim_tiles(
     output_dir: Path,
     ptu_basename: str = "R 2",
     rotate_tiles: bool = True,
+    register_tiles: bool = True,
+    reg_max_shift_px: int = 120,
+    tile_positions: Optional[list] = None,
     verbose: bool = True,
     progress_callback=None,
     cancel_event=None,
@@ -105,7 +88,10 @@ def stitch_flim_tiles(
         print()
         print("Parsing XLIF metadata...")
 
-    tile_positions = parse_xlif_tile_positions(xlif_path, ptu_basename)
+    # Accept pre-computed (and optionally registered) tile positions
+    # from a prior fit_flim_tiles call — avoids re-running registration.
+    if tile_positions is None:
+        tile_positions = parse_xlif_tile_positions(xlif_path, ptu_basename)
     pixel_size_m, n_pixels = get_pixel_size_from_xlif(xlif_path)
 
     if verbose:
@@ -132,8 +118,23 @@ def stitch_flim_tiles(
         print(f"  TCSPC: {tcspc_resolution * 1e12:.2f} ps/bin")
         print(f"  Time range: 0 - {time_axis_ns[-1]:.2f} ns")
 
-    tile_positions, canvas_width, canvas_height = compute_tile_pixel_positions(
-        tile_positions, pixel_size_m, tile_x)
+    # Only recompute pixel positions if they weren't pre-supplied
+    _positions_precomputed = ('pixel_x' in tile_positions[0] and
+                              'pixel_y' in tile_positions[0])
+    if not _positions_precomputed:
+        tile_positions, canvas_width, canvas_height = compute_tile_pixel_positions(
+            tile_positions, pixel_size_m, tile_x)
+    else:
+        canvas_width  = max(t['pixel_x'] for t in tile_positions) + tile_x
+        canvas_height = max(t['pixel_y'] for t in tile_positions) + tile_y
+
+    # ── Registration note for stitch_flim_tiles ───────────────────────────
+    # If tile_positions are pre-supplied (from a prior fit_flim_tiles call
+    # that already ran _register_tile_columns), they are used directly.
+    # For standalone stitch_only runs, registration runs post-stitch via
+    # the caller passing corrected_positions from fit_flim_tiles.
+    # (stitch_flim_tiles loads histograms, not intensity maps, so
+    #  _register_tile_columns cannot run here inline.)
 
     if verbose:
         print(f"  Canvas: {canvas_height} × {canvas_width} pixels")
@@ -144,7 +145,11 @@ def stitch_flim_tiles(
     flim_canvas = np.memmap(
         str(output_flim), dtype=np.uint32, mode='w+',
         shape=(canvas_height, canvas_width, n_time_bins))
-    weight_canvas = np.zeros((canvas_height, canvas_width), dtype=np.float32)
+    # Nearest-centre ownership: each pixel is owned by whichever tile centre
+    # is closest — no blending of overlapping tiles, so overlaps stay sharp.
+    _owner     = np.full((canvas_height, canvas_width), -1,     dtype=np.int32)
+    _min_dist2 = np.full((canvas_height, canvas_width), np.inf, dtype=np.float64)
+    _hists     = []   # (ti, y0, x0, hist) deferred until ownership is known
 
     if verbose:
         print(f"Stitching {len(tile_positions)} tiles...")
@@ -182,11 +187,24 @@ def stitch_flim_tiles(
                     hist = hist[:, :, :n_time_bins]
 
             y0, x0 = t["pixel_y"], t["pixel_x"]
-            y1, x1 = y0 + tile_y, x0 + tile_x
+            y1 = min(y0 + tile_y, canvas_height)
+            x1 = min(x0 + tile_x, canvas_width)
+            dy, dx = y1 - y0, x1 - x0
 
-            flim_canvas[y0:y1, x0:x1, :]   += hist.astype(np.uint32)
-            intensity_canvas[y0:y1, x0:x1]  += hist.sum(axis=2).astype(np.float64)
-            weight_canvas[y0:y1, x0:x1]     += 1.0
+            ti = len(_hists)
+            _hists.append((ti, y0, x0, hist[:dy, :dx, :]))
+
+            # Claim ownership of pixels closer to this tile's centre
+            cy = y0 + tile_y / 2.0
+            cx = x0 + tile_x / 2.0
+            rows = np.arange(y0, y1, dtype=np.float64)
+            cols = np.arange(x0, x1, dtype=np.float64)
+            dist2 = (rows - cy)[:, np.newaxis] ** 2 + (cols - cx) ** 2
+            region  = _min_dist2[y0:y1, x0:x1]
+            closer  = dist2 < region
+            _min_dist2[y0:y1, x0:x1] = np.where(closer, dist2, region)
+            _owner[y0:y1, x0:x1]     = np.where(closer, ti, _owner[y0:y1, x0:x1])
+
             tiles_processed += 1
 
         except Exception as e:
@@ -195,21 +213,25 @@ def stitch_flim_tiles(
             tiles_skipped += 1
             continue
 
-    # Normalise intensity image for display (FLIM cube intentionally NOT normalised)
+    # Write each tile's data only for pixels it owns
     if verbose:
-        print()
-        print("Normalising intensity image for display...")
+        print(f"  Writing canvas (nearest-centre, no blending)...")
+    for ti, y0, x0, h in _hists:
+        y1 = y0 + h.shape[0]
+        x1 = x0 + h.shape[1]
+        owned_r, owned_c = np.where(_owner[y0:y1, x0:x1] == ti)
+        if owned_r.size > 0:
+            flim_canvas[y0 + owned_r, x0 + owned_c, :] = h[owned_r, owned_c, :]
+            intensity_canvas[y0 + owned_r, x0 + owned_c] = \
+                h[owned_r, owned_c, :].sum(axis=1).astype(np.float64)
+    del _min_dist2
 
-    mask = weight_canvas > 0
-    intensity_canvas[mask] /= weight_canvas[mask]
-
-    n_overlap = int((weight_canvas > 1).sum())
-    if verbose and n_overlap > 0:
-        print(f"  {n_overlap:,} overlap pixels "
-              f"({100*n_overlap/mask.sum():.1f}% of canvas) — "
-              f"photon counts summed across tiles")
-
+    # Coverage report
+    n_covered = int((_owner >= 0).sum())
     if verbose:
+        print(f"  {n_covered:,} pixels covered  "
+              f"({100*n_covered/(canvas_height*canvas_width):.1f}% of canvas)  "
+              f"nearest-centre selection, no blending")
         print("Saving outputs...")
 
     max_val = intensity_canvas.max()
@@ -220,7 +242,8 @@ def stitch_flim_tiles(
     )
     tifffile.imwrite(str(output_intensity), intensity_scaled)
     np.save(str(output_time), time_axis_ns)
-    np.save(str(output_weight), weight_canvas)
+    # Save ownership map: each value = tile index + 1 (0 = uncovered)
+    np.save(str(output_weight), (_owner + 1).astype(np.uint16))
     flim_canvas.flush()
 
     metadata = {
@@ -414,6 +437,285 @@ def _adapt_pixel_maps(pixel_maps: dict, n_exp: int,
     return adapted
 
 
+
+
+
+
+
+
+def _phase_corr_2d(patch_a, patch_b, max_shift_y=120, max_shift_x=30):
+    """
+    2D normalised phase correlation (Kuglin & Hines 1975).
+    Returns (dy, dx, confidence):
+        dy, dx      : sub-pixel shift — patch_b is shifted (dy, dx) vs patch_a
+        confidence  : peak / mean of search region (higher = more reliable)
+    Uses Hann window and Gaussian sub-pixel fitting (Preibisch et al. 2009).
+    """
+    h = min(patch_a.shape[0], patch_b.shape[0])
+    w = min(patch_a.shape[1], patch_b.shape[1])
+    pa = patch_a[:h, :w].astype(np.float64)
+    pb = patch_b[:h, :w].astype(np.float64)
+    wy  = np.hanning(h)
+    wx  = np.hanning(w)
+    win = wy[:, np.newaxis] * wx[np.newaxis, :]
+    pa  = (pa - pa.mean()) * win
+    pb  = (pb - pb.mean()) * win
+    Fa  = np.fft.fft2(pa)
+    Fb  = np.fft.fft2(pb)
+    cross = Fa * np.conj(Fb)
+    denom = np.abs(cross)
+    denom[denom < 1e-10] = 1e-10
+    corr  = np.real(np.fft.ifft2(cross / denom))
+    corr_s = np.fft.fftshift(corr)
+    cy, cx = h // 2, w // 2
+    mask   = np.zeros_like(corr_s)
+    y_lo   = max(0, cy - max_shift_y);  y_hi = min(h, cy + max_shift_y + 1)
+    x_lo   = max(0, cx - max_shift_x);  x_hi = min(w, cx + max_shift_x + 1)
+    mask[y_lo:y_hi, x_lo:x_hi] = 1
+    corr_s *= mask
+    pk_y, pk_x = np.unravel_index(np.argmax(corr_s), corr_s.shape)
+    peak_val   = corr_s[pk_y, pk_x]
+    confidence = peak_val / (corr_s[y_lo:y_hi, x_lo:x_hi].mean() + 1e-10)
+    def _sub(arr, pk, lo, hi):
+        if lo < pk < hi - 1:
+            a, b, c = arr[pk-1], arr[pk], arr[pk+1]
+            if a > 0 and b > 0 and c > 0:
+                try:
+                    la, lb, lc = np.log(a), np.log(b), np.log(c)
+                    return pk + (la - lc) / (2 * (la - 2*lb + lc))
+                except Exception:
+                    pass
+        return float(pk)
+    sub_y = _sub(corr_s[:, pk_x], pk_y, y_lo, y_hi) - cy
+    sub_x = _sub(corr_s[pk_y, :], pk_x, x_lo, x_hi) - cx
+    return sub_y, sub_x, confidence
+
+
+def _register_tile_columns(
+    tile_results: list,
+    max_shift_px: int = 120,
+    verbose: bool = True,
+) -> list:
+    """
+    Three-pass tile registration (Preibisch et al. 2009 approach):
+
+    Pass A — column Y drift:  ~8px/col stage encoder drift measured from
+              horizontal (col) overlap zones. Cumulative per-column Y correction.
+
+    Pass B — row Y residual:  remaining Y mismatch at each row boundary measured
+              from vertical (row) overlap zones. Whole-row Y shift.
+
+    Pass C — row X residual:  X drift between rows (bidirectional scan backlash)
+              measured from vertical overlap zones. Whole-row X shift.
+
+    Key design: tiles are indexed by ORIGINAL (row_idx, col_idx) so that
+    Pass A's per-column Y corrections don't fragment the row grouping in
+    Passes B and C.
+
+    Uses 2D phase correlation with Hann windowing and Gaussian sub-pixel
+    refinement. MAD-based outlier rejection per group. Tissue-fraction
+    filter discards overlap strips that are mostly background.
+    """
+    REG_MAX_SHIFT_Y = max_shift_px
+    REG_MAX_SHIFT_X = 30
+    MIN_CONF        = 5.0
+    MAD_THRESHOLD   = 3.0
+    MIN_TISSUE_FRAC = 0.05
+
+    if not tile_results:
+        return tile_results
+
+    # ── geometry from original XLIF positions ─────────────────────────────────
+    orig_col_xs = sorted(set(int(round(tr['pixel_x']/10)*10) for tr in tile_results))
+    orig_row_ys = sorted(set(int(round(tr['pixel_y']/10)*10) for tr in tile_results))
+    tile_w = max(tr['tile_w'] for tr in tile_results)
+    tile_h = max(tr['tile_h'] for tr in tile_results)
+    col_pitch   = int(np.median(np.diff(orig_col_xs))) if len(orig_col_xs)>1 else tile_w
+    row_pitch   = int(np.median(np.diff(orig_row_ys))) if len(orig_row_ys)>1 else tile_h
+    col_overlap = tile_w - col_pitch
+    row_overlap = tile_h - row_pitch
+    N_rows = len(orig_row_ys)
+    N_cols = len(orig_col_xs)
+
+    if col_overlap < 4:
+        if verbose:
+            print(f'  Registration: col_overlap={col_overlap}px too small — skipping')
+        return tile_results
+
+    if verbose:
+        print(f'  Registration: {N_rows}r×{N_cols}c  '
+              f'col_overlap={col_overlap}px  row_overlap={row_overlap}px')
+
+    # Index tiles by original (row_idx, col_idx) — stable across all passes
+    orig_grid = {}
+    for i, tr in enumerate(tile_results):
+        try:
+            ci = orig_col_xs.index(int(round(tr['pixel_x']/10)*10))
+        except ValueError:
+            ci = min(range(N_cols), key=lambda c: abs(orig_col_xs[c]-tr['pixel_x']))
+        try:
+            ri = orig_row_ys.index(int(round(tr['pixel_y']/10)*10))
+        except ValueError:
+            ri = min(range(N_rows), key=lambda r: abs(orig_row_ys[r]-tr['pixel_y']))
+        tile_results[i]['_orig_row_idx'] = ri
+        tile_results[i]['_orig_col_idx'] = ci
+        orig_grid[(ri, ci)] = i
+
+    def _prep(strip, gamma=0.5):
+        s = strip.astype(np.float64)
+        if s.max() > 0: s = (s/s.max())**gamma * s.max()
+        return s
+
+    def _mad_wmean(vals, wts, thr):
+        vals = np.array(vals, dtype=float)
+        wts  = np.array(wts,  dtype=float)
+        med  = np.median(vals)
+        mad  = max(np.median(np.abs(vals - med)), 0.5)
+        keep = np.abs(vals - med) <= thr * mad
+        if not keep.any():
+            return float(med), 0, len(vals)
+        return (float(np.average(vals[keep], weights=wts[keep])),
+                int((~keep).sum()), len(vals))
+
+    # ── Pass A: column Y drift ─────────────────────────────────────────────────
+    if verbose:
+        print('  Pass A: column Y drift')
+    col_shift = {}
+    for ci in range(N_cols-1):
+        dys, confs = [], []
+        for ri in range(N_rows):
+            ti = orig_grid.get((ri, ci))
+            tj = orig_grid.get((ri, ci+1))
+            if ti is None or tj is None: continue
+            Ii = np.asarray(tile_results[ti]['pixel_maps']['intensity'], dtype=float)
+            Ij = np.asarray(tile_results[tj]['pixel_maps']['intensity'], dtype=float)
+            sa = _prep(Ii[:, col_pitch:col_pitch+col_overlap])
+            sb = _prep(Ij[:, :col_overlap])
+            mr = min(sa.shape[0], sb.shape[0])
+            if mr<20 or sa[:mr].max()<0.5 or sb[:mr].max()<0.5: continue
+            dy, dx, conf = _phase_corr_2d(sa[:mr], sb[:mr],
+                                           max_shift_y=REG_MAX_SHIFT_Y,
+                                           max_shift_x=max(4, col_overlap//4))
+            if conf >= MIN_CONF:
+                dys.append(dy); confs.append(conf)
+        if not dys:
+            col_shift[ci] = 0.0
+            continue
+        s, _, _ = _mad_wmean(dys, confs, MAD_THRESHOLD)
+        col_shift[ci] = s
+        if verbose:
+            print(f'    col {orig_col_xs[ci]:5d}→{orig_col_xs[ci+1]:5d}: {s:+.2f}px')
+
+    cum_col_y = np.zeros(N_cols)
+    for ci in range(1, N_cols):
+        cum_col_y[ci] = cum_col_y[ci-1] + col_shift.get(ci-1, 0.0)
+    if verbose:
+        print(f'    Cumulative: {[round(v,1) for v in cum_col_y]}')
+
+    for i, tr in enumerate(tile_results):
+        ci   = tr['_orig_col_idx']
+        corr = int(round(float(cum_col_y[ci])))
+        if corr:
+            tile_results[i]['pixel_y'] = max(0, tr['pixel_y'] + corr)
+
+    # ── Pass B: row Y residual ─────────────────────────────────────────────────
+    if verbose:
+        print('  Pass B: row Y residual')
+    row_shift_y = {}
+    for ri in range(N_rows-1):
+        dys, confs = [], []
+        for ci in range(N_cols):
+            ti = orig_grid.get((ri,   ci))
+            tj = orig_grid.get((ri+1, ci))
+            if ti is None or tj is None: continue
+            Ii = np.asarray(tile_results[ti]['pixel_maps']['intensity'], dtype=float)
+            Ij = np.asarray(tile_results[tj]['pixel_maps']['intensity'], dtype=float)
+            sa = _prep(Ii[row_pitch:row_pitch+row_overlap, :])
+            sb = _prep(Ij[:row_overlap, :])
+            mr = min(sa.shape[0], sb.shape[0])
+            mc = min(sa.shape[1], sb.shape[1])
+            if mr<20 or sa[:mr,:mc].max()<0.5 or sb[:mr,:mc].max()<0.5: continue
+            dy, dx, conf = _phase_corr_2d(sa[:mr,:mc], sb[:mr,:mc],
+                                           max_shift_y=max(4, row_overlap//4),
+                                           max_shift_x=REG_MAX_SHIFT_X)
+            tf = min((sa[:mr,:mc]>1).mean(), (sb[:mr,:mc]>1).mean())
+            if conf >= MIN_CONF and tf >= MIN_TISSUE_FRAC:
+                dys.append(dy); confs.append(conf)
+        if not dys:
+            row_shift_y[ri] = 0.0
+            continue
+        s, _, _ = _mad_wmean(dys, confs, MAD_THRESHOLD)
+        row_shift_y[ri] = s
+        if verbose:
+            print(f'    row {ri} ({orig_row_ys[ri]}→{orig_row_ys[ri+1]}): {s:+.2f}px')
+
+    cum_row_y = np.zeros(N_rows)
+    for ri in range(1, N_rows):
+        cum_row_y[ri] = cum_row_y[ri-1] + row_shift_y.get(ri-1, 0.0)
+    if verbose:
+        print(f'    Cumulative: {[round(v,1) for v in cum_row_y]}')
+
+    for i, tr in enumerate(tile_results):
+        ri   = tr['_orig_row_idx']
+        corr = int(round(float(cum_row_y[ri])))
+        if corr:
+            tile_results[i]['pixel_y'] = max(0, tr['pixel_y'] + corr)
+
+    # ── Pass C: row X residual ─────────────────────────────────────────────────
+    if verbose:
+        print('  Pass C: row X residual')
+    row_shift_x = {}
+    for ri in range(N_rows-1):
+        dxs, confs = [], []
+        for ci in range(N_cols):
+            ti = orig_grid.get((ri,   ci))
+            tj = orig_grid.get((ri+1, ci))
+            if ti is None or tj is None: continue
+            Ii = np.asarray(tile_results[ti]['pixel_maps']['intensity'], dtype=float)
+            Ij = np.asarray(tile_results[tj]['pixel_maps']['intensity'], dtype=float)
+            sa = _prep(Ii[row_pitch:row_pitch+row_overlap, :])
+            sb = _prep(Ij[:row_overlap, :])
+            mr = min(sa.shape[0], sb.shape[0])
+            mc = min(sa.shape[1], sb.shape[1])
+            if mr<20 or sa[:mr,:mc].max()<0.5 or sb[:mr,:mc].max()<0.5: continue
+            dy, dx, conf = _phase_corr_2d(sa[:mr,:mc], sb[:mr,:mc],
+                                           max_shift_y=max(4, row_overlap//4),
+                                           max_shift_x=REG_MAX_SHIFT_X)
+            tf = min((sa[:mr,:mc]>1).mean(), (sb[:mr,:mc]>1).mean())
+            if conf >= MIN_CONF and tf >= MIN_TISSUE_FRAC:
+                dxs.append(dx); confs.append(conf)
+        if not dxs:
+            row_shift_x[ri] = 0.0
+            continue
+        s, _, _ = _mad_wmean(dxs, confs, MAD_THRESHOLD)
+        row_shift_x[ri] = s
+        if verbose:
+            print(f'    row {ri} (y={orig_row_ys[ri]}): dx={s:+.2f}px')
+
+    cum_row_x = np.zeros(N_rows)
+    for ri in range(1, N_rows):
+        cum_row_x[ri] = cum_row_x[ri-1] + row_shift_x.get(ri-1, 0.0)
+    if verbose:
+        print(f'    X cumulative: {[round(v,1) for v in cum_row_x]}')
+
+    for i, tr in enumerate(tile_results):
+        ri   = tr['_orig_row_idx']
+        corr = int(round(float(cum_row_x[ri])))
+        if corr:
+            tile_results[i]['pixel_x'] = max(0, tr['pixel_x'] + corr)
+
+    n_corrected = sum(
+        1 for tr in tile_results
+        if tr.get('_orig_row_idx',0)>0 or tr.get('_orig_col_idx',0)>0
+    )
+    if verbose:
+        canvas_h = max(tr['pixel_y']+tr['tile_h'] for tr in tile_results)
+        canvas_w = max(tr['pixel_x']+tr['tile_w'] for tr in tile_results)
+        print(f'  Registration complete. Canvas: {canvas_h}×{canvas_w}px')
+
+    return tile_results
+
+
 def fit_flim_tiles(
     xlif_path:     Path,
     ptu_dir:       Path,
@@ -489,7 +791,10 @@ def fit_flim_tiles(
     restarts    = getattr(args, 'restarts',      lm_restarts)
     workers     = getattr(args, 'workers',       n_workers)
     binning     = getattr(args, 'binning',       binning_factor)
-    min_photons = getattr(args, 'min_photons',   MIN_PHOTONS_PERPIX)
+    min_photons       = getattr(args, 'min_photons',         MIN_PHOTONS_PERPIX)
+    intensity_thr     = getattr(args, 'intensity_threshold', None)  # photons/px; None = no background masking
+    register_tiles    = getattr(args, 'register_tiles',      True)   # phase-corr Y registration
+    reg_max_shift_px  = getattr(args, 'reg_max_shift_px',    120)    # max search range (px)
     fit_bg      = MACHINE_IRF_FIT_BG
     fit_sigma   = MACHINE_IRF_FIT_SIGMA
     has_tail    = MACHINE_IRF_FIT_TAIL
@@ -542,6 +847,16 @@ def fit_flim_tiles(
         decay  = ptu.summed_decay()
         n_bins = ptu.n_bins
         tcspc  = ptu.tcspc_res
+
+        # Background mask on pooled decay — zero out sub-threshold pixels so
+        # glass/empty regions don't bias the consensus τ from fit_summed.
+        if intensity_thr is not None:
+            stack_p1 = ptu.raw_pixel_stack(channel=ptu.photon_channel)
+            px_int   = stack_p1.sum(axis=-1)            # (Y, X) photon count
+            mask_p1  = px_int >= intensity_thr
+            stack_p1[~mask_p1] = 0
+            decay = stack_p1.sum(axis=(0, 1))
+            del stack_p1, px_int, mask_p1
 
         if pooled_decay is None:
             pooled_decay = decay.copy()
@@ -635,6 +950,15 @@ def fit_flim_tiles(
                 stack = np.rot90(stack, k=-1, axes=(0, 1))
             tile_h, tile_w = stack.shape[:2]
 
+            # Apply intensity threshold: zero out background pixels.
+            # This is separate from min_photons — min_photons is the NNLS
+            # quality gate inside fit_per_pixel; intensity_threshold is an
+            # explicit background mask applied before fitting.
+            if intensity_thr is not None:
+                px_int = stack.sum(axis=-1)
+                stack[px_int < intensity_thr] = 0
+                del px_int
+
             pixel_maps_raw = fit_per_pixel(
                 stack.astype(float),
                 tcspc, n_bins, irf_tile,
@@ -679,4 +1003,25 @@ def fit_flim_tiles(
         print(f"\n  {len(tile_results)}/{len(tile_meta)} tiles fitted "
               f"({tiles_skipped} errors)")
 
-    return tile_results, canvas_h, canvas_w
+    # ── Optional Y registration using computed intensity maps ────────────
+    # Uses already-computed pixel_maps['intensity'] — no extra PTU reads.
+    # Corrects pixel_y in tile_results before assembly.
+    if register_tiles and len(tile_results) > 1:
+        tile_results = _register_tile_columns(
+            tile_results,
+            max_shift_px=reg_max_shift_px,
+            verbose=verbose,
+        )
+        # Recompute canvas size after position corrections
+        canvas_h = max(tr['pixel_y'] + tr['tile_h'] for tr in tile_results)
+        canvas_w = max(tr['pixel_x'] + tr['tile_w'] for tr in tile_results)
+        if verbose:
+            print(f'  Canvas after registration: {canvas_h}×{canvas_w} px')
+
+    # Build corrected_positions from tile_results (which have updated pixel_y
+    # after registration) — NOT from tile_meta which has original XLIF values.
+    corrected_positions = [
+        {**tc['t'], 'pixel_y': tr['pixel_y'], 'pixel_x': tr['pixel_x']}
+        for tc, tr in zip(tile_meta, tile_results)
+    ]
+    return tile_results, canvas_h, canvas_w, corrected_positions

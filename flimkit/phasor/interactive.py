@@ -1,26 +1,3 @@
-"""Interactive elliptical-cursor tool for phasor plots.
-
-Place multiple elliptical cursors on a calibrated phasor plot to select
-regions of interest, compute apparent lifetimes, and perform two-component
-decomposition using phasorpy built-ins.
-
-Works in **both** Jupyter notebooks (ipywidgets) and standalone scripts
-(matplotlib.widgets).  The environment is detected automatically.
-
-Usage
------
-Notebook::
-
-    from flimkit.phasor.interactive import phasor_cursor_tool
-    state = phasor_cursor_tool(real_cal, imag_cal, mean, frequency)
-
-Script::
-
-    from flimkit.phasor.interactive import phasor_cursor_tool
-    state = phasor_cursor_tool(real_cal, imag_cal, mean, frequency)
-    # blocks until the window is closed
-"""
-
 from __future__ import annotations
 
 import numpy as np

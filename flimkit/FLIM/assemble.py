@@ -1,15 +1,3 @@
-"""
-assemble.py — Canvas assembly and global tau derivation for per-tile FLIM fitting.
-
-Takes a list of per-tile fit results (from fit_flim_tiles) and assembles them
-into full-ROI maps.
-
-Overlap regions use intensity-weighted averaging: each pixel value is the
-photon-count-weighted mean across all tiles covering it.  This is equivalent
-to how stitch_flim_tiles normalises the raw histogram cube by the weight map,
-and eliminates tile boundary seams in the assembled lifetime maps.
-"""
-
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -25,30 +13,26 @@ def assemble_tile_maps(
     n_exp: int,
 ) -> Dict[str, np.ndarray]:
     """
-    Assemble per-tile pixel maps onto a canvas using intensity-weighted averaging.
+    Assemble per-tile pixel maps onto a canvas using nearest-centre selection.
 
-    For each canvas pixel covered by N tiles:
-        value[y,x] = Σ(value_k[y,x] × intensity_k[y,x]) / Σ(intensity_k[y,x])
+    For each canvas pixel, only the tile whose centre is closest contributes.
+    This avoids blurring in overlap regions that occurs when averaging two
+    slightly misaligned tiles — even sub-pixel misalignment is enough to blur
+    sharp histological features when averaged 50/50.
 
-    Single-coverage pixels are unaffected (weighted average of one = that value).
-    Overlap pixels are the photon-count weighted mean across contributing tiles,
-    which eliminates tile boundary seams in lifetime and amplitude maps.
+    Single-coverage pixels are unaffected (only one tile anyway).
 
-    Args:
-        tile_results: list of dicts, each with keys:
-            'pixel_maps'  — output of fit_per_pixel with keys:
-                            intensity, tau_mean_amp, chi2,
-                            tau1..N, a1..N
-            'pixel_y'     — top-left y coordinate on canvas
-            'pixel_x'     — top-left x coordinate on canvas
-            'tile_h'      — tile height in pixels
-            'tile_w'      — tile width in pixels
-        canvas_height, canvas_width: full ROI dimensions in pixels
-        n_exp: number of exponential components
+    Args
+    ----
+    tile_results : list of dicts from fit_flim_tiles, each with:
+                   pixel_maps, pixel_y, pixel_x, tile_h, tile_w
+    canvas_height, canvas_width : full ROI canvas size in pixels
+    n_exp : number of exponential components
 
-    Returns:
-        Dict of assembled 2D float32 arrays:
-            intensity, tau_mean_amp, chi2, tau1..[n_exp], a1..[n_exp], coverage
+    Returns
+    -------
+    Dict of assembled 2-D float32 arrays:
+        intensity, tau_mean_amp, chi2, tau1..N, a1..N, coverage
     """
     H, W = canvas_height, canvas_width
 
@@ -57,71 +41,88 @@ def assemble_tile_maps(
     keys_amp    = [f'a{k}'   for k in range(1, n_exp + 1)]
     keys_all    = keys_scalar + keys_tau + keys_amp
 
-    # Accumulate weighted numerator and TWO denominators:
-    #   wt_fitted[key]  — Σ intensity only where that key is finite (fitted)
-    #   wt_intensity    — Σ intensity for ALL pixels (for the intensity canvas)
-    #
-    # Bug fixed: previously wt used all photons as denominator for every key,
-    # so unfitted pixels (NaN tau) produced 0/photons = 0.0 instead of NaN.
-    # Now tau/amplitude keys only divide by fitted-pixel weight, giving NaN
-    # wherever no tile fitted that pixel — regardless of photon count.
-    wsum       = {k: np.zeros((H, W), dtype=np.float64) for k in keys_all}
-    wt_fitted  = {k: np.zeros((H, W), dtype=np.float64) for k in keys_all}
-    intensity_sum = np.zeros((H, W), dtype=np.float32)
-    coverage   = np.zeros((H, W), dtype=np.uint16)
+    # ── Build nearest-centre ownership map ────────────────────────────────────
+    # For every canvas pixel, record the index of the tile whose centre is
+    # closest.  Ties broken by later tiles (last write wins, doesn't matter).
+    # Use squared Euclidean distance — no sqrt needed for comparison.
+    min_dist2 = np.full((H, W), np.inf, dtype=np.float64)
+    owner     = np.full((H, W), -1,     dtype=np.int32)
 
-    for tr in tile_results:
+    for ti, tr in enumerate(tile_results):
+        if tr.get('pixel_maps') is None:
+            continue
+        y0, x0 = tr['pixel_y'], tr['pixel_x']
+        th, tw  = tr['tile_h'],  tr['tile_w']
+        y1      = min(y0 + th, H)
+        x1      = min(x0 + tw, W)
+
+        cy = y0 + th / 2.0   # tile centre row
+        cx = x0 + tw / 2.0   # tile centre col
+
+        # Distance from tile centre for every pixel in this tile's footprint
+        rows = np.arange(y0, y1, dtype=np.float64)
+        cols = np.arange(x0, x1, dtype=np.float64)
+        dy2  = (rows - cy) ** 2               # (dy,)
+        dx2  = (cols - cx) ** 2               # (dx,)
+        dist2 = dy2[:, np.newaxis] + dx2      # (dy, dx) broadcast
+
+        # Only take ownership where this tile is strictly closer
+        region = min_dist2[y0:y1, x0:x1]
+        closer = dist2 < region
+        min_dist2[y0:y1, x0:x1] = np.where(closer, dist2, region)
+        owner[y0:y1, x0:x1]     = np.where(closer, ti, owner[y0:y1, x0:x1])
+
+    # ── Place tile data using ownership map ───────────────────────────────────
+    canvas = {k: np.full((H, W), np.nan, dtype=np.float32) for k in keys_all}
+    intensity_canvas = np.zeros((H, W), dtype=np.float32)
+    coverage         = np.zeros((H, W), dtype=np.uint16)
+
+    for ti, tr in enumerate(tile_results):
         pm = tr.get('pixel_maps')
         if pm is None:
             continue
-
         y0, x0 = tr['pixel_y'], tr['pixel_x']
         th, tw  = tr['tile_h'],  tr['tile_w']
         y1 = min(y0 + th, H)
         x1 = min(x0 + tw, W)
         dy, dx = y1 - y0, x1 - x0
 
+        # Mask: pixels owned by this tile
+        owned = (owner[y0:y1, x0:x1] == ti)   # (dy, dx) bool
+
         tile_int = np.asarray(
             pm.get('intensity', np.zeros((th, tw), dtype=np.float32)),
-            dtype=np.float64)[:dy, :dx]
+            dtype=np.float32)[:dy, :dx]
 
-        intensity_sum[y0:y1, x0:x1] += tile_int.astype(np.float32)
-        coverage[y0:y1, x0:x1]      += 1
+        intensity_canvas[y0:y1, x0:x1] = np.where(
+            owned, tile_int, intensity_canvas[y0:y1, x0:x1])
+        coverage[y0:y1, x0:x1] = np.where(
+            owned, coverage[y0:y1, x0:x1] + 1, coverage[y0:y1, x0:x1])
 
         for key in keys_all:
-            src = pm.get(key)
-            if src is None:
+            raw = pm.get(key)
+            if raw is None:
                 continue
-            src = np.asarray(src, dtype=np.float64)[:dy, :dx]
-            # Only accumulate weight and value where this pixel was fitted
-            # (src is finite).  Unfitted pixels (NaN) contribute nothing to
-            # either numerator or denominator → result is NaN, not 0.
-            fitted = np.isfinite(src)
-            w_here = np.where(fitted, tile_int, 0.0)
-            wsum[key][y0:y1, x0:x1]      += np.where(fitted, src * tile_int, 0.0)
-            wt_fitted[key][y0:y1, x0:x1] += w_here
+            raw = np.asarray(raw, dtype=np.float32)[:dy, :dx]
+            # Only place fitted (finite) pixels that this tile owns
+            place = owned & np.isfinite(raw)
+            canvas[key][y0:y1, x0:x1] = np.where(
+                place, raw, canvas[key][y0:y1, x0:x1])
 
-    canvas = {
-        # Intensity: mean photon count per tile (all pixels, not just fitted)
-        'intensity': (intensity_sum / np.where(coverage > 0, coverage, 1)
-                      ).astype(np.float32),
-        'coverage':  coverage.astype(np.float32),
-    }
+    canvas['intensity'] = intensity_canvas
+    canvas['coverage']  = coverage.astype(np.float32)
 
-    for key in keys_all:
-        safe_wt = np.where(wt_fitted[key] > 0, wt_fitted[key], np.nan)
-        canvas[key] = (wsum[key] / safe_wt).astype(np.float32)
-        # → NaN for every pixel where no tile fitted that pixel
-
-    n_overlap = int((coverage > 1).sum())
-    pct = n_overlap / (H * W) * 100
-    print(f"  Canvas {H}×{W}  |  overlap: {n_overlap:,} px ({pct:.1f}%)  "
-          f"|  max coverage: {int(coverage.max())}×")
+    n_overlap = int((owner >= 0).sum()) - int((coverage > 0).sum())
+    pct_multi = int((np.array([
+        ((owner[tr['pixel_y']:min(tr['pixel_y']+tr['tile_h'],H),
+            tr['pixel_x']:min(tr['pixel_x']+tr['tile_w'],W)]) == ti).sum()
+        for ti, tr in enumerate(tile_results) if tr.get('pixel_maps') is not None
+    ]).sum())) 
+    print(f"  Canvas {H}×{W}  |  tiles={len(tile_results)}  "
+          f"|  ownership map built (nearest-centre, no blending)")
 
     return canvas
 
-
-# ── Global tau derivation ──────────────────────────────────────────────────────
 
 def derive_global_tau(
     canvas: Dict[str, np.ndarray],
@@ -276,7 +277,7 @@ def save_assembled_maps(
 
     # ── Component RGB TIFF ────────────────────────────────────────────────────
     try:
-        from .utils.lifetime_image import make_component_rgb_tiff
+        from ..utils.lifetime_image import make_component_rgb_tiff
         make_component_rgb_tiff(canvas, output_dir, roi_name, n_exp, verbose=True)
     except Exception as _e:
         print(f"  ⚠ component RGB skipped: {_e}")

@@ -1,12 +1,3 @@
-"""
-flimkit/utils/lifetime_image.py
-================================
-Generates the intensity-weighted lifetime colour image from an assembled canvas.
-
-Called by _run_tile_fit() in interactive.py after save_assembled_maps().
-Can also be called standalone on any saved canvas .npy files.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -20,7 +11,7 @@ def make_lifetime_image(
     roi_name: str,
     tau_min_ns: float = 0.0,
     tau_max_ns: float = 5.0,
-    smooth_sigma_px: float = 2.0,
+    smooth_sigma_px: float = 0.0,   # 0 = no smoothing; use >0 only for display PNGs
     intensity_percentile_lo: float = 0.0,
     intensity_percentile_hi: float = 99.0,
     gamma: float = 0.4,
@@ -72,13 +63,16 @@ def make_lifetime_image(
     int_map = np.asarray(canvas['intensity'],    dtype=float)
     valid   = np.isfinite(tau_map) & (int_map > 0)
 
-    # ── NaN-aware Gaussian smooth ──────────────────────────────────────────
-    tau_filled = np.where(valid, tau_map, 0.0)
-    w          = valid.astype(float)
-    denom      = gaussian_filter(w,          sigma=smooth_sigma_px)
-    tau_smooth = np.where(denom > 0.01,
-                          gaussian_filter(tau_filled, sigma=smooth_sigma_px) / denom,
-                          np.nan)
+    # ── NaN-aware Gaussian smooth (sigma=0 → no smoothing) ─────────────────
+    if smooth_sigma_px > 0:
+        tau_filled = np.where(valid, tau_map, 0.0)
+        w          = valid.astype(float)
+        denom      = gaussian_filter(w,          sigma=smooth_sigma_px)
+        tau_smooth = np.where(denom > 0.01,
+                              gaussian_filter(tau_filled, sigma=smooth_sigma_px) / denom,
+                              np.nan)
+    else:
+        tau_smooth = np.where(valid, tau_map, np.nan)
 
     # ── Save uint16 TIFF (τ scaled over tau_min–tau_max range) ───────────────
     if _has_tifffile:

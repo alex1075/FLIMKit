@@ -1,10 +1,3 @@
-
-"""stitch.py - FLIM tile stitching module.
-
-Provides functions for stitching PTU tiles using XLIF metadata
-to produce intensity images and FLIM histogram cubes for fitting.
-"""
-
 import numpy as np
 import tifffile
 from pathlib import Path

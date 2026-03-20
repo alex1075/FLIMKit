@@ -1,11 +1,3 @@
-"""Enhanced Output Functions for FLIM Fitting Results
-
-Adds functionality to save:
-- Fit parameters to text file
-- Intensity-weighted tau images
-- Amplitude-weighted tau images
-"""
-
 import numpy as np
 import tifffile
 from pathlib import Path
