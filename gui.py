@@ -676,6 +676,7 @@ class FLIMKitGUI:
 
         self._build_fov_tab()
         self._build_stitch_tab()
+        self._build_batch_tab()
         self._build_machine_irf_tab()
         self._build_phasor_tab()
 
@@ -732,10 +733,18 @@ class FLIMKitGUI:
             ttk.Radiobutton(fp, text=lbl, variable=self.sv_mode_fov,
                             value=val).grid(row=1, column=c, sticky="w", padx=4)
 
-        ttk.Label(fp, text="Output prefix:").grid(row=2, column=0, sticky="w", **PAD)
+        ttk.Label(fp, text="Fit window (ns):").grid(row=2, column=0, sticky="w", **PAD)
+        self.sv_tau_min_fov = tk.StringVar(value=str(_C()["Tau_min"]))
+        self.sv_tau_max_fov = tk.StringVar(value=str(_C()["Tau_max"]))
+        ttk.Entry(fp, textvariable=self.sv_tau_min_fov, width=7).grid(row=2, column=1, sticky="w", padx=4)
+        ttk.Label(fp, text="to").grid(row=2, column=2)
+        ttk.Entry(fp, textvariable=self.sv_tau_max_fov, width=7).grid(row=2, column=3, sticky="w", padx=4)
+        ttk.Label(fp, text="ns  (fitting range)", foreground="grey").grid(row=2, column=4, sticky="w")
+
+        ttk.Label(fp, text="Output prefix:").grid(row=3, column=0, sticky="w", **PAD)
         self.sv_out_fov = tk.StringVar(value="flim_out")
         ttk.Entry(fp, textvariable=self.sv_out_fov, width=35).grid(
-            row=2, column=1, columnspan=3, sticky="ew", padx=4)
+            row=3, column=1, columnspan=3, sticky="ew", padx=4)
 
         fm = _section(tab, "Masking & Thresholding")
         fm.grid(row=3, column=0, sticky="ew", pady=(0, 6))
@@ -874,6 +883,14 @@ class FLIMKitGUI:
         ttk.Entry(self._pxf, textvariable=self.sv_int_hi, width=7).grid(row=2, column=3, padx=4)
         ttk.Label(self._pxf, text="(blank = auto)", foreground="grey").grid(row=2, column=4, padx=4)
 
+        ttk.Label(self._pxf, text="Fit window (ns):").grid(row=3, column=0, sticky="w", pady=2)
+        self.sv_tau_fit_lo = tk.StringVar(value=str(_C()["Tau_min"]))
+        self.sv_tau_fit_hi = tk.StringVar(value=str(_C()["Tau_max"]))
+        ttk.Entry(self._pxf, textvariable=self.sv_tau_fit_lo, width=7).grid(row=3, column=1, padx=4)
+        ttk.Label(self._pxf, text="to").grid(row=3, column=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_tau_fit_hi, width=7).grid(row=3, column=3, padx=4)
+        ttk.Label(self._pxf, text="ns  (fitting range)", foreground="grey").grid(row=3, column=4, padx=4)
+
         self._pxf.grid_remove()
 
         fm = _section(parent, "Masking & Thresholding")
@@ -890,6 +907,20 @@ class FLIMKitGUI:
         self._thr_st_e.grid(row=0, column=1, sticky="w", padx=4)
         ttk.Label(fm, text="(leave blank for no threshold)",
                   foreground="grey").grid(row=0, column=2, sticky="w")
+
+        # Registration
+        freg = _section(parent, "Tile Registration")
+        freg.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        self.bv_register = tk.BooleanVar(value=True)
+        ttk.Checkbutton(freg, text="Phase-correlation registration (fixes stage Y/X drift)",
+                        variable=self.bv_register).grid(
+            row=0, column=0, columnspan=3, sticky="w", **PAD)
+        ttk.Label(freg, text="Max shift (px):").grid(row=1, column=0, sticky="w", **PAD)
+        self.sv_reg_max_shift = tk.StringVar(value="120")
+        ttk.Entry(freg, textvariable=self.sv_reg_max_shift, width=6).grid(
+            row=1, column=1, sticky="w", padx=4)
+        ttk.Label(freg, text="(increase if drift > 120px)",
+                  foreground="grey").grid(row=1, column=2, sticky="w")
 
         # Per-tile extras (shown only in tile_fit pipeline mode)
         self._tile_extras_frame = ttk.Frame(parent)
@@ -927,8 +958,218 @@ class FLIMKitGUI:
             self._pxf.grid_remove()
         self.root.after_idle(self._fit_window_to_screen)
 
+
     # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 3 – Machine IRF Builder
+    # TAB 3 – Batch ROI Fit
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _build_batch_tab(self):
+        tab = self._make_scroll_tab("  Batch ROI Fit  ")
+        tab.columnconfigure(0, weight=1)
+
+        ff = _section(tab, "Input / Output")
+        ff.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ff.columnconfigure(1, weight=1)
+        self.sv_batch_xlif_dir = tk.StringVar()
+        self.sv_batch_ptu_dir  = tk.StringVar()
+        self.sv_batch_out_dir  = tk.StringVar()
+        _row(ff, "XLIF folder *",     self.sv_batch_xlif_dir, 0,
+             lambda: _browse_dir(self.sv_batch_xlif_dir, "Folder of XLIF files"))
+        _row(ff, "PTU folder *",      self.sv_batch_ptu_dir,  1,
+             lambda: _browse_dir(self.sv_batch_ptu_dir,  "PTU tile directory"))
+        _row(ff, "Output base dir *", self.sv_batch_out_dir,  2,
+             lambda: _browse_dir(self.sv_batch_out_dir,  "Base output directory"))
+        ttk.Label(ff, text="One sub-folder per ROI created inside the output base dir.",
+                  foreground="grey").grid(row=3, column=1, columnspan=2, sticky="w", padx=4)
+
+        fi = _section(tab, "IRF")
+        fi.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        fi.columnconfigure(1, weight=1)
+        self.sv_batch_mirf = tk.StringVar(value=str(_C()["MACHINE_IRF_DEFAULT_PATH"]))
+        _row(fi, "Machine IRF (.npy) *", self.sv_batch_mirf, 0,
+             lambda: _browse_file(self.sv_batch_mirf, "Machine IRF",
+                                  [("NumPy", "*.npy"), ("All", "*.*")]))
+
+        fp = _section(tab, "Fitting Parameters")
+        fp.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(fp, text="Exponential components:").grid(row=0, column=0, sticky="w", **PAD)
+        self.iv_nexp_batch = tk.IntVar(value=2)
+        for n in (1, 2, 3):
+            ttk.Radiobutton(fp, text=str(n), variable=self.iv_nexp_batch,
+                            value=n).grid(row=0, column=n, sticky="w", padx=4)
+        ttk.Label(fp, text="Fit window (ns):").grid(row=1, column=0, sticky="w", **PAD)
+        self.sv_batch_tau_min = tk.StringVar(value=str(_C()["Tau_min"]))
+        self.sv_batch_tau_max = tk.StringVar(value=str(_C()["Tau_max"]))
+        ttk.Entry(fp, textvariable=self.sv_batch_tau_min, width=7).grid(row=1, column=1, padx=4)
+        ttk.Label(fp, text="to").grid(row=1, column=2)
+        ttk.Entry(fp, textvariable=self.sv_batch_tau_max, width=7).grid(row=1, column=3, padx=4)
+        ttk.Label(fp, text="ns", foreground="grey").grid(row=1, column=4, padx=4)
+        ttk.Label(fp, text="Colour scale (ns):").grid(row=2, column=0, sticky="w", **PAD)
+        self.sv_batch_tau_lo = tk.StringVar(value=str(_C()["TAU_DISPLAY_MIN"]))
+        self.sv_batch_tau_hi = tk.StringVar(value=str(_C()["TAU_DISPLAY_MAX"]))
+        ttk.Entry(fp, textvariable=self.sv_batch_tau_lo, width=7).grid(row=2, column=1, padx=4)
+        ttk.Label(fp, text="to").grid(row=2, column=2)
+        ttk.Entry(fp, textvariable=self.sv_batch_tau_hi, width=7).grid(row=2, column=3, padx=4)
+        ttk.Label(fp, text="ns  (display only)", foreground="grey").grid(row=2, column=4, padx=4)
+
+        freg = _section(tab, "Tile Registration")
+        freg.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        self.bv_batch_register = tk.BooleanVar(value=True)
+        ttk.Checkbutton(freg, text="Phase-correlation registration (fixes stage Y/X drift)",
+                        variable=self.bv_batch_register).grid(
+            row=0, column=0, columnspan=3, sticky="w", **PAD)
+        ttk.Label(freg, text="Max shift (px):").grid(row=1, column=0, sticky="w", **PAD)
+        self.sv_batch_reg_shift = tk.StringVar(value="120")
+        ttk.Entry(freg, textvariable=self.sv_batch_reg_shift, width=6).grid(
+            row=1, column=1, sticky="w", padx=4)
+        ttk.Label(freg, text="(increase if drift > 120px)",
+                  foreground="grey").grid(row=1, column=2, sticky="w")
+
+        fm = _section(tab, "Masking")
+        fm.grid(row=4, column=0, sticky="ew", pady=(0, 6))
+        self.bv_batch_thr = tk.BooleanVar(value=False)
+        self.sv_batch_thr = tk.StringVar()
+        ttk.Checkbutton(fm, text="Intensity threshold (min photons/px):",
+                        variable=self.bv_batch_thr,
+                        command=lambda: _tog(self.bv_batch_thr, self._batch_thr_e)).grid(
+            row=0, column=0, sticky="w", **PAD)
+        self._batch_thr_e = ttk.Entry(fm, textvariable=self.sv_batch_thr,
+                                      width=8, state="disabled")
+        self._batch_thr_e.grid(row=0, column=1, sticky="w", padx=4)
+
+        self._btn_batch = ttk.Button(tab, text="▶  Run Batch ROI Fit",
+                                     command=self._run_batch)
+        self._btn_batch.grid(row=5, column=0, pady=8, ipadx=20, ipady=4)
+
+    def _run_batch(self):
+        xlif_dir = self.sv_batch_xlif_dir.get().strip()
+        ptu_dir  = self.sv_batch_ptu_dir.get().strip()
+        out_dir  = self.sv_batch_out_dir.get().strip()
+        for val, name in [(xlif_dir, "XLIF folder"),
+                          (ptu_dir,  "PTU folder"),
+                          (out_dir,  "Output directory")]:
+            if not val or not Path(val).is_dir():
+                messagebox.showerror("Missing input", f"Please select a valid {name}.")
+                return
+        xlif_files = sorted(Path(xlif_dir).glob("*.xlif"))
+        if not xlif_files:
+            messagebox.showerror("No XLIF files", f"No .xlif files found in:\n{xlif_dir}")
+            return
+
+        cfg       = _C()
+        mirf      = self.sv_batch_mirf.get().strip() or str(cfg["MACHINE_IRF_DEFAULT_PATH"])
+        n_exp     = self.iv_nexp_batch.get()
+        tau_min   = float(self.sv_batch_tau_min.get() or cfg["Tau_min"])
+        tau_max   = float(self.sv_batch_tau_max.get() or cfg["Tau_max"])
+        tau_lo    = _flt(self.sv_batch_tau_lo) or cfg["TAU_DISPLAY_MIN"]
+        tau_hi    = _flt(self.sv_batch_tau_hi) or cfg["TAU_DISPLAY_MAX"]
+        register  = self.bv_batch_register.get()
+        reg_shift = int(self.sv_batch_reg_shift.get() or 120)
+        thr       = _thresh(self.bv_batch_thr, self.sv_batch_thr)
+
+        from flimkit.PTU.stitch    import fit_flim_tiles
+        from flimkit.FLIM.assemble import (derive_global_tau, save_assembled_maps,
+                                           assemble_tile_maps)
+        from flimkit.utils.lifetime_image import make_lifetime_image, make_component_rgb_tiff
+        import gc, csv as csv_mod
+
+        def task(progress_callback, cancel_event):
+            csv_path = Path(out_dir) / "batch_roi_fit_summary.csv"
+            header_written = False
+            n_total = len(xlif_files)
+
+            for idx, xlif_path in enumerate(xlif_files):
+                if cancel_event.is_set():
+                    print("\nBatch cancelled.")
+                    break
+                progress_callback(idx, n_total)
+                ptu_basename = xlif_path.stem
+                roi_clean    = ptu_basename.replace(" ", "_")
+                roi_out      = Path(out_dir) / roi_clean
+                roi_out.mkdir(parents=True, exist_ok=True)
+                print(f"\n{'='*50}\n  [{idx+1}/{n_total}] {ptu_basename}\n{'='*50}")
+
+                try:
+                    fit_args = argparse.Namespace(
+                        nexp=n_exp, tau_min=tau_min, tau_max=tau_max,
+                        optimizer="de", restarts=1,
+                        de_population=cfg["de_population"],
+                        de_maxiter=cfg["de_maxiter"],
+                        workers=cfg["n_workers"],
+                        binning=1,
+                        min_photons=cfg["MIN_PHOTONS_PERPIX"],
+                        intensity_threshold=thr,
+                        register_tiles=register,
+                        reg_max_shift_px=reg_shift,
+                        machine_irf=mirf,
+                        tau_display_min=tau_lo,
+                        tau_display_max=tau_hi,
+                        intensity_display_min=0.0,
+                        intensity_display_max=None,
+                        irf_xlsx_dir=None, irf_xlsx_map=None,
+                        ptu_basename=ptu_basename,
+                        xlif=str(xlif_path),
+                        ptu_dir=ptu_dir,
+                        output_dir=str(roi_out),
+                        no_plots=True, cell_mask=False,
+                        debug_xlsx=False, print_config=False,
+                        irf=None, irf_xlsx=None,
+                        estimate_irf="machine_irf",
+                        no_xlsx_irf=True,
+                    )
+                    tile_results, canvas_h, canvas_w, _ = fit_flim_tiles(
+                        xlif_path=xlif_path, ptu_dir=Path(ptu_dir),
+                        output_dir=roi_out, args=fit_args,
+                        ptu_basename=ptu_basename, rotate_tiles=True, verbose=True,
+                    )
+                    if not tile_results:
+                        row = {"roi": ptu_basename, "status": "No tiles fitted"}
+                    else:
+                        canvas = assemble_tile_maps(tile_results, canvas_h, canvas_w, n_exp)
+                        del tile_results; gc.collect()
+                        summary = derive_global_tau(canvas, n_exp=n_exp)
+                        save_assembled_maps(
+                            canvas=canvas, global_summary=summary,
+                            output_dir=roi_out, roi_name=roi_clean, n_exp=n_exp,
+                            tau_display_min=tau_lo, tau_display_max=tau_hi,
+                        )
+                        make_lifetime_image(
+                            canvas=canvas, output_dir=roi_out, roi_name=roi_clean,
+                            tau_min_ns=tau_lo, tau_max_ns=tau_hi,
+                            smooth_sigma_px=0.0, gamma=0.4, verbose=False,
+                        )
+                        make_component_rgb_tiff(
+                            canvas=canvas, output_dir=roi_out,
+                            roi_name=roi_clean, n_exp=n_exp, verbose=False,
+                        )
+                        del canvas; gc.collect()
+                        row = {"roi": ptu_basename, "status": "OK", **summary}
+                        print(f"  OK: {ptu_basename}")
+                except Exception as exc:
+                    import traceback; traceback.print_exc()
+                    row = {"roi": ptu_basename,
+                           "status": f"ERROR: {type(exc).__name__}: {str(exc)[:80]}"}
+
+                with open(csv_path, "a", newline="") as fh:
+                    writer = csv_mod.DictWriter(fh, fieldnames=list(row.keys()))
+                    if not header_written:
+                        writer.writeheader(); header_written = True
+                    writer.writerow(row)
+
+            progress_callback(n_total, n_total)
+            print(f"\nBatch complete. CSV: {csv_path}")
+
+        def on_done(result):
+            self._set_buttons("normal")
+            self._res.set_status("✓  Batch complete.")
+            self._res.load_images(out_dir)
+
+        self._set_buttons("disabled")
+        self.run_with_progress(
+            task, task_name=f"Batch ROI Fit ({len(xlif_files)} ROIs)", on_done=on_done)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 4 – Machine IRF Builder
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _build_machine_irf_tab(self):
@@ -1005,7 +1246,7 @@ class FLIMKitGUI:
         self._btn_mirf.grid(row=3, column=0, pady=8, ipadx=20, ipady=4)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 4 – Phasor
+    # TAB 5 – Phasor
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _build_phasor_tab(self):
@@ -1111,8 +1352,8 @@ class FLIMKitGUI:
         a.irf_fit_width = cfg["IRF_FIT_WIDTH"]
         a.irf_fwhm      = cfg["IRF_FWHM"]
         a.nexp          = self.iv_nexp_fov.get()
-        a.tau_min       = cfg["Tau_min"]
-        a.tau_max       = cfg["Tau_max"]
+        a.tau_min       = float(self.sv_tau_min_fov.get() or cfg["Tau_min"])
+        a.tau_max       = float(self.sv_tau_max_fov.get() or cfg["Tau_max"])
         a.mode          = self.sv_mode_fov.get()
         a.binning       = cfg["binning_factor"]
         a.min_photons   = cfg["MIN_PHOTONS_PERPIX"]
@@ -1166,8 +1407,10 @@ class FLIMKitGUI:
         a.estimate_irf  = irf["estimate_irf"] if irf["estimate_irf"] != "none" else "gaussian"
         a.machine_irf   = irf.get("machine_irf") or str(cfg["MACHINE_IRF_DEFAULT_PATH"])
         a.nexp          = self.iv_nexp_st.get()
-        a.tau_min       = cfg["Tau_min"]
-        a.tau_max       = cfg["Tau_max"]
+        a.tau_min       = float(self.sv_tau_fit_lo.get() or cfg["Tau_min"])
+        a.tau_max       = float(self.sv_tau_fit_hi.get() or cfg["Tau_max"])
+        a.register_tiles     = self.bv_register.get()
+        a.reg_max_shift_px   = int(self.sv_reg_max_shift.get() or 120)
         a.binning       = cfg["binning_factor"]
         a.min_photons   = cfg["MIN_PHOTONS_PERPIX"]
         a.optimizer     = "de"
@@ -1354,7 +1597,7 @@ class FLIMKitGUI:
             self._res.load_images(output_dir)
 
     def _set_buttons(self, state):
-        for btn in (self._btn_fov, self._btn_st, self._btn_mirf, self._btn_ph):
+        for btn in (self._btn_fov, self._btn_st, self._btn_batch, self._btn_mirf, self._btn_ph):
             btn.configure(state=state)
 
     def _on_close(self):
