@@ -66,7 +66,9 @@ jobs:
           --onefile
           --hidden-import tkinter
           --hidden-import tkinter.ttk
+          --hidden-import PIL
           --add-data "flimkit:flimkit"
+          --add-data "flimkit/icon.png:flimkit"
           gui.py
 
       - name: Package macOS app bundle

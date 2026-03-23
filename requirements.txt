@@ -6,6 +6,7 @@ matplotlib==3.10.8
 numpy==2.4.2
 opencv_python==4.13.0.90
 pandas==3.0.1
+Pillow>=10.0.0
 phasorpy==0.9
 ptufile==2026.1.14
 pytest==9.0.2

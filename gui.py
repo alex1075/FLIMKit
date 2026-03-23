@@ -1697,19 +1697,29 @@ def launch_gui():
         root = tk.Tk()
     
     # Set window icon if available
-    icon_path = Path(__file__).parent / "flimkit" / "icon.png"
-    if icon_path.exists():
-        try:
-            from PIL import Image, ImageTk
-            icon_img = Image.open(str(icon_path))
-            # Resize icon to reasonable size for window manager (32x32)
-            icon_img.thumbnail((32, 32), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(icon_img)
-            root.iconphoto(False, photo)
-            # Keep a reference to prevent garbage collection
-            root._icon_photo = photo
-        except Exception as e:
-            print(f"Warning: Could not load icon from {icon_path}: {e}")
+    # Handle PyInstaller bundle (sys._MEIPASS) or normal development environment
+    base_path = Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else Path(__file__).parent
+    icon_paths = [
+        base_path / "flimkit" / "icon.png",
+        base_path / "icon.png",
+        Path(__file__).parent / "flimkit" / "icon.png",
+        Path(__file__).parent / "icon.png",
+    ]
+    for icon_path in icon_paths:
+        if icon_path.exists():
+            try:
+                from PIL import Image, ImageTk
+                icon_img = Image.open(str(icon_path))
+                # Resize icon to reasonable size for window manager (32x32)
+                icon_img.thumbnail((32, 32), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(icon_img)
+                root.iconphoto(False, photo)
+                # Keep a reference to prevent garbage collection
+                root._icon_photo = photo
+                break
+            except Exception as e:
+                print(f"Warning: Could not load icon from {icon_path}: {e}")
+                continue
     
     # Apply Sun-Valley dark theme if available
     if HAS_TKMT:
