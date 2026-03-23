@@ -29,6 +29,13 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from flimkit.utils.progress_window import ProgressWindow
 
+# Modern theme support
+try:
+    import TKinterModernThemes as TKMT
+    HAS_TKMT = True
+except ImportError:
+    HAS_TKMT = False
+
 # Drag and drop support
 try:
     from tkinterdnd2 import DND_FILES, DND_TEXT
@@ -83,8 +90,7 @@ def _C() -> dict:
 class _Redirect:
     """Redirect stdout/stderr to ScrolledText widget.
     
-    Note: tqdm progress bars are disabled in GUI mode (via GUI_MODE flag in stitch.py),
-    so we don't need to handle carriage returns - just append all output.
+    Progress bars print each update as a new line for simplicity.
     """
 
     # ANSI escape code pattern to strip from output
@@ -100,9 +106,10 @@ class _Redirect:
         self.buf.append(text)
         self.widget.configure(state="normal")
         
-        # Strip ANSI escape codes and carriage returns
+        # Strip ANSI escape codes
         text = self._ANSI_ESCAPE.sub('', text)
-        text = text.replace('\r', '')
+        # Treat carriage returns as newlines (progress bars print as new lines)
+        text = text.replace('\r', '\n')
         
         # Simply append all text
         if text:
@@ -133,6 +140,32 @@ def _browse_dir(var, title="Select directory"):
     p = filedialog.askdirectory(title=title)
     if p:
         var.set(p)
+
+
+def _on_mousewheel(event, canvas):
+    """Handle mousewheel scrolling on Canvas."""
+    if event.num == 5 or event.delta < 0:
+        # Scroll down
+        canvas.yview_scroll(3, "units")
+    elif event.num == 4 or event.delta > 0:
+        # Scroll up
+        canvas.yview_scroll(-3, "units")
+
+
+def _bind_mousewheel(widget, canvas):
+    """Bind mousewheel events to canvas for scrolling."""
+    # macOS uses <MouseWheel>
+    widget.bind("<MouseWheel>", lambda e: _on_mousewheel(e, canvas))
+    # Linux uses <Button-4> and <Button-5>
+    widget.bind("<Button-4>", lambda e: _on_mousewheel(e, canvas))
+    widget.bind("<Button-5>", lambda e: _on_mousewheel(e, canvas))
+    
+    # Recursively bind to all child widgets
+    try:
+        for child in widget.winfo_children():
+            _bind_mousewheel(child, canvas)
+    except (tk.TclError, AttributeError):
+        pass
 
 
 def _row(parent, label, var, row, browse_fn, width=45, state="normal"):
@@ -538,8 +571,8 @@ class ResultsPanel:
 # Main GUI
 # ─────────────────────────────────────────────────────────────────────────────
 
-class FLIMKitGUI:
-
+class FLIMKitGUI(TKMT.ThemedTKinterFrame):
+    
     def _make_scroll_tab(self, title: str) -> ttk.Frame:
         """Create a notebook tab whose contents are vertically scrollable."""
         outer = ttk.Frame(self._nb)
@@ -559,12 +592,18 @@ class FLIMKitGUI:
 
         def _on_inner_configure(_evt=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
+            # Rebind mousewheel to newly added children
+            _bind_mousewheel(inner, canvas)
 
         def _on_canvas_configure(evt):
             canvas.itemconfigure(window_id, width=evt.width)
 
         inner.bind("<Configure>", _on_inner_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
+        
+        # Bind mousewheel events to canvas and outer frame for scrolling
+        _bind_mousewheel(outer, canvas)
+        _bind_mousewheel(canvas, canvas)
 
         return inner
 
@@ -1656,13 +1695,45 @@ def launch_gui():
         root = Tk()
     else:
         root = tk.Tk()
-    style = ttk.Style(root)
-    for theme in ("clam", "alt", "default"):
-        if theme in style.theme_names():
-            style.theme_use(theme)
-            break
-    FLIMKitGUI(root)
-    root.mainloop()
+    
+    # Set window icon if available
+    icon_path = Path(__file__).parent / "flimkit" / "icon.png"
+    if icon_path.exists():
+        try:
+            from PIL import Image, ImageTk
+            icon_img = Image.open(str(icon_path))
+            # Resize icon to reasonable size for window manager (32x32)
+            icon_img.thumbnail((32, 32), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(icon_img)
+            root.iconphoto(False, photo)
+            # Keep a reference to prevent garbage collection
+            root._icon_photo = photo
+        except Exception as e:
+            print(f"Warning: Could not load icon from {icon_path}: {e}")
+    
+    # Apply Sun-Valley dark theme if available
+    if HAS_TKMT:
+        try:
+            root = TKMT.ThemedTKinterFrame(root, "sun-valley", mode="dark")
+        except Exception:
+            # Fallback if theming fails
+            style = ttk.Style(root.root if hasattr(root, 'root') else root)
+            for theme in ("clam", "alt", "default"):
+                if theme in style.theme_names():
+                    style.theme_use(theme)
+                    break
+    else:
+        style = ttk.Style(root)
+        for theme in ("clam", "alt", "default"):
+            if theme in style.theme_names():
+                style.theme_use(theme)
+                break
+    
+    # Get the root window if using TKMT
+    window_root = root.root if hasattr(root, 'root') else root
+    
+    FLIMKitGUI(window_root)
+    window_root.mainloop()
 
 
 if __name__ == "__main__":

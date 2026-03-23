@@ -14,3 +14,4 @@ tifffile==2026.1.28
 tqdm==4.67.3
 tkinterdnd2==0.4.3
 xarray==2026.1.0
+TKinterModernThemes==1.10/5
