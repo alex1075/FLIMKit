@@ -1,8 +1,16 @@
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import LinearSegmentedColormap
 from flimkit.configs import FLIM_CMAP
+
+# Use non-interactive 'Agg' backend for thread-safe file saving
+# This prevents segfaults when matplotlib operations happen in worker threads
+try:
+    matplotlib.use('Agg', force=True)
+except Exception:
+    pass  # If backend switching fails, continue anyway
 
 
 def plot_summed(decay, summary, ptu, xlsx, n_exp, strategy, out_prefix,

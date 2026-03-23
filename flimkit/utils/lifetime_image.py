@@ -44,9 +44,18 @@ def make_lifetime_image(
     -------
     Path to the saved PNG
     """
+    import matplotlib
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
     from scipy.ndimage import gaussian_filter
+
+    # Use non-interactive 'Agg' backend for thread-safe file saving
+    # This prevents segfaults when matplotlib operations happen in worker threads
+    current_backend = matplotlib.get_backend()
+    try:
+        matplotlib.use('Agg', force=True)
+    except Exception:
+        pass  # If backend switching fails, continue anyway
 
     try:
         import tifffile as _tifffile

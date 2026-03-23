@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import curve_fit
+import matplotlib
 import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
@@ -8,6 +9,13 @@ import json
 from ..PTU.reader import PTUFile
 from ..utils.xlsx_tools import load_xlsx
 from ..configs import MACHINE_IRF_DIR as _DEFAULT_MACHINE_IRF_DIR
+
+# Use non-interactive 'Agg' backend for thread-safe file saving
+# This prevents segfaults when matplotlib operations happen in worker threads
+try:
+    matplotlib.use('Agg', force=True)
+except Exception:
+    pass  # If backend switching fails, continue anyway
 
 
 def _leading_edge_crossing(arr: np.ndarray, frac: float = 0.5) -> int:

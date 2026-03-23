@@ -12,4 +12,5 @@ pytest==9.0.2
 scipy==1.17.1
 tifffile==2026.1.28
 tqdm==4.67.3
+tkinterdnd2==0.4.3
 xarray==2026.1.0

@@ -28,6 +28,16 @@ import matplotlib.image as mpimg
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from flimkit.utils.progress_window import ProgressWindow
+
+# Drag and drop support
+try:
+    from tkinterdnd2 import DND_FILES, DND_TEXT
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
+
+# GUI mode flag for tqdm (disables progress bars in GUI, keeps them in CLI)
+GUI_MODE = False
 # ─────────────────────────────────────────────────────────────────────────────
 # Lazy config loader – deferred so flimkit.__init__ circular imports don't fire
 # at module load time.  Call _C()['key'] anywhere you need a config value.
@@ -71,36 +81,33 @@ def _C() -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _Redirect:
-    """Redirect stdout/stderr to ScrolledText; \r updates progress bar line only."""
+    """Redirect stdout/stderr to ScrolledText widget.
+    
+    Note: tqdm progress bars are disabled in GUI mode (via GUI_MODE flag in stitch.py),
+    so we don't need to handle carriage returns - just append all output.
+    """
+
+    # ANSI escape code pattern to strip from output
+    _ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
     def __init__(self, widget: scrolledtext.ScrolledText, buf: list):
-        self.widget             = widget
-        self.buf                = buf
-        self._at_sol            = True
-        self._last_was_progress = False
+        self.widget = widget
+        self.buf = buf
 
     def write(self, text: str):
         if not text:
             return
         self.buf.append(text)
         self.widget.configure(state="normal")
-        parts = text.split('\r')
-        for i, part in enumerate(parts):
-            if i > 0:
-                if self._last_was_progress:
-                    line_start = self.widget.index("end-1c linestart")
-                    self.widget.delete(line_start, tk.END)
-                else:
-                    if not self._at_sol:
-                        self.widget.insert(tk.END, "\n")
-                self._at_sol            = True
-                self._last_was_progress = True
-            if part:
-                self.widget.insert(tk.END, part)
-                ends_nl = part.endswith("\n")
-                self._at_sol = ends_nl
-                if ends_nl:
-                    self._last_was_progress = False
+        
+        # Strip ANSI escape codes and carriage returns
+        text = self._ANSI_ESCAPE.sub('', text)
+        text = text.replace('\r', '')
+        
+        # Simply append all text
+        if text:
+            self.widget.insert(tk.END, text)
+        
         self.widget.see(tk.END)
         self.widget.configure(state="disabled")
         self.widget.update_idletasks()
@@ -135,7 +142,52 @@ def _row(parent, label, var, row, browse_fn, width=45, state="normal"):
     e.grid(row=row, column=1, sticky="ew", padx=4, pady=3)
     ttk.Button(parent, text="Browse...", command=browse_fn).grid(
         row=row, column=2, padx=4, pady=3)
+    _enable_dnd_for_entry(e, var)
     return e
+
+
+def _enable_dnd_for_entry(entry_widget: ttk.Entry, string_var: tk.StringVar):
+    """Enable drag-and-drop for an entry widget bound to a StringVar."""
+    if not HAS_DND:
+        return
+    
+    def drop(event):
+        """Handle file/folder drop events."""
+        try:
+            data = event.data.strip()
+            if not data:
+                return
+            
+            paths = []
+            
+            # Check if data contains brace-wrapped paths (typical for multiple selections)
+            if '{' in data:
+                # Extract paths from braces like: {/path1} {/path2}
+                import re
+                matches = re.findall(r'\{([^}]+)\}', data)
+                paths = matches
+            else:
+                # Single path (possibly with spaces, no braces)
+                # Remove any quotes
+                path = data.strip('"\'')
+                if path:
+                    paths = [path]
+            
+            # Take the first path
+            if paths:
+                path = paths[0].strip()
+                if path:
+                    string_var.set(path)
+        except Exception as e:
+            # Silently fail if something goes wrong
+            pass
+    
+    try:
+        entry_widget.drop_target_register(DND_FILES, DND_TEXT)
+        entry_widget.dnd_bind('<<Drop>>', drop)
+    except Exception:
+        # If DND fails silently, still allow the GUI to work
+        pass
 
 
 def _section(parent, text: str) -> ttk.LabelFrame:
@@ -191,6 +243,7 @@ class IRFWidget:
         self._path_lbl.grid(row=r, column=0, sticky="e", padx=6, pady=3)
         self._path_e = ttk.Entry(self.frame, textvariable=self.sv_path, width=45)
         self._path_e.grid(row=r, column=1, sticky="ew", padx=4, pady=3)
+        _enable_dnd_for_entry(self._path_e, self.sv_path)
         self._path_btn = ttk.Button(
             self.frame, text="Browse...",
             command=self._browse_irf_path)
@@ -294,7 +347,7 @@ class ResultsPanel:
         f.columnconfigure(0, weight=1)
         f.rowconfigure(0, weight=1)
         self.log = scrolledtext.ScrolledText(
-            f, state="disabled", height=12, wrap="word",
+            f, state="disabled", wrap="word",
             font=("Courier", 9), background="#1e1e1e", foreground="#d4d4d4")
         self.log.grid(row=0, column=0, sticky="nsew")
 
@@ -330,7 +383,7 @@ class ResultsPanel:
         f.rowconfigure(0, weight=1)
 
         cols = ("Parameter", "Value", "Unit")
-        tv = ttk.Treeview(f, columns=cols, show="headings", height=16)
+        tv = ttk.Treeview(f, columns=cols, show="headings")
         tv.heading("Parameter", text="Parameter", anchor="w")
         tv.heading("Value",     text="Value",     anchor="e")
         tv.heading("Unit",      text="Unit",      anchor="w")
@@ -584,12 +637,24 @@ class FLIMKitGUI:
         root.resizable(True, True)
         root.minsize(760, 700)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(1, weight=1)
+        root.rowconfigure(0, weight=1)
 
         self._buf: list = []
 
-        self._nb = ttk.Notebook(root)
-        self._nb.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
+        # Use ttk.PanedWindow to allow draggable resizing of top panel vs results panel
+        paned = ttk.PanedWindow(root, orient="vertical")
+        paned.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+
+        # Top panel (notebook with fitting options)
+        nb_frame = ttk.Frame(paned)
+        paned.add(nb_frame, weight=2)
+        nb_frame.columnconfigure(0, weight=1)
+        nb_frame.rowconfigure(0, weight=1)
+
+        self._nb = ttk.Notebook(nb_frame)
+        self._nb.grid(row=0, column=0, sticky="nsew")
 
         self._build_fov_tab()
         self._build_stitch_tab()
@@ -597,8 +662,14 @@ class FLIMKitGUI:
         self._build_machine_irf_tab()
         self._build_phasor_tab()
 
-        self._res = ResultsPanel(root)
-        self._res.grid(row=1, column=0, sticky="nsew", padx=10, pady=(6, 10))
+        # Results panel (progress, summary, images)
+        results_frame = ttk.Frame(paned)
+        paned.add(results_frame, weight=1)
+        results_frame.columnconfigure(0, weight=1)
+        results_frame.rowconfigure(0, weight=1)
+
+        self._res = ResultsPanel(results_frame)
+        self._res.grid(row=0, column=0, sticky="nsew")
 
         redir = _Redirect(self._res.log, self._buf)
         sys.stdout = redir
@@ -660,8 +731,9 @@ class FLIMKitGUI:
 
         ttk.Label(fp, text="Output prefix:").grid(row=3, column=0, sticky="w", **PAD)
         self.sv_out_fov = tk.StringVar(value="flim_out")
-        ttk.Entry(fp, textvariable=self.sv_out_fov, width=35).grid(
-            row=3, column=1, columnspan=3, sticky="ew", padx=4)
+        self._out_fov_e = ttk.Entry(fp, textvariable=self.sv_out_fov, width=35)
+        self._out_fov_e.grid(row=3, column=1, columnspan=3, sticky="ew", padx=4)
+        _enable_dnd_for_entry(self._out_fov_e, self.sv_out_fov)
 
         fm = _section(tab, "Masking & Thresholding")
         fm.grid(row=3, column=0, sticky="ew", pady=(0, 6))
@@ -1199,9 +1271,8 @@ class FLIMKitGUI:
             lambda: _browse_dir(self.sv_mirf_out_dir, "Machine IRF output directory"),
         )
         ttk.Label(fo, text="Base filename:").grid(row=1, column=0, sticky="w", **PAD)
-        ttk.Entry(fo, textvariable=self.sv_mirf_name, width=35).grid(
-            row=1, column=1, columnspan=2, sticky="ew", padx=4
-        )
+        self._mirf_name_e = ttk.Entry(fo, textvariable=self.sv_mirf_name, width=35)
+        self._mirf_name_e.grid(row=1, column=1, columnspan=2, sticky="ew", padx=4)
 
         self._btn_mirf = ttk.Button(
             tab,
@@ -1576,7 +1647,15 @@ class FLIMKitGUI:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def launch_gui():
-    root = tk.Tk()
+    global GUI_MODE
+    GUI_MODE = True  # Disable tqdm progress bars in GUI mode
+    
+    # Create root window with tkinterdnd2 support if available
+    if HAS_DND:
+        from tkinterdnd2 import Tk
+        root = Tk()
+    else:
+        root = tk.Tk()
     style = ttk.Style(root)
     for theme in ("clam", "alt", "default"):
         if theme in style.theme_names():

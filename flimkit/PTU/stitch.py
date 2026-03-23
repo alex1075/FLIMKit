@@ -32,6 +32,12 @@ from ..utils.xml_utils import (
 )
 from .decode import get_flim_histogram_from_ptufile, create_time_axis
 
+# Try to import GUI_MODE flag (set by gui.py if running in GUI mode)
+try:
+    from ...gui import GUI_MODE
+except (ImportError, AttributeError):
+    GUI_MODE = False
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Tile stitching (intensity + FLIM cube)
@@ -176,7 +182,7 @@ def stitch_flim_tiles(
     tiles_processed = tiles_skipped = 0
     total_tiles = len(tile_positions)
 
-    for i, t in enumerate(tqdm(tile_positions, desc='  Loading tiles')):
+    for i, t in enumerate(tqdm(tile_positions, desc='  Loading tiles', disable=GUI_MODE)):
         if cancel_event is not None and cancel_event.is_set():
             if verbose:
                 print("\nStitching cancelled by user.")
@@ -855,7 +861,7 @@ def fit_flim_tiles(
     tcspc_ref    = None
 
     for i, t in enumerate(tqdm(tile_positions,
-                                desc='  Pass 1', disable=not verbose)):
+                                desc='  Pass 1', disable=(GUI_MODE or not verbose))):
         if cancel_event is not None and cancel_event.is_set():
             break
         if progress_callback is not None:
@@ -937,16 +943,18 @@ def fit_flim_tiles(
     # ══════════════════════════════════════════════════════════════════════
     # PASS 2 — per-pixel fit, one tile at a time
     # ══════════════════════════════════════════════════════════════════════
-    if verbose:
-        print(f"\nPass 2: per-pixel fit ({len(tile_meta)} tiles)...")
-        print(f"  Fixed τ   = {[f'{t:.3f}' for t in consensus_taus_ns]} ns")
-        print(f"  Fixed IRF = pooled_irf (peak bin {pooled_peak})\n")
 
     tile_results  = []
     tiles_skipped = 0
 
     for i, tc in enumerate(tqdm(tile_meta,
-                                 desc='  Pass 2', disable=not verbose)):
+                                 desc='  Pass 2', disable=(GUI_MODE or not verbose), leave=False)):
+        # Print info header on first iteration
+        if i == 0 and verbose:
+            tqdm.write(f"Pass 2: per-pixel fit ({len(tile_meta)} tiles)...")
+            tqdm.write(f"  Fixed τ   = {[f'{t:.3f}' for t in consensus_taus_ns]} ns")
+            tqdm.write(f"  Fixed IRF = pooled_irf (peak bin {pooled_peak})\n")
+        
         if cancel_event is not None and cancel_event.is_set():
             break
         if progress_callback is not None:
