@@ -1,3 +1,21 @@
+"""
+FLIM tile stitching and per-tile fitting pipeline.
+
+fit_flim_tiles() uses a two-pass pooled machine IRF strategy:
+
+  Pass 1 — summed_decay() only (no pixel stacks). Accumulates a pooled
+            decay across all tiles, runs fit_summed once to get consensus
+            τ values and a single pooled_irf.
+
+  Pass 2 — raw_pixel_stack() one tile at a time. All tiles use the same
+            consensus τ and pooled_irf → identical convolution basis →
+            smooth amplitude maps with no inter-tile seams.
+
+This replaces the previous per-tile independent fitting approach which
+called _run_flim_fit per tile, giving different τ per tile and causing
+visible seams in assembled lifetime maps.
+"""
+
 from __future__ import annotations
 
 import json
@@ -805,9 +823,13 @@ def fit_flim_tiles(
     # ── Parse tile positions ───────────────────────────────────────────────
     tile_positions = parse_xlif_tile_positions(xlif_path, ptu_basename)
     pixel_size_m, _ = get_pixel_size_from_xlif(xlif_path)
+    # When binning > 1, each output pixel represents binning × binning raw pixels.
+    # Scale canvas positions by effective pixel size so the canvas and
+    # pixel maps have matching dimensions.
+    effective_pixel_size_m = pixel_size_m * binning
     tile_positions, canvas_w, canvas_h = compute_tile_pixel_positions(
-        tile_positions, pixel_size_m,
-        _peek_tile_width(ptu_dir, tile_positions, rotate_tiles))
+        tile_positions, effective_pixel_size_m,
+        _peek_tile_width(ptu_dir, tile_positions, rotate_tiles) // binning)
 
     if verbose:
         print(f"\n{'='*60}")

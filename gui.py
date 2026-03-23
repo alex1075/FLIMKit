@@ -71,119 +71,42 @@ def _C() -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _Redirect:
-    """Redirect stdout/stderr to a ScrolledText widget.
-
-    Handles ``\\r`` (carriage return) so tqdm-style progress bars update the
-    current line instead of stacking new ones.
-    """
+    """Redirect stdout/stderr to ScrolledText; \r updates progress bar line only."""
 
     def __init__(self, widget: scrolledtext.ScrolledText, buf: list):
-        self.widget   = widget
-        self.buf      = buf
-        self._at_sol  = True   # True when the cursor is at the start-of-line
+        self.widget             = widget
+        self.buf                = buf
+        self._at_sol            = True
+        self._last_was_progress = False
 
     def write(self, text: str):
         if not text:
             return
         self.buf.append(text)
         self.widget.configure(state="normal")
-
-        # Split on carriage-returns so we can overwrite the current line,
-        # giving tqdm-style progress bars a chance to render properly.
         parts = text.split('\r')
-        for idx, part in enumerate(parts):
-            if idx > 0:
-                # \r: delete from the beginning of the current line to end
-                line_start = self.widget.index("end-1c linestart")
-                self.widget.delete(line_start, tk.END)
-                self._at_sol = True
+        for i, part in enumerate(parts):
+            if i > 0:
+                if self._last_was_progress:
+                    line_start = self.widget.index("end-1c linestart")
+                    self.widget.delete(line_start, tk.END)
+                else:
+                    if not self._at_sol:
+                        self.widget.insert(tk.END, "\n")
+                self._at_sol            = True
+                self._last_was_progress = True
             if part:
                 self.widget.insert(tk.END, part)
-                self._at_sol = part.endswith('\n')
-
+                ends_nl = part.endswith("\n")
+                self._at_sol = ends_nl
+                if ends_nl:
+                    self._last_was_progress = False
         self.widget.see(tk.END)
         self.widget.configure(state="disabled")
         self.widget.update_idletasks()
 
     def flush(self):
         pass
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Fit summary parser  →  list of (parameter, value, unit)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _parse_summary(text: str) -> list:
-    rows = []
-    lines = text.splitlines()
-
-    # Collect all summary-like lines, but only keep the last contiguous block
-    summary_lines = []
-    block = []
-    for raw in lines:
-        line = raw.strip()
-        if not line:
-            if block:
-                summary_lines.append(block)
-                block = []
-            continue
-        if (
-            re.match(r'τ\d\s*=.*ns', line) or
-            re.match(r'[αa]\d\s*=.*', line) or
-            re.match(r'f\d\s*=.*', line) or
-            'τ_mean' in line or
-            'chi2' in line.lower() or 'χ2' in line or 'χ²' in line or
-            'bg (fitted' in line or
-            'IRF' in line or
-            line.startswith(('⚠', '✓', 'Optimizer'))
-        ):
-            block.append(line)
-        else:
-            if block:
-                summary_lines.append(block)
-                block = []
-    if block:
-        summary_lines.append(block)
-
-    # Use only the last block
-    if not summary_lines:
-        return []
-    block = summary_lines[-1]
-
-    # Parse lines in canonical order
-    canonical = []
-    for line in block:
-        m = re.match(
-            r'τ(\d)\s*=\s*([\d.eE+\-]+)\s*ns.*[αa](\d)\s*=\s*([\d.eE+\-]+).*f(\d)\s*=\s*([\d.eE+\-]+)', line)
-        if m:
-            i = m.group(1)
-            canonical.append((f'τ{i}',              m.group(2), 'ns'))
-            canonical.append((f'α{i}  (amplitude)', m.group(4), 'counts'))
-            canonical.append((f'f{i}  (fraction)',  m.group(6), ''))
-            continue
-        m = re.match(r'(τ_mean\s*\([^)]+\))\s*=\s*([\d.eE+\-]+)\s*(ns)?', line)
-        if m:
-            canonical.append((m.group(1), m.group(2), m.group(3) or 'ns'))
-            continue
-        if 'chi2' in line.lower() or 'χ2' in line or 'χ²' in line:
-            m2 = re.match(r'(χ[²2][^\s=]*)\s*=\s*([\d.]+)', line)
-            if m2:
-                ctx = re.search(r'\[(.*?)\]', line)
-                key = m2.group(1) + (f'  [{ctx.group(1)}]' if ctx else '')
-                canonical.append((key, m2.group(2), ''))
-            continue
-        m = re.match(
-            r'([^\=]+?)\s*=\s*([\d.eE+\-]+)\s*(ns|bins|cts/bin|ps)?\s*'
-            r'(?:\(.*\))?$', line)
-        if m:
-            key = m.group(1).strip()
-            if key and not key[0].isdigit():
-                canonical.append((key, m.group(2), m.group(3) or ''))
-            continue
-        if line.startswith(('⚠', '✓', 'Optimizer')):
-            canonical.append((line, '', ''))
-
-    return canonical
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,22 +148,16 @@ def _tog(bvar: tk.BooleanVar, entry: ttk.Entry):
 
 def _flt(sv: tk.StringVar) -> Optional[float]:
     v = sv.get().strip()
-    return float(v) if v else None
+    return float(v) if v and v.lower() != "none" else None
 
 
 def _thresh(bvar: tk.BooleanVar, sv: tk.StringVar):
-    """Return threshold value, or None.  Never returns 'interactive' from the
-    GUI – the interactive matplotlib slider cannot run safely in a background
-    thread.  A blank entry simply disables the threshold."""
+    """Return threshold value, or None."""
     if not bvar.get():
         return None
     v = sv.get().strip()
     return int(v) if v else None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# IRF sub-widget
-# ─────────────────────────────────────────────────────────────────────────────
 
 class IRFWidget:
     # Sentinel to detect that the path was auto-filled (not user-entered)
@@ -1005,8 +922,10 @@ class FLIMKitGUI:
         ttk.Entry(fp, textvariable=self.sv_batch_tau_max, width=7).grid(row=1, column=3, padx=4)
         ttk.Label(fp, text="ns", foreground="grey").grid(row=1, column=4, padx=4)
         ttk.Label(fp, text="Colour scale (ns):").grid(row=2, column=0, sticky="w", **PAD)
-        self.sv_batch_tau_lo = tk.StringVar(value=str(_C()["TAU_DISPLAY_MIN"]))
-        self.sv_batch_tau_hi = tk.StringVar(value=str(_C()["TAU_DISPLAY_MAX"]))
+        self.sv_batch_tau_lo = tk.StringVar(
+            value="" if _C()["TAU_DISPLAY_MIN"] is None else str(_C()["TAU_DISPLAY_MIN"]))
+        self.sv_batch_tau_hi = tk.StringVar(
+            value="" if _C()["TAU_DISPLAY_MAX"] is None else str(_C()["TAU_DISPLAY_MAX"]))
         ttk.Entry(fp, textvariable=self.sv_batch_tau_lo, width=7).grid(row=2, column=1, padx=4)
         ttk.Label(fp, text="to").grid(row=2, column=2)
         ttk.Entry(fp, textvariable=self.sv_batch_tau_hi, width=7).grid(row=2, column=3, padx=4)
@@ -1037,9 +956,42 @@ class FLIMKitGUI:
                                       width=8, state="disabled")
         self._batch_thr_e.grid(row=0, column=1, sticky="w", padx=4)
 
+        fexp = _section(tab, "Image Export")
+        fexp.grid(row=5, column=0, sticky="ew", pady=(0, 6))
+        self.bv_batch_save_lifetime  = tk.BooleanVar(value=True)
+        self.bv_batch_save_rgb       = tk.BooleanVar(value=True)
+        self.bv_batch_save_intensity = tk.BooleanVar(value=True)
+        self.bv_batch_save_npy       = tk.BooleanVar(value=True)
+        self.bv_batch_save_ind       = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fexp, text="Lifetime image (uint16 TIFF)",
+                        variable=self.bv_batch_save_lifetime).grid(row=0, column=0, sticky="w", **PAD)
+        ttk.Checkbutton(fexp, text="Component RGB TIFF",
+                        variable=self.bv_batch_save_rgb).grid(row=0, column=1, sticky="w", **PAD)
+        ttk.Checkbutton(fexp, text="Intensity TIFF",
+                        variable=self.bv_batch_save_intensity).grid(row=0, column=2, sticky="w", **PAD)
+        ttk.Checkbutton(fexp, text="Raw maps (.npy)",
+                        variable=self.bv_batch_save_npy).grid(row=1, column=0, sticky="w", **PAD)
+        ttk.Checkbutton(fexp, text="Individual component maps (τ₁, a₁, τ₂…)",
+                        variable=self.bv_batch_save_ind).grid(row=1, column=1, columnspan=2, sticky="w", **PAD)
+        ttk.Label(fexp, text="Lifetime colour scale (ns):").grid(row=2, column=0, sticky="w", **PAD)
+        ttk.Entry(fexp, textvariable=self.sv_batch_tau_lo, width=7).grid(row=2, column=1, sticky="w", padx=4)
+        ttk.Label(fexp, text="to").grid(row=2, column=2)
+        ttk.Entry(fexp, textvariable=self.sv_batch_tau_hi, width=7).grid(row=2, column=3, sticky="w", padx=4)
+        ttk.Label(fexp, text="ns  (blank = auto)", foreground="grey").grid(row=2, column=4, sticky="w", padx=4)
+        ttk.Label(fexp, text="Gamma (lifetime image):").grid(row=3, column=0, sticky="w", **PAD)
+        self.sv_batch_gamma = tk.StringVar(value="0.4")
+        ttk.Entry(fexp, textvariable=self.sv_batch_gamma, width=5).grid(row=3, column=1, sticky="w", padx=4)
+        ttk.Label(fexp, text="(0.4 = boost dim tissue; 1.0 = linear)",
+                  foreground="grey").grid(row=3, column=2, columnspan=3, sticky="w")
+        ttk.Label(fexp, text="Intensity display max:").grid(row=4, column=0, sticky="w", **PAD)
+        self.sv_batch_int_max = tk.StringVar()
+        ttk.Entry(fexp, textvariable=self.sv_batch_int_max, width=8).grid(row=4, column=1, sticky="w", padx=4)
+        ttk.Label(fexp, text="(blank = auto 99th percentile)",
+                  foreground="grey").grid(row=4, column=2, columnspan=3, sticky="w")
+
         self._btn_batch = ttk.Button(tab, text="▶  Run Batch ROI Fit",
                                      command=self._run_batch)
-        self._btn_batch.grid(row=5, column=0, pady=8, ipadx=20, ipady=4)
+        self._btn_batch.grid(row=6, column=0, pady=8, ipadx=20, ipady=4)
 
     def _run_batch(self):
         xlif_dir = self.sv_batch_xlif_dir.get().strip()
@@ -1061,8 +1013,14 @@ class FLIMKitGUI:
         n_exp     = self.iv_nexp_batch.get()
         tau_min   = float(self.sv_batch_tau_min.get() or cfg["Tau_min"])
         tau_max   = float(self.sv_batch_tau_max.get() or cfg["Tau_max"])
-        tau_lo    = _flt(self.sv_batch_tau_lo) or cfg["TAU_DISPLAY_MIN"]
-        tau_hi    = _flt(self.sv_batch_tau_hi) or cfg["TAU_DISPLAY_MAX"]
+        tau_lo        = _flt(self.sv_batch_tau_lo) or cfg["TAU_DISPLAY_MIN"] or 0.0
+        tau_hi        = _flt(self.sv_batch_tau_hi) or cfg["TAU_DISPLAY_MAX"] or 10.0
+        save_lifetime = self.bv_batch_save_lifetime.get()
+        save_rgb      = self.bv_batch_save_rgb.get()
+        save_npy      = self.bv_batch_save_npy.get()
+        save_ind      = self.bv_batch_save_ind.get()
+        gamma         = float(self.sv_batch_gamma.get() or 0.4)
+        int_max       = _flt(self.sv_batch_int_max) or None
         register  = self.bv_batch_register.get()
         reg_shift = int(self.sv_batch_reg_shift.get() or 120)
         thr       = _thresh(self.bv_batch_thr, self.sv_batch_thr)
@@ -1132,16 +1090,23 @@ class FLIMKitGUI:
                             canvas=canvas, global_summary=summary,
                             output_dir=roi_out, roi_name=roi_clean, n_exp=n_exp,
                             tau_display_min=tau_lo, tau_display_max=tau_hi,
+                            intensity_display_max=int_max,
                         )
-                        make_lifetime_image(
-                            canvas=canvas, output_dir=roi_out, roi_name=roi_clean,
-                            tau_min_ns=tau_lo, tau_max_ns=tau_hi,
-                            smooth_sigma_px=0.0, gamma=0.4, verbose=False,
-                        )
-                        make_component_rgb_tiff(
-                            canvas=canvas, output_dir=roi_out,
-                            roi_name=roi_clean, n_exp=n_exp, verbose=False,
-                        )
+                        if save_lifetime:
+                            make_lifetime_image(
+                                canvas=canvas, output_dir=roi_out, roi_name=roi_clean,
+                                tau_min_ns=tau_lo, tau_max_ns=tau_hi,
+                                smooth_sigma_px=0.0, gamma=gamma, verbose=False,
+                            )
+                        if save_rgb:
+                            make_component_rgb_tiff(
+                                canvas=canvas, output_dir=roi_out,
+                                roi_name=roi_clean, n_exp=n_exp, verbose=False,
+                            )
+                        if not save_npy:
+                            for f_ in roi_out.glob("*.npy"):
+                                if not f_.name.endswith("_time_axis_ns.npy"):
+                                    f_.unlink(missing_ok=True)
                         del canvas; gc.collect()
                         row = {"roi": ptu_basename, "status": "OK", **summary}
                         print(f"  OK: {ptu_basename}")
