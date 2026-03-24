@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import inquirer
 
 
 # ─────────────────────────────────────────────────────────────
@@ -13,6 +12,7 @@ import inquirer
 # ─────────────────────────────────────────────────────────────
 def _yes_no(question: str) -> bool:
     """Ask a yes/no question via inquirer and return True for Yes."""
+    import inquirer
     ans = inquirer.prompt([inquirer.List(
         'yesno', message=question, choices=['Yes', 'No'])])
     return ans['yesno'] == 'Yes'
@@ -20,6 +20,7 @@ def _yes_no(question: str) -> bool:
 
 def _ask_path(message: str, *, optional: bool = False) -> str | None:
     """Ask the user for a file path via inquirer (with tab-completion)."""
+    import inquirer
     hint = " (leave blank to skip)" if optional else ""
     ans = inquirer.prompt([
         inquirer.Path('path',
@@ -258,6 +259,7 @@ def launch_phasor(ptu_path: str | None = None,
     # ── Decide whether to load a session or process a PTU ────
     if session_path is None and ptu_path is None:
         # Interactive inquirer flow
+        import inquirer
         mode = inquirer.prompt([inquirer.List(
             'mode',
             message='What would you like to do?',

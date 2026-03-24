@@ -45,11 +45,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['flimkit/icon.icns'],
-)
-app = BUNDLE(
-    exe,
-    name='FLIMKit.app',
-    icon='flimkit/icon.icns',
-    bundle_identifier=None,
+    icon=['flimkit\\icon.ico'],
 )

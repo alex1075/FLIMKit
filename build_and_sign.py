@@ -163,7 +163,7 @@ def sign_macos():
 
     app_path = f"dist/{APP_NAME}.app"
 
-    print("\n1️⃣ Code signing with self-signed certificate...")
+    print("\n1 Code signing with self-signed certificate...")
     sign_cmd = [
         "codesign",
         "--deep",
@@ -175,7 +175,7 @@ def sign_macos():
         return False
 
     # Verify signature
-    print("\n2️⃣ Verifying signature...")
+    print("\n2 Verifying signature...")
     verify_cmd = ["codesign", "-v", "--deep", app_path]
     if not run_command(verify_cmd):
         print("⚠ Verification had issues but app is signed")
