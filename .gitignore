@@ -26,3 +26,6 @@ Results/
 *.json
 *.csv
 output/
+dist/
+build/
+*.spec
