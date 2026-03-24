@@ -2,8 +2,13 @@
 """
 gui.py – Tkinter GUI front-end for FLIMkit
 ==========================================
-Uses TKinterModernThemes for a modern look (if available).
 Lives at the PROJECT ROOT (alongside the flimkit/ package folder).
+
+Launch
+------
+  ./gui.py
+  python gui.py
+  python -m flimkit.gui   (also works if copied inside flimkit/)
 """
 
 from __future__ import annotations
@@ -23,14 +28,14 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from flimkit.utils.progress_window import ProgressWindow
 
-# Modern theme support – this will be used as the base class
+# Modern theme support
 try:
     import TKinterModernThemes as TKMT
     HAS_TKMT = True
 except ImportError:
     HAS_TKMT = False
 
-# Drag and drop support (optional, may conflict with theming)
+# Drag and drop support (optional – may conflict with theming)
 try:
     from tkinterdnd2 import DND_FILES, DND_TEXT
     HAS_DND = True
@@ -104,26 +109,40 @@ def _parse_summary(captured_log: str) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stdout capture
+# Stdout capture (handles progress bars with \r)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _Redirect:
-    """Redirect stdout/stderr to ScrolledText widget."""
-    _ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+    """Redirect stdout/stderr to ScrolledText; \r updates progress bar line only."""
 
     def __init__(self, widget: scrolledtext.ScrolledText, buf: list):
-        self.widget = widget
-        self.buf = buf
+        self.widget             = widget
+        self.buf                = buf
+        self._at_sol            = True
+        self._last_was_progress = False
 
     def write(self, text: str):
         if not text:
             return
         self.buf.append(text)
         self.widget.configure(state="normal")
-        text = self._ANSI_ESCAPE.sub('', text)
-        text = text.replace('\r', '\n')
-        if text:
-            self.widget.insert(tk.END, text)
+        parts = text.split('\r')
+        for i, part in enumerate(parts):
+            if i > 0:
+                if self._last_was_progress:
+                    line_start = self.widget.index("end-1c linestart")
+                    self.widget.delete(line_start, tk.END)
+                else:
+                    if not self._at_sol:
+                        self.widget.insert(tk.END, "\n")
+                self._at_sol            = True
+                self._last_was_progress = True
+            if part:
+                self.widget.insert(tk.END, part)
+                ends_nl = part.endswith("\n")
+                self._at_sol = ends_nl
+                if ends_nl:
+                    self._last_was_progress = False
         self.widget.see(tk.END)
         self.widget.configure(state="disabled")
         self.widget.update_idletasks()
@@ -151,24 +170,6 @@ def _browse_dir(var, title="Select directory"):
         var.set(p)
 
 
-def _on_mousewheel(event, canvas):
-    if event.num == 5 or event.delta < 0:
-        canvas.yview_scroll(3, "units")
-    elif event.num == 4 or event.delta > 0:
-        canvas.yview_scroll(-3, "units")
-
-
-def _bind_mousewheel(widget, canvas):
-    widget.bind("<MouseWheel>", lambda e: _on_mousewheel(e, canvas))
-    widget.bind("<Button-4>", lambda e: _on_mousewheel(e, canvas))
-    widget.bind("<Button-5>", lambda e: _on_mousewheel(e, canvas))
-    try:
-        for child in widget.winfo_children():
-            _bind_mousewheel(child, canvas)
-    except (tk.TclError, AttributeError):
-        pass
-
-
 def _row(parent, label, var, row, browse_fn, width=45, state="normal"):
     ttk.Label(parent, text=label).grid(
         row=row, column=0, sticky="e", padx=6, pady=3)
@@ -176,40 +177,7 @@ def _row(parent, label, var, row, browse_fn, width=45, state="normal"):
     e.grid(row=row, column=1, sticky="ew", padx=4, pady=3)
     ttk.Button(parent, text="Browse...", command=browse_fn).grid(
         row=row, column=2, padx=4, pady=3)
-    _enable_dnd_for_entry(e, var)
     return e
-
-
-def _enable_dnd_for_entry(entry_widget: ttk.Entry, string_var: tk.StringVar):
-    if not HAS_DND:
-        return
-
-    def drop(event):
-        try:
-            data = event.data.strip()
-            if not data:
-                return
-            paths = []
-            if '{' in data:
-                import re
-                matches = re.findall(r'\{([^}]+)\}', data)
-                paths = matches
-            else:
-                path = data.strip('"\'')
-                if path:
-                    paths = [path]
-            if paths:
-                path = paths[0].strip()
-                if path:
-                    string_var.set(path)
-        except Exception:
-            pass
-
-    try:
-        entry_widget.drop_target_register(DND_FILES, DND_TEXT)
-        entry_widget.dnd_bind('<<Drop>>', drop)
-    except Exception:
-        pass
 
 
 def _section(parent, text: str) -> ttk.LabelFrame:
@@ -226,17 +194,15 @@ def _flt(sv: tk.StringVar) -> Optional[float]:
 
 
 def _thresh(bvar: tk.BooleanVar, sv: tk.StringVar):
+    """Return threshold value, or None."""
     if not bvar.get():
         return None
     v = sv.get().strip()
     return int(v) if v else None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# IRF Widget
-# ─────────────────────────────────────────────────────────────────────────────
-
 class IRFWidget:
+    # Sentinel to detect that the path was auto-filled (not user-entered)
     _AUTO_FILL = object()
 
     CHOICES = [
@@ -267,7 +233,6 @@ class IRFWidget:
         self._path_lbl.grid(row=r, column=0, sticky="e", padx=6, pady=3)
         self._path_e = ttk.Entry(self.frame, textvariable=self.sv_path, width=45)
         self._path_e.grid(row=r, column=1, sticky="ew", padx=4, pady=3)
-        _enable_dnd_for_entry(self._path_e, self.sv_path)
         self._path_btn = ttk.Button(
             self.frame, text="Browse...",
             command=self._browse_irf_path)
@@ -502,6 +467,7 @@ class ResultsPanel:
             self._draw_img()
 
     def _save_img(self):
+        """Save the currently displayed image to a user-chosen file."""
         if not self._imgs:
             messagebox.showinfo("No image", "No image is currently displayed.")
             return
@@ -521,6 +487,7 @@ class ResultsPanel:
             self._status.set(f"Image saved → {Path(path).name}")
 
     def _save_all_imgs(self):
+        """Copy all output images to a user-chosen directory."""
         if not self._imgs:
             messagebox.showinfo("No images", "No images are available to save.")
             return
@@ -551,36 +518,11 @@ class ResultsPanel:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main GUI class – inherits from ThemedTKinterFrame (if available)
+# Base class for the GUI (shared layout)
 # ─────────────────────────────────────────────────────────────────────────────
 
-if HAS_TKMT:
-    class FLIMKitGUI(TKMT.ThemedTKinterFrame):
-        """Main application using the modern theme."""
-else:
-    class FLIMKitGUI:
-        """Fallback when theme library is missing."""
-
-if HAS_TKMT:
-    def __init__(self, theme="sun-valley", mode="dark"):
-        super().__init__("FLIMkit Analysis GUI", theme, mode,
-                         usecommandlineargs=True, useconfigfile=True)
-        self._init_ui()
-        self.run()
-else:
-    def __init__(self, root):
-        self.root = root
-        self._init_ui()
-        self.root.mainloop()
-
-# The UI building code is common to both classes.
-# To avoid duplication, we define a mixin or simply duplicate the methods.
-# For clarity, we'll define a separate class that holds the UI layout and
-# then inherit it in both versions. But for simplicity, I'll write the common
-# methods once and then use them in both class definitions via multiple inheritance.
-
 class _UIBuilder:
-    """Common UI building methods shared by themed and fallback versions."""
+    """Common UI building methods (used by both themed and fallback versions)."""
 
     def _make_scroll_tab(self, title: str) -> ttk.Frame:
         """Create a notebook tab whose contents are vertically scrollable."""
@@ -601,16 +543,12 @@ class _UIBuilder:
 
         def _on_inner_configure(_evt=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
-            _bind_mousewheel(inner, canvas)
 
         def _on_canvas_configure(evt):
             canvas.itemconfigure(window_id, width=evt.width)
 
         inner.bind("<Configure>", _on_inner_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
-
-        _bind_mousewheel(outer, canvas)
-        _bind_mousewheel(canvas, canvas)
 
         return inner
 
@@ -635,6 +573,7 @@ class _UIBuilder:
         self.root.geometry(f"{target_w}x{target_h}+{x}+{y}")
 
     def run_with_progress(self, task_fn, task_name="Working…", on_done=None):
+        """Run a function in a thread, showing a pop-out progress window with cancel."""
         win = ProgressWindow(self.root, task_name=task_name)
         cancel_event = win.cancelled
 
@@ -668,7 +607,7 @@ class _UIBuilder:
         """Build the entire user interface."""
         self._buf: list = []
 
-        # Use ttk.PanedWindow to allow draggable resizing
+        # Use a PanedWindow to allow vertical resizing (top panel vs results)
         paned = ttk.PanedWindow(self.root, orient="vertical")
         paned.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         self.root.columnconfigure(0, weight=1)
@@ -689,7 +628,7 @@ class _UIBuilder:
         self._build_machine_irf_tab()
         self._build_phasor_tab()
 
-        # Results panel
+        # Results panel (progress, summary, images)
         results_frame = ttk.Frame(paned)
         paned.add(results_frame, weight=1)
         results_frame.columnconfigure(0, weight=1)
@@ -789,9 +728,8 @@ class _UIBuilder:
 
         ttk.Label(fp, text="Output prefix:").grid(row=3, column=0, sticky="w", **PAD)
         self.sv_out_fov = tk.StringVar(value="flim_out")
-        self._out_fov_e = ttk.Entry(fp, textvariable=self.sv_out_fov, width=35)
-        self._out_fov_e.grid(row=3, column=1, columnspan=3, sticky="ew", padx=4)
-        _enable_dnd_for_entry(self._out_fov_e, self.sv_out_fov)
+        ttk.Entry(fp, textvariable=self.sv_out_fov, width=35).grid(
+            row=3, column=1, columnspan=3, sticky="ew", padx=4)
 
         fm = _section(tab, "Masking & Thresholding")
         fm.grid(row=3, column=0, sticky="ew", pady=(0, 6))
@@ -1324,8 +1262,9 @@ class _UIBuilder:
             lambda: _browse_dir(self.sv_mirf_out_dir, "Machine IRF output directory"),
         )
         ttk.Label(fo, text="Base filename:").grid(row=1, column=0, sticky="w", **PAD)
-        self._mirf_name_e = ttk.Entry(fo, textvariable=self.sv_mirf_name, width=35)
-        self._mirf_name_e.grid(row=1, column=1, columnspan=2, sticky="ew", padx=4)
+        ttk.Entry(fo, textvariable=self.sv_mirf_name, width=35).grid(
+            row=1, column=1, columnspan=2, sticky="ew", padx=4
+        )
 
         self._btn_mirf = ttk.Button(
             tab,
@@ -1361,14 +1300,21 @@ class _UIBuilder:
         fn = _section(self._ph_new, "New Analysis")
         fn.grid(row=0, column=0, sticky="ew")
         fn.columnconfigure(1, weight=1)
-        self.sv_ph_ptu = tk.StringVar()
-        self.sv_ph_irf = tk.StringVar()
-        _row(fn, "PTU file *",          self.sv_ph_ptu, 0,
+        self.sv_ph_ptu      = tk.StringVar()
+        self.sv_ph_irf      = tk.StringVar()
+        self.sv_ph_mirf     = tk.StringVar(value=str(_C()["MACHINE_IRF_DEFAULT_PATH"]))
+        _row(fn, "PTU file *",              self.sv_ph_ptu,  0,
              lambda: _browse_file(self.sv_ph_ptu, "PTU file",
                                   [("PTU", "*.ptu"), ("All", "*.*")]))
-        _row(fn, "IRF XLSX (optional)", self.sv_ph_irf, 1,
+        _row(fn, "IRF XLSX (optional)",     self.sv_ph_irf,  1,
              lambda: _browse_file(self.sv_ph_irf, "IRF XLSX",
                                   [("Excel", "*.xlsx"), ("All", "*.*")]))
+        _row(fn, "Machine IRF (optional)",  self.sv_ph_mirf, 2,
+             lambda: _browse_file(self.sv_ph_mirf, "Machine IRF",
+                                  [("NumPy", "*.npy"), ("All", "*.*")]))
+        ttk.Label(fn,
+                  text="XLSX takes priority if both supplied; machine IRF used if no XLSX",
+                  foreground="grey").grid(row=3, column=1, columnspan=2, sticky="w", padx=4)
 
         self._ph_sess = ttk.Frame(tab)
         self._ph_sess.columnconfigure(0, weight=1)
@@ -1586,8 +1532,10 @@ class _UIBuilder:
             if not ptu or not Path(ptu).exists():
                 messagebox.showerror("Missing input", "Please select a valid PTU file.")
                 return
-            irf = self.sv_ph_irf.get().strip() or None
+            irf      = self.sv_ph_irf.get().strip() or None
+            mirf     = self.sv_ph_mirf.get().strip() or None
             fn  = lambda: launch_phasor(ptu_path=ptu, irf_path=irf,
+                                        machine_irf_path=mirf,
                                         min_photons=min_ph, max_cursors=max_cur)
         else:
             sess = self.sv_ph_session.get().strip()
@@ -1678,17 +1626,12 @@ class _UIBuilder:
         for btn in (self._btn_fov, self._btn_st, self._btn_batch, self._btn_mirf, self._btn_ph):
             btn.configure(state=state)
 
-    def _on_close(self):
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
-        self.root.destroy()
-
 
 # -----------------------------------------------------------------------------
-# Define the themed and fallback classes using the UI builder
+# Themed version (uses TKinterModernThemes)
 # -----------------------------------------------------------------------------
 if HAS_TKMT:
-    class FLIMKitGUI(TKMT.ThemedTKinterFrame, _UIBuilder):
+    class FLIMKitGUIThemed(TKMT.ThemedTKinterFrame, _UIBuilder):
         def __init__(self, theme="sun-valley", mode="dark"):
             super().__init__("FLIMkit Analysis GUI", theme, mode,
                              usecommandlineargs=True, useconfigfile=True)
@@ -1696,41 +1639,43 @@ if HAS_TKMT:
             self.root.minsize(760, 700)
             self._init_ui()
             self.run()
-else:
-    class FLIMKitGUI(_UIBuilder):
-        def __init__(self, root):
-            self.root = root
-            self.root.title("FLIMkit Analysis GUI")
-            self.root.minsize(760, 700)
-            self._init_ui()
-            self.root.mainloop()
+
+# -----------------------------------------------------------------------------
+# Fallback version (plain Tk, optional drag‑and‑drop)
+# -----------------------------------------------------------------------------
+class FLIMKitGUIFallback(_UIBuilder):
+    def __init__(self, root):
+        self.root = root
+        self.root.title("FLIMkit Analysis GUI")
+        self.root.minsize(760, 700)
+        self._init_ui()
+        self.root.mainloop()
 
 
 # -----------------------------------------------------------------------------
-# Entry point
+# Entry point – choose themed or fallback
 # -----------------------------------------------------------------------------
 def launch_gui():
     global GUI_MODE
     GUI_MODE = True
 
     if HAS_TKMT:
-        # The themed version creates its own root window automatically.
-        app = FLIMKitGUI(theme="sun-valley", mode="dark")
+        # Themed version: ThemedTKinterFrame creates its own root.
+        app = FLIMKitGUIThemed(theme="sun-valley", mode="dark")
     else:
-        # Fallback: create a plain Tk root (with optional DND)
+        # Fallback: create a plain Tk root (optionally with drag‑and‑drop)
         if HAS_DND:
             from tkinterdnd2 import Tk
             root = Tk()
         else:
             root = tk.Tk()
-        root.title("FLIMkit Analysis GUI")
-        # Apply a simple ttk theme
+        # Apply a simple ttk theme for better appearance
         style = ttk.Style(root)
         for theme_name in ("clam", "alt", "default"):
             if theme_name in style.theme_names():
                 style.theme_use(theme_name)
                 break
-        app = FLIMKitGUI(root)
+        app = FLIMKitGUIFallback(root)
 
 
 if __name__ == "__main__":

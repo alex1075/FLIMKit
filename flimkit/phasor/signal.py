@@ -68,4 +68,56 @@ def plot_calibrated_phasor(real, imag, signal):
         frequency=frequency,
         title='Calibrated, filtered phasor coordinates',
     )
-    
+
+def calibrate_signal_with_machine_irf(signal, real, imag, machine_irf_npy: str,
+                                       frequency: float):
+    """Calibrate phasor coordinates using a pre-built machine IRF (.npy).
+
+    The machine IRF is stored as a 1-D array sampled at the PTU time resolution.
+    It is interpolated onto the signal time axis then treated identically to the
+    XLSX IRF in calibrate_signal_with_irf.
+
+    Parameters
+    ----------
+    signal : xarray.DataArray
+        TCSPC signal with 'H' coordinate in ns.
+    real, imag : ndarray
+        Uncalibrated per-pixel phasor coordinates.
+    machine_irf_npy : str
+        Path to the .npy file produced by build_machine_irf_from_folder.
+    frequency : float
+        Laser repetition frequency in MHz.
+
+    Returns
+    -------
+    real_cal, imag_cal : ndarray
+        Calibrated phasor coordinates.
+    """
+    import json
+    from pathlib import Path
+
+    npy_path  = Path(machine_irf_npy)
+    meta_path = npy_path.with_name(npy_path.stem + '_meta.json')
+
+    irf_arr = np.load(str(npy_path))
+
+    # Load tcspc_res from companion _meta.json if available, else infer from
+    # the signal time axis spacing.
+    if meta_path.exists():
+        with open(meta_path) as f:
+            meta = json.load(f)
+        tcspc_res_ns = meta.get('tcspc_res_ns', None)
+    else:
+        tcspc_res_ns = None
+
+    signal_time_ns = signal.coords['H'].values        # (n_bins,) in ns
+    n_irf = len(irf_arr)
+
+    if tcspc_res_ns is not None:
+        irf_time_ns = np.arange(n_irf) * tcspc_res_ns
+    else:
+        # Assume same time axis length as signal — direct mapping
+        irf_time_ns = np.linspace(signal_time_ns[0], signal_time_ns[-1], n_irf)
+
+    return calibrate_signal_with_irf(signal, real, imag,
+                                     irf_time_ns, irf_arr, frequency)

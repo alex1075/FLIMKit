@@ -193,10 +193,17 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
     display_image = ptu.raw_pixel_stack(binning=4).sum(axis=-1)  # (Y, X)
 
     if irf_path:
-        print(f"Calibrating with IRF: {irf_path}")
-        irf_time_ns, irf_counts = get_phasor_irf(irf_path)
-        real_cal, imag_cal = calibrate_signal_with_irf(
-            signal, real, imag, irf_time_ns, irf_counts, frequency)
+        from .phasor.signal import calibrate_signal_with_machine_irf
+        irf_path_p = Path(irf_path)
+        if irf_path_p.suffix.lower() == '.npy':
+            print(f"Calibrating with machine IRF (.npy): {irf_path}")
+            real_cal, imag_cal = calibrate_signal_with_machine_irf(
+                signal, real, imag, irf_path, frequency)
+        else:
+            print(f"Calibrating with IRF (.xlsx): {irf_path}")
+            irf_time_ns, irf_counts = get_phasor_irf(irf_path)
+            real_cal, imag_cal = calibrate_signal_with_irf(
+                signal, real, imag, irf_time_ns, irf_counts, frequency)
     else:
         print("⚠  No IRF — using uncalibrated phasor coordinates.")
         real_cal, imag_cal = real, imag
@@ -215,6 +222,7 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
 # ─────────────────────────────────────────────────────────────
 def launch_phasor(ptu_path: str | None = None,
                   irf_path: str | None = None,
+                  machine_irf_path: str | None = None,
                   session_path: str | None = None,
                   *,
                   min_photons: float = 0.01,
@@ -289,11 +297,25 @@ def launch_phasor(ptu_path: str | None = None,
               f"{len(sess['cursors'])} cursor(s) restored")
     else:
         # ── Prompt for optional IRF ──────────────────────────
-        if irf_path is None:
-            if _yes_no('Do you have an IRF calibration file? (recommended)'):
+        if irf_path is None and machine_irf_path is None:
+            choices = [
+                'XLSX IRF (Leica analytical model)',
+                'Machine IRF (.npy pre-built)',
+                'No IRF (uncalibrated)',
+            ]
+            irf_choice = inquirer.prompt([inquirer.List(
+                'irf', message='IRF calibration source?', choices=choices
+            )])['irf']
+            if irf_choice.startswith('XLSX'):
                 irf_path = _ask_path('Path to IRF Excel file (.xlsx)')
-        src_irf = irf_path
-        data = _process_ptu(ptu_path, irf_path)
+            elif irf_choice.startswith('Machine'):
+                machine_irf_path = _ask_path('Path to machine IRF (.npy)')
+        effective_irf = irf_path or machine_irf_path
+        src_irf = effective_irf
+        # machine_irf_path takes precedence as the calibration source
+        # if no XLSX IRF is supplied
+        effective_irf = irf_path or machine_irf_path
+        data = _process_ptu(ptu_path, effective_irf)
 
     # ── Build a save callback ────────────────────────────────
     _data = data          # capture for closure
