@@ -10,26 +10,21 @@ def filter_photons_with_mask(ptu_path, mask, channel=None, binning=1, verbose=Fa
     """
     Filter photons from a PTU file using a cell mask.
     
-    Keeps photons where mask[y, x] == 0 (black).
-    Discards photons where mask[y, x] != 0 (white/non-zero).
+    Keeps photons where mask[y, x] != 0 (non-zero / white).
+    Discards photons where mask[y, x] == 0 (black).
     
     Args:
         ptu_path: Path to PTU file
-        mask: 2D numpy array (Y, X) with 0 = keep, non-zero = discard
+        mask: 2D numpy array (Y, X) with 0 = discard, non-zero = keep
         channel: Detection channel (None = auto-detect)
         binning: Spatial binning factor (default: 1)
         verbose: Print progress messages
     
     Returns:
         stack: 3D array (Y, X, H) with filtered photon histograms
-        
-    Note:
-        This is a masked version of PTUFile.pixel_stack() that only
-        accumulates photons where the mask is black (0).
     """
     ptu = PTUFile(str(ptu_path), verbose=False)
     
-    # Auto-detect channel if needed
     if channel is None:
         if ptu.photon_channel is None:
             ptu.summed_decay(channel=None)
@@ -38,15 +33,13 @@ def filter_photons_with_mask(ptu_path, mask, channel=None, binning=1, verbose=Fa
     if verbose:
         print(f"Filtering photons with mask (channel={channel}, binning={binning})")
         print(f"Mask shape: {mask.shape}")
-        print(f"Mask: keep {np.sum(mask == 0):,} pixels, discard {np.sum(mask != 0):,} pixels")
+        print(f"Mask: keep {np.sum(mask != 0):,} pixels, discard {np.sum(mask == 0):,} pixels")
     
     t0 = time.time()
     
-    # Load and decode records
     records = ptu._load_records()
     ch, dtime, _ = ptu._decode_picoharp_t3(records)
     
-    # Identify photons and markers
     special = ch == 0xF
     ph_mask = (~special) & (ch == channel)
     ph_idx = np.where(ph_mask)[0]
@@ -56,7 +49,6 @@ def filter_photons_with_mask(ptu_path, mask, channel=None, binning=1, verbose=Fa
     marker_idx = np.where(marker_mask)[0]
     marker_dtime = dtime[marker_mask]
     
-    # Line start/stop markers
     line_start_abs = marker_idx[marker_dtime & 1 != 0]
     line_stop_abs = marker_idx[marker_dtime & 2 != 0]
     
@@ -64,20 +56,16 @@ def filter_photons_with_mask(ptu_path, mask, channel=None, binning=1, verbose=Fa
     ny_out = ptu.n_y // binning
     nx_out = ptu.n_x // binning
     
-    # Resize mask if needed
+    # Resize mask and create a boolean array for "keep" (True = keep)
     if mask.shape != (ny_out, nx_out):
         from scipy.ndimage import zoom
         zoom_factors = (ny_out / mask.shape[0], nx_out / mask.shape[1])
-        mask_resized = zoom(mask, zoom_factors, order=0) > 0  # Convert to boolean
-        if verbose:
-            print(f"Resized mask from {mask.shape} to {mask_resized.shape}")
+        mask_resized = zoom(mask, zoom_factors, order=0) != 0   # True = keep
     else:
-        mask_resized = mask > 0  # Convert to boolean (True = discard)
+        mask_resized = mask != 0   # True = keep
     
-    # Allocate output
     stack = np.zeros((ny_out, nx_out, ptu.n_bins), dtype=np.uint32)
     
-    # Process each line
     photons_kept = 0
     photons_discarded = 0
     
@@ -91,7 +79,6 @@ def filter_photons_with_mask(ptu_path, mask, channel=None, binning=1, verbose=Fa
         if row >= ny_out:
             continue
         
-        # Find photons in this line
         lo = np.searchsorted(ph_idx, ls, side="right")
         hi = np.searchsorted(ph_idx, le, side="left")
         if hi <= lo:
@@ -104,18 +91,16 @@ def filter_photons_with_mask(ptu_path, mask, channel=None, binning=1, verbose=Fa
         px = np.clip((rel_pos * ptu.n_x) // line_len, 0, ptu.n_x - 1)
         px_bin = px // binning
         
-        # Filter by mask and accumulate
         for i in range(len(dt_in)):
             col = px_bin[i]
             if col >= nx_out:
                 continue
             
-            # Check mask: if True (non-zero), discard photon
-            if mask_resized[row, col]:
+            # Keep photon if mask says keep (True)
+            if not mask_resized[row, col]:
                 photons_discarded += 1
                 continue
             
-            # Mask is False (zero), keep photon
             tb = dt_in[i]
             if tb < ptu.n_bins:
                 stack[row, col, tb] += 1
@@ -133,106 +118,122 @@ def filter_photons_with_mask(ptu_path, mask, channel=None, binning=1, verbose=Fa
     return stack.astype(np.float32)
 
 
+import time
+import numpy as np
+from .reader import PTUFile
+
 def filter_photons_with_mask_optimized(ptu_path, mask, channel=None, binning=1, verbose=False):
     """
-    Optimized version that pre-computes which pixels to keep.
+    Filter photons from a PTU file using a cell mask (optimized version).
     
-    Same interface as filter_photons_with_mask but faster for large masks.
+    Keeps photons where mask[y, x] != 0 (non-zero / white).
+    Discards photons where mask[y, x] == 0 (black).
+    
+    Args:
+        ptu_path: Path to PTU file
+        mask: 2D numpy array (Y, X) with 0 = discard, non-zero = keep
+        channel: Detection channel (None = auto-detect)
+        binning: Spatial binning factor (default: 1)
+        verbose: Print progress messages
+    
+    Returns:
+        stack: 3D array (Y, X, H) with filtered photon histograms
     """
     ptu = PTUFile(str(ptu_path), verbose=False)
-    
+
+    # Auto-detect channel
     if channel is None:
         if ptu.photon_channel is None:
             ptu.summed_decay(channel=None)
         channel = ptu.photon_channel
-    
+
     t0 = time.time()
-    
+
+    # Load and decode records
     records = ptu._load_records()
     ch, dtime, _ = ptu._decode_picoharp_t3(records)
-    
+
+    # Photon and marker indices
     special = ch == 0xF
     ph_mask = (~special) & (ch == channel)
     ph_idx = np.where(ph_mask)[0]
     ph_dtime = dtime[ph_mask].astype(np.int32)
-    
+
     marker_mask = special & (dtime != 0)
     marker_idx = np.where(marker_mask)[0]
     marker_dtime = dtime[marker_mask]
-    
+
+    # Line start/stop markers (assumes standard scanning pattern)
     line_start_abs = marker_idx[marker_dtime & 1 != 0]
     line_stop_abs = marker_idx[marker_dtime & 2 != 0]
-    
+
     n_lines = min(len(line_start_abs), len(line_stop_abs))
     ny_out = ptu.n_y // binning
     nx_out = ptu.n_x // binning
-    
-    # Resize mask
+
+    # Resize mask and create a boolean array for "keep" (True = keep)
     if mask.shape != (ny_out, nx_out):
         from scipy.ndimage import zoom
         zoom_factors = (ny_out / mask.shape[0], nx_out / mask.shape[1])
-        mask_bool = zoom(mask, zoom_factors, order=0) == 0  # True = KEEP
+        # order=0 (nearest) preserves integer mask values
+        mask_resized = zoom(mask, zoom_factors, order=0)
+        mask_keep = mask_resized != 0
     else:
-        mask_bool = mask == 0  # True = KEEP
-    
+        mask_keep = mask != 0
+
+    if verbose:
+        print(f"Filtering photons with mask (channel={channel}, binning={binning})")
+        print(f"Mask shape: {mask.shape} -> resized to {mask_keep.shape}")
+        print(f"Mask: keep {np.sum(mask_keep):,} pixels, discard {np.sum(~mask_keep):,} pixels")
+
+    # Output stack
     stack = np.zeros((ny_out, nx_out, ptu.n_bins), dtype=np.uint32)
-    
-    # Process lines
+
+    # Process each line
     for line_num in range(n_lines):
         ls = line_start_abs[line_num]
         le = line_stop_abs[line_num]
         if le <= ls:
             continue
-        
+
         row = (line_num % ptu.n_y) // binning
         if row >= ny_out:
             continue
-        
+
+        # Photons in this line
         lo = np.searchsorted(ph_idx, ls, side="right")
         hi = np.searchsorted(ph_idx, le, side="left")
         if hi <= lo:
             continue
-        
+
         ph_in = ph_idx[lo:hi]
         dt_in = ph_dtime[lo:hi]
         line_len = le - ls
         rel_pos = ph_in - ls
         px = np.clip((rel_pos * ptu.n_x) // line_len, 0, ptu.n_x - 1)
         px_bin = px // binning
-        
-        # Vectorized mask check
-        keep_mask = mask_bool[row, px_bin] & (dt_in < ptu.n_bins)
+
+        # Clip to valid column indices (avoid index error)
+        px_bin = np.clip(px_bin, 0, nx_out - 1)
+
+        # Vectorized mask check: keep only where mask_keep is True and dt_in < n_bins
+        keep_mask = mask_keep[row, px_bin] & (dt_in < ptu.n_bins)
         kept_indices = np.where(keep_mask)[0]
-        
+
+        # Accumulate photons
         for i in kept_indices:
             stack[row, px_bin[i], dt_in[i]] += 1
-    
+
     elapsed = time.time() - t0
-    
+
     if verbose:
         total_photons = stack.sum()
-        print(f"Filtered {total_photons:,} photons in {elapsed:.1f}s")
-    
+        print(f"Filtering complete:")
+        print(f"  Photons kept: {total_photons:,}")
+        print(f"  Elapsed: {elapsed:.1f}s")
+        print(f"  Output shape: {stack.shape}")
+
     return stack.astype(np.float32)
-
-def load_npy_flim_cube(npy_path):
-    """Load a FLIM cube from a .npy file."""
-    try:
-        cube = np.load(npy_path)
-        if cube.ndim != 3:
-            raise ValueError(f"Expected 3D array, got shape {cube.shape}")
-        return cube.astype(np.float32)
-    except Exception as e:
-        print(f"Error loading FLIM cube from {npy_path}: {e}")
-        return None
-
-def save_npy_flim_cube(cube, npy_path):
-    """Save a stiched FLIM cube to a .npy file and accompanying metadata."""
-    try:
-        np.save(npy_path, cube.astype(np.float32))
-        print(f"Saved FLIM cube to {npy_path} with shape {cube.shape}")
-    except Exception as e:
-        print(f"Error saving FLIM cube to {npy_path}: {e}")
 
 def signal_from_PTUFile(
     filename: str | PathLike[Any],

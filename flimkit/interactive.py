@@ -4,6 +4,10 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import matplotlib
+
+# Disable tqdm globally – all progress is shown via progress windows instead
+tqdm.disable = True
+
 from .configs import (
     n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message, INTENSITY_THRESHOLD,
     TAU_DISPLAY_MIN, TAU_DISPLAY_MAX, INTENSITY_DISPLAY_MIN, INTENSITY_DISPLAY_MAX,
@@ -25,6 +29,20 @@ from .utils.enhanced_outputs import (
 )
 from .utils.lifetime_image import make_lifetime_image
 from .image.tools import make_intensity_image, make_cell_mask, apply_intensity_threshold, pick_intensity_threshold
+
+
+def _make_operation_progress_callback(operation_name, progress_window_manager):
+    """Create a progress callback that shows a progress window for an operation."""
+    if progress_window_manager is None:
+        return None
+    
+    # Create progress window for this operation
+    window_id = progress_window_manager.create_progress_window(task_name=operation_name)
+    
+    def callback(current, total):
+        progress_window_manager.update_progress(window_id, current, total)
+    
+    return callback
 
 
 def _load_machine_irf_prompt(machine_irf_path, n_bins, decay_peak_bin):
@@ -305,11 +323,16 @@ def _run_tile_stitch(args):
     return result
 
 
-def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
+def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progress_window_manager=None):
     """Execute combined stitch + fit workflow."""
     print(f"\n{'='*60}")
     print(f"  STEP 1: TILE STITCHING")
     print(f"{'='*60}")
+    
+    # Create progress window for tile stitching
+    stitch_progress_cb = _make_operation_progress_callback(
+        "Tile Stitching", progress_window_manager) or progress_callback
+    
     stitch_result = stitch_flim_tiles(
         xlif_path=Path(args.xlif),
         ptu_dir=Path(args.ptu_dir),
@@ -319,7 +342,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
         register_tiles=getattr(args, 'register_tiles', True),
         reg_max_shift_px=getattr(args, 'reg_max_shift_px', 80),
         verbose=True,
-        progress_callback=progress_callback,
+        progress_callback=stitch_progress_cb,
         cancel_event=cancel_event,
     )
     
@@ -372,7 +395,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
                     CHUNK = 64
                     for r0 in tqdm(range(0, ny, CHUNK),
                                    desc='  Normalising overlap (pixel stack)',
-                                   unit='chunk'):
+                                   unit='chunk', disable=True):
                         r1 = min(r0 + CHUNK, ny)
                         w  = self._weight_map[r0:r1, :, np.newaxis]
                         out[r0:r1] = self._stack[r0:r1].astype(np.float32) / w
@@ -383,7 +406,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
                 new_ny = ny // binning
                 new_nx = nx // binning
                 binned = np.zeros((new_ny, new_nx, nt), dtype=np.float32)
-                for i in tqdm(range(new_ny), desc='  Binning rows'):
+                for i in tqdm(range(new_ny), desc='  Binning rows', disable=True):
                     for j in range(new_nx):
                         patch = self._stack[
                             i*binning:(i+1)*binning,
@@ -406,7 +429,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
 
     print(f"\n  Building tissue mask from stitched intensity (chunked)...")
     intensity_2d = np.zeros((ny, nx), dtype=np.float64)
-    for r0 in tqdm(range(0, ny, CHUNK_ROWS), desc='  Building intensity', unit='chunk'):
+    for r0 in tqdm(range(0, ny, CHUNK_ROWS), desc='  Building intensity', unit='chunk', disable=True):
         r1 = min(r0 + CHUNK_ROWS, ny)
         intensity_2d[r0:r1] = stack[r0:r1].sum(axis=2)
 
@@ -433,7 +456,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
 
     print(f"\n  Building masked summed decay (chunked)...")
     decay = np.zeros(n_bins, dtype=np.float64)
-    for r0 in tqdm(range(0, ny, CHUNK_ROWS), desc='  Building decay', unit='chunk'):
+    for r0 in tqdm(range(0, ny, CHUNK_ROWS), desc='  Building decay', unit='chunk', disable=True):
         r1       = min(r0 + CHUNK_ROWS, ny)
         chunk    = stack[r0:r1].astype(np.float32)
         row_mask = tissue_mask[r0:r1]
@@ -579,11 +602,16 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None):
             print(f"  Background pixels will be skipped via min_photons threshold")
         
         print(f"Per-pixel fitting (min_photons={args.min_photons})...")
+        # Create progress window for per-pixel fitting
+        perpixel_progress_cb = _make_operation_progress_callback(
+            "Per-pixel fitting", progress_window_manager) or progress_callback
+        
         pixel_maps = fit_per_pixel(
             pixel_stack, tcspc_res, n_bins,
             irf_prompt, has_tail, fit_bg, fit_sigma,
             global_popt, args.nexp,
             min_photons=args.min_photons,
+            progress_callback=perpixel_progress_cb,
         )
         
         if getattr(args, 'save_weighted', True):
@@ -735,7 +763,7 @@ def single_FOV_flim_fit_inquire():
     return args
 
 
-def _run_flim_fit(args):
+def _run_flim_fit(args, progress_callback=None, cancel_event=None, progress_window_manager=None):
     """Core fitting routine – identical to original single_FOV_flim_fit body."""
     print(f"\n{'='*60}")
     print(f"  flim_fit_v13  |  {args.nexp}-exp  |  {args.mode}  |  optimizer={args.optimizer}")
@@ -884,6 +912,7 @@ def _run_flim_fit(args):
 
     global_popt    = None
     global_summary = None
+    pixel_maps     = None
 
     def _run_summed():
         return fit_summed(
@@ -932,11 +961,16 @@ def _run_flim_fit(args):
             print(f"    Applied cell mask to pixel stack")
 
         print(f"\n[8] Per-pixel fitting (min_photons={args.min_photons})")
+        # Create progress window for per-pixel fitting
+        perpixel_progress_cb = _make_operation_progress_callback(
+            "Per-pixel fitting", progress_window_manager) or progress_callback
+        
         pixel_maps = fit_per_pixel(
             stack, ptu.tcspc_res, ptu.n_bins,
             irf_prompt, has_tail, fit_bg, fit_sigma,
             global_popt, args.nexp,
             min_photons=args.min_photons,
+            progress_callback=perpixel_progress_cb,
         )
 
         if not args.no_plots:
@@ -954,6 +988,9 @@ def _run_flim_fit(args):
         'tcspc_res':      ptu.tcspc_res,
         'n_bins':         ptu.n_bins,
         'strategy':       strategy,
+        'irf_prompt':     irf_prompt,
+        'time_ns':        ptu.time_ns,
+        'decay':          decay,
     }
 
 
@@ -1204,7 +1241,7 @@ def tile_fit_inquire():
     return args
 
 
-def _run_tile_fit(args, progress_callback=None, cancel_event=None):
+def _run_tile_fit(args, progress_callback=None, cancel_event=None, progress_window_manager=None):
     """
     Execute per-tile fitting pipeline:
         1. Fit each tile via fit_flim_tiles() (pooled machine IRF)
@@ -1222,7 +1259,8 @@ def _run_tile_fit(args, progress_callback=None, cancel_event=None):
     print(f"  STEP 1: PER-TILE FITTING")
     print(f"{'='*60}")
 
-    tile_results, canvas_height, canvas_width, corrected_positions = fit_flim_tiles(
+    (tile_results, canvas_height, canvas_width, corrected_positions,
+     pooled_decay, pooled_irf, tcspc_ref, global_popt, global_summary) = fit_flim_tiles(
         xlif_path     = Path(args.xlif),
         ptu_dir       = Path(args.ptu_dir),
         output_dir    = Path(args.output_dir),
@@ -1309,7 +1347,21 @@ def _run_tile_fit(args, progress_callback=None, cancel_event=None):
     print(f"  PER-TILE FITTING COMPLETE")
     print(f"{'='*60}\n")
 
-    return canvas, global_summary
+    # Build time_ns array from tcspc resolution and number of bins
+    import numpy as np
+    n_bins_pooled = len(pooled_decay)
+    time_ns = np.arange(n_bins_pooled) * tcspc_ref * 1e9
+    
+    return {
+        'canvas': canvas,
+        'global_summary': global_summary,
+        'global_popt': global_popt,
+        'irf_prompt': pooled_irf,
+        'time_ns': time_ns,
+        'decay': pooled_decay,
+        'tcspc_res': tcspc_ref,
+        'n_bins': n_bins_pooled,
+    }
 
 
 def tile_fit(interactive=False):

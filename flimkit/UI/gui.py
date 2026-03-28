@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
-"""
-gui.py – Tkinter GUI front-end for FLIMkit
-==========================================
-Lives at the PROJECT ROOT (alongside the flimkit/ package folder).
 
-Launch
-------
-  ./gui.py
-  python gui.py
-  python -m flimkit.gui   (also works if copied inside flimkit/)
-"""
 
 from __future__ import annotations
 
 import re
 import sys
+import time
+import inspect
 import threading
 import argparse
 import tkinter as tk
@@ -26,7 +18,7 @@ matplotlib.use("TkAgg")
 import matplotlib.image as mpimg
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-from flimkit.utils.progress_window import ProgressWindow
+from flimkit.UI.progress_window import ProgressWindow
 
 # Modern theme support
 try:
@@ -113,42 +105,226 @@ def _parse_summary(captured_log: str) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _Redirect:
-    """Redirect stdout/stderr to ScrolledText; \r updates progress bar line only."""
+    """Redirect stdout/stderr to ScrolledText; batches updates for performance (thread-safe)."""
 
-    def __init__(self, widget: scrolledtext.ScrolledText, buf: list):
-        self.widget             = widget
-        self.buf                = buf
-        self._at_sol            = True
-        self._last_was_progress = False
+    def __init__(self, widget: scrolledtext.ScrolledText, buf: list, root=None):
+        self.widget = widget
+        self.buf    = buf
+        self.root   = root  # For thread-safe GUI updates
+        self._batch = []  # Accumulate text before writing
+        self._batch_size = 5000  # characters, or time-based flush
+        self._last_flush = time.time()
+        self._flush_interval = 0.5  # seconds
 
     def write(self, text: str):
         if not text:
             return
         self.buf.append(text)
-        self.widget.configure(state="normal")
-        parts = text.split('\r')
-        for i, part in enumerate(parts):
-            if i > 0:
-                if self._last_was_progress:
-                    line_start = self.widget.index("end-1c linestart")
-                    self.widget.delete(line_start, tk.END)
-                else:
-                    if not self._at_sol:
-                        self.widget.insert(tk.END, "\n")
-                self._at_sol            = True
-                self._last_was_progress = True
-            if part:
-                self.widget.insert(tk.END, part)
-                ends_nl = part.endswith("\n")
-                self._at_sol = ends_nl
-                if ends_nl:
-                    self._last_was_progress = False
-        self.widget.see(tk.END)
-        self.widget.configure(state="disabled")
-        self.widget.update_idletasks()
+        self._batch.append(text)
+        
+        # Flush if batch is large or timeout elapsed
+        should_flush = False
+        if len("".join(self._batch)) >= self._batch_size:
+            should_flush = True
+        elif time.time() - self._last_flush >= self._flush_interval:
+            should_flush = True
+        
+        if should_flush:
+            self._flush_batch()
+
+    def _flush_batch(self):
+        if not self._batch:
+            return
+        text = "".join(self._batch)
+        self._batch.clear()
+        
+        # Use root.after() for thread-safe GUI updates if root is available
+        if self.root:
+            self.root.after(0, self._update_widget, text)
+        else:
+            # Fallback to direct update (not thread-safe but works in single-threaded context)
+            self._update_widget(text)
+    
+    def _update_widget(self, text):
+        """Update widget from main thread."""
+        try:
+            self.widget.configure(state="normal")
+            self.widget.insert(tk.END, text)
+            self.widget.see(tk.END)
+            self.widget.configure(state="disabled")
+            self.widget.update_idletasks()
+        except Exception:
+            pass  # Widget may have been destroyed
+        self._last_flush = time.time()
 
     def flush(self):
-        pass
+        self._flush_batch()
+
+
+class _FileRedirect:
+    """Redirect stdout/stderr to a file for performance (no widget updates)."""
+
+    def __init__(self, filepath: str, buf: list):
+        self.filepath = filepath
+        self.buf = buf
+        self._file = None
+        try:
+            self._file = open(filepath, 'w', buffering=1)  # Line buffering
+        except Exception:
+            pass
+
+    def write(self, text: str):
+        if not text:
+            return
+        self.buf.append(text)
+        if self._file:
+            try:
+                self._file.write(text)
+            except Exception:
+                pass
+
+    def flush(self):
+        if self._file:
+            try:
+                self._file.flush()
+            except Exception:
+                pass
+
+    def close(self):
+        if self._file:
+            try:
+                self._file.close()
+            except Exception:
+                pass
+            self._file = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Progress Window Manager – safely create progress windows from worker threads
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ProgressWindowManager:
+    """Manages nested progress windows for sub-operations, callable from worker threads."""
+    
+    def __init__(self, root):
+        self.root = root
+        self.windows = {}  # task_id -> ProgressWindow
+        self.counter = 0
+        self.lock = threading.Lock()
+    
+    def create_progress_window(self, task_name="Processing..."):
+        """Create a progress window and return its ID. Thread-safe."""
+        with self.lock:
+            window_id = self.counter
+            self.counter += 1
+        
+        # Create window on main thread
+        window_ref = [None]
+        event = threading.Event()
+        
+        def create_window():
+            window_ref[0] = ProgressWindow(self.root, task_name=task_name)
+            with self.lock:
+                self.windows[window_id] = window_ref[0]
+            event.set()
+        
+        self.root.after(0, create_window)
+        event.wait(timeout=5)  # Wait up to 5 seconds for window to be created
+        return window_id
+    
+    def update_progress(self, window_id, current, total):
+        """Update progress for a window. Thread-safe."""
+        def update():
+            if window_id in self.windows:
+                try:
+                    self.windows[window_id].set_progress(current, maximum=total)
+                except Exception:
+                    pass  # Window may have been closed
+        
+        self.root.after(0, update)
+    
+    def set_status(self, window_id, msg):
+        """Set status message for a window. Thread-safe."""
+        def update():
+            if window_id in self.windows:
+                try:
+                    self.windows[window_id].set_status(msg)
+                except Exception:
+                    pass
+        
+        self.root.after(0, update)
+    
+    def close_window(self, window_id):
+        """Close a progress window. Thread-safe."""
+        def close():
+            if window_id in self.windows:
+                try:
+                    self.windows[window_id].close()
+                except Exception:
+                    pass
+                finally:
+                    with self.lock:
+                        self.windows.pop(window_id, None)
+        
+        self.root.after(0, close)
+    
+    def close_all(self):
+        """Close all progress windows."""
+        with self.lock:
+            ids = list(self.windows.keys())
+        for wid in ids:
+            self.close_window(wid)
+
+
+
+class _FileTailer:
+    """Stream log file content to a Text widget in real-time."""
+
+    def __init__(self, filepath: str, widget: scrolledtext.ScrolledText, update_interval_ms: int = 200):
+        self.filepath = filepath
+        self.widget = widget
+        self.update_interval_ms = update_interval_ms
+        self._file = None
+        self._last_pos = 0
+        self._running = False
+
+    def start(self, root):
+        """Start tailing the file and updating the widget."""
+        self._running = True
+        self._poll_file(root)
+
+    def _poll_file(self, root):
+        """Poll the file for new content and update widget."""
+        if not self._running:
+            return
+        
+        try:
+            if not Path(self.filepath).exists():
+                root.after(self.update_interval_ms, lambda: self._poll_file(root))
+                return
+            
+            # Read new content from file
+            with open(self.filepath, 'r') as f:
+                f.seek(self._last_pos)
+                new_content = f.read()
+                self._last_pos = f.tell()
+            
+            # Update widget if there's new content
+            if new_content:
+                self.widget.configure(state="normal")
+                self.widget.insert(tk.END, new_content)
+                self.widget.see(tk.END)
+                self.widget.configure(state="disabled")
+                self.widget.update_idletasks()
+        except Exception:
+            pass
+        
+        # Schedule next poll
+        root.after(self.update_interval_ms, lambda: self._poll_file(root))
+
+    def stop(self):
+        """Stop tailing the file."""
+        self._running = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -307,6 +483,289 @@ class IRFWidget:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FOV Preview panel  –  Intensity image & decay curve (right-side viewer)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FOVPreviewPanel:
+    """Real-time preview of FOV intensity image and decay curve."""
+
+    def __init__(self, parent):
+        self.frame = ttk.Frame(parent)
+        self.frame.columnconfigure(0, weight=1)
+        self.frame.rowconfigure(0, weight=1)
+
+        # Create figure with matplotlib
+        self._fig = Figure(figsize=(5, 6), dpi=100, facecolor="#f0f0f0")
+        self._ax_img = self._fig.add_subplot(211)
+        self._ax_decay = self._fig.add_subplot(212)
+        
+        self._canvas_mpl = FigureCanvasTkAgg(self._fig, master=self.frame)
+        self._canvas_mpl.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        # Status label
+        self._status = tk.StringVar(value="No FOV loaded")
+        ttk.Label(self.frame, textvariable=self._status, foreground="grey", font=("Courier", 8)).grid(
+            row=1, column=0, sticky="w", padx=4, pady=(2, 4))
+
+        self._ptu_path = None
+
+    def load_fov(self, ptu_path: Optional[str]):
+        """Load and display intensity image + decay curve from PTU file."""
+        if not ptu_path or not Path(ptu_path).exists():
+            self._clear()
+            self._status.set("Invalid PTU file")
+            return
+
+        try:
+            self._ptu_path = ptu_path
+            from flimkit.PTU.reader import PTUFile
+            import numpy as np
+
+            ptu = PTUFile(ptu_path, verbose=False)
+            
+            # Get intensity image
+            stack = ptu.pixel_stack(channel=None, binning=1)
+            intensity = stack.sum(axis=2)  # Sum over time bins
+            
+            # Get decay curve
+            decay = ptu.summed_decay(channel=None)
+            time_ns = ptu.time_ns
+
+            # Plot intensity image
+            self._ax_img.clear()
+            self._ax_img.imshow(intensity, cmap="inferno", origin="upper")
+            self._ax_img.set_title("Intensity Image", fontsize=10, fontweight="bold")
+            self._ax_img.set_xlabel("X (pixels)")
+            self._ax_img.set_ylabel("Y (pixels)")
+            self._ax_img.tick_params(labelsize=8)
+
+            # Plot decay curve
+            self._ax_decay.clear()
+            self._ax_decay.semilogy(time_ns, decay, color="steelblue", linewidth=1.5)
+            self._ax_decay.set_title("Summed Decay", fontsize=10, fontweight="bold")
+            self._ax_decay.set_xlabel("Time (ns)")
+            self._ax_decay.set_ylabel("Photon Count")
+            self._ax_decay.grid(True, alpha=0.3)
+            self._ax_decay.tick_params(labelsize=8)
+
+            self._fig.tight_layout(pad=0.8)
+            self._canvas_mpl.draw_idle()
+
+            n_photons = int(decay.sum())
+            img_shape = intensity.shape
+            self._status.set(f"✓ {Path(ptu_path).name} | {img_shape[0]}×{img_shape[1]}px | {n_photons} photons")
+
+        except Exception as e:
+            self._clear()
+            self._status.set(f"Error loading FOV: {str(e)[:50]}")
+
+    def display_fit_results(self, ptu_path: str, fit_result: dict):
+        """Display fit results with IRF and fitted decay overlaid on summed decay."""
+        try:
+            from flimkit.PTU.reader import PTUFile
+            import numpy as np
+
+            # Get data from fit result
+            global_summary = fit_result.get('global_summary', {})
+            global_popt = fit_result.get('global_popt')
+            irf_prompt = fit_result.get('irf_prompt')
+            time_ns_from_result = fit_result.get('time_ns')
+            decay_from_result = fit_result.get('decay')
+            canvas = fit_result.get('canvas')
+            
+            # Debug output
+            print(f"[FOV Preview] Displaying fit results")
+            print(f"  - decay in fit_result: {decay_from_result is not None}")
+            print(f"  - time_ns in fit_result: {time_ns_from_result is not None}")
+            print(f"  - canvas in fit_result: {canvas is not None}")
+            print(f"  - global_summary keys: {list(global_summary.keys()) if global_summary else 'None'}")
+            
+            # Use result data if available, otherwise load from PTU
+            if decay_from_result is not None and time_ns_from_result is not None:
+                decay = decay_from_result
+                time_ns = time_ns_from_result
+                print(f"  - Using decay/time_ns from fit result")
+            else:
+                if ptu_path and Path(ptu_path).exists():
+                    ptu = PTUFile(ptu_path, verbose=False)
+                    decay = ptu.summed_decay(channel=None)
+                    time_ns = ptu.time_ns
+                    print(f"  - Loaded decay/time_ns from PTU file")
+                else:
+                    print(f"  - No valid PTU path for decay loading")
+                    decay = None
+                    time_ns = None
+            
+            # Get intensity image: prefer canvas (from tile fitting), fallback to PTU
+            intensity = None
+            if canvas is not None and 'intensity' in canvas:
+                intensity = canvas['intensity']
+                print(f"  - Using intensity from canvas (tile fitting)")
+            elif ptu_path and Path(ptu_path).exists():
+                ptu = PTUFile(ptu_path, verbose=False)
+                stack = ptu.pixel_stack(channel=None, binning=1)
+                intensity = stack.sum(axis=2)
+                print(f"  - Loaded intensity from PTU file")
+            
+            if intensity is None:
+                intensity = np.ones((512, 512), dtype=np.float32)  # Placeholder
+                print(f"  - No intensity data available, using placeholder")
+            
+            # Extract fit data
+            taus_fit = global_summary.get('taus_ns', [])
+            nexp = len(taus_fit)
+            print(f"  - nexp: {nexp}, taus_ns: {taus_fit}")
+            print(f"  - global_summary keys: {list(global_summary.keys())}")
+            
+            # Debug: check for model
+            model = global_summary.get('model')
+            print(f"  - model in global_summary: {model is not None}")
+            if model is not None:
+                print(f"    model shape: {model.shape if hasattr(model, 'shape') else len(model)}")
+                print(f"    model min/max: {model.min():.2e} / {model.max():.2e}")
+            
+            
+            # Update intensity image
+            self._ax_img.clear()
+            self._ax_img.imshow(intensity, cmap="inferno", origin="upper")
+            self._ax_img.set_title("Intensity Image", fontsize=10, fontweight="bold")
+            self._ax_img.set_xlabel("X (pixels)")
+            self._ax_img.set_ylabel("Y (pixels)")
+            self._ax_img.tick_params(labelsize=8)
+
+            # Plot decay with fit and IRF
+            self._ax_decay.clear()
+            
+            if decay is None or len(decay) == 0:
+                print(f"  - No decay data available for plotting")
+                self._ax_decay.text(0.5, 0.5, "No decay data", ha='center', va='center',
+                                  transform=self._ax_decay.transAxes)
+            else:
+                # Plot measured decay
+                print(f"  - Plotting measured decay: {len(decay)} points, {len(time_ns)} time points")
+                self._ax_decay.semilogy(time_ns, decay, 'o-', color="steelblue", 
+                                        linewidth=1.5, markersize=3, label="Measured", alpha=0.7)
+                
+                # Plot IRF if available
+                if irf_prompt is not None and len(irf_prompt) > 0:
+                    irf_max = irf_prompt.max()
+                    if irf_max > 0:
+                        # Scale IRF to ~20% of max decay for visibility
+                        irf_scaled = (irf_prompt / irf_max) * decay.max() * 0.2
+                        irf_time = time_ns[:len(irf_prompt)]
+                        print(f"  - Plotting IRF: {len(irf_prompt)} points")
+                        self._ax_decay.semilogy(irf_time, np.maximum(irf_scaled, 1e-2), 
+                                              linewidth=2.0, color="orange", label="IRF", alpha=0.8)
+                
+                # Plot fitted decay if we have parameters or model
+                model = global_summary.get('model')
+                if model is not None and len(model) > 0:
+                    print(f"  - Plotting fitted model: {len(model)} points")
+                    self._ax_decay.semilogy(time_ns, model, linewidth=2.0, 
+                                          color="red", label="Fitted", alpha=0.8)
+                elif global_popt is not None and nexp > 0:
+                    print(f"  - Have global_popt but no precomputed model (model={model})")
+                else:
+                    print(f"  - No global_popt ({global_popt is not None}) or nexp<=0 ({nexp}) for model")
+            
+            self._ax_decay.set_title(f"Summed Decay{f' ({nexp}-exp fit)' if nexp > 0 else ''}", 
+                                    fontsize=10, fontweight="bold")
+            self._ax_decay.set_xlabel("Time (ns)")
+            self._ax_decay.set_ylabel("Photon Count")
+            if decay is not None and len(decay) > 0:
+                self._ax_decay.legend(fontsize=8, loc="upper right")
+            self._ax_decay.grid(True, alpha=0.3)
+            self._ax_decay.tick_params(labelsize=8)
+
+            self._fig.tight_layout(pad=0.8)
+            self._canvas_mpl.draw_idle()
+
+            # Update status with fit summary
+            status = f"✓ Fit complete"
+            chi2 = global_summary.get('reduced_chi2')
+            if chi2 is not None:
+                status += f" | χ²_r={chi2:.3f}"
+            if nexp > 0:
+                taus = [global_summary.get(f'taus_ns', [])[i] if i < len(global_summary.get('taus_ns', [])) else None 
+                        for i in range(nexp)]
+                taus_str = ", ".join([f"{t:.3f}" for t in taus if t is not None])
+                status += f" | τ=[{taus_str}] ns"
+            self._status.set(status)
+            print(f"  - Status: {status}")
+
+        except Exception as e:
+            import traceback
+            print(f"[FOV Preview] Error displaying fit results:")
+            traceback.print_exc()
+            self._status.set(f"Error: {str(e)[:60]}")
+            self._status.set(f"Error displaying fit: {str(e)[:50]}")
+
+    def load_stitched_roi(self, output_dir: str):
+        """Load and display stitched ROI intensity image."""
+        if not output_dir:
+            self._clear()
+            self._status.set("No output directory")
+            return
+        
+        try:
+            from pathlib import Path
+            import numpy as np
+            import tifffile
+            
+            out_path = Path(output_dir)
+            
+            # Find the stitched intensity TIFF file
+            intensity_files = sorted(out_path.glob("*_stitched_intensity.tif"))
+            if not intensity_files:
+                self._clear()
+                self._status.set("No stitched image found")
+                return
+            
+            intensity_file = intensity_files[0]
+            intensity = tifffile.imread(str(intensity_file))
+            
+            # Clear axes and display stitched image
+            self._ax_img.clear()
+            self._ax_img.imshow(intensity, cmap="inferno", origin="upper")
+            self._ax_img.set_title("Stitched ROI", fontsize=10, fontweight="bold")
+            self._ax_img.set_xlabel("X (pixels)")
+            self._ax_img.set_ylabel("Y (pixels)")
+            self._ax_img.tick_params(labelsize=8)
+            
+            # Clear decay plot
+            self._ax_decay.clear()
+            self._ax_decay.text(0.5, 0.5, "Stitch complete", 
+                               ha="center", va="center", transform=self._ax_decay.transAxes,
+                               fontsize=10, color="steelblue")
+            
+            self._fig.tight_layout(pad=0.8)
+            self._canvas_mpl.draw_idle()
+            
+            img_shape = intensity.shape
+            self._status.set(f"✓ Stitched ROI | {img_shape[0]}×{img_shape[1]}px")
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._clear()
+            self._status.set(f"Error loading stitched: {str(e)[:50]}")
+
+    def _clear(self):
+        """Clear both axes."""
+        self._ax_img.clear()
+        self._ax_decay.clear()
+        self._ax_img.set_title("No FOV loaded")
+        self._ax_decay.text(0.5, 0.5, "Load a PTU file →", 
+                           ha="center", va="center", transform=self._ax_decay.transAxes,
+                           fontsize=10, color="grey")
+        self._fig.tight_layout(pad=0.8)
+        self._canvas_mpl.draw_idle()
+
+    def grid(self, **kw):
+        self.frame.grid(**kw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Results panel  –  Progress  |  Fit Summary  |  Images
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -322,7 +781,6 @@ class ResultsPanel:
 
         self._build_progress()
         self._build_summary()
-        self._build_images()
 
         self._status = tk.StringVar(value="Ready.")
         ttk.Label(self.frame, textvariable=self._status, foreground="grey").grid(
@@ -381,47 +839,34 @@ class ResultsPanel:
         tv.grid(row=0, column=0, sticky="nsew")
         sb.grid(row=0, column=1, sticky="ns")
 
-        tv.tag_configure("odd",  background="#f5f7fa")
-        tv.tag_configure("even", background="#ffffff")
+        tv.tag_configure("odd",  background="#f5f7fa", foreground="#000000")
+        tv.tag_configure("even", background="#ffffff", foreground="#000000")
         tv.tag_configure("warn", foreground="#c0550a", background="#fff8f0")
         self._tv = tv
 
     def populate_summary(self, rows: list):
         for item in self._tv.get_children():
             self._tv.delete(item)
+        
+        # Force layout to ensure widget has proper dimensions
+        self._tv.update()
+        
         for i, (param, val, unit) in enumerate(rows):
             tag = "warn" if param.startswith('⚠') else ("odd" if i % 2 else "even")
             self._tv.insert("", tk.END, values=(param, val, unit), tags=(tag,))
+        
+        # Force final redraw
+        self._tv.update_idletasks()
+        
         if rows:
             self._nb.select(1)
+            self._nb.update_idletasks()
 
-    def _build_images(self):
-        f = ttk.Frame(self._nb, padding=4)
-        self._nb.add(f, text="  Images  ")
-        f.columnconfigure(0, weight=1)
-        f.rowconfigure(1, weight=1)
+    def set_status(self, msg: str):
+        self._status.set(msg)
 
-        ctrl = ttk.Frame(f)
-        ctrl.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        ttk.Button(ctrl, text="← Prev",       command=self._img_prev).pack(side="left",  padx=4)
-        ttk.Button(ctrl, text="Next →",       command=self._img_next).pack(side="left",  padx=4)
-        ttk.Button(ctrl, text="Save image…",  command=self._save_img).pack(side="left",  padx=4)
-        ttk.Button(ctrl, text="Save all…",    command=self._save_all_imgs).pack(side="left",  padx=4)
-        ttk.Button(ctrl, text="Open folder",  command=self._open_folder).pack(side="right", padx=4)
-        self._img_lbl = tk.StringVar(value="No images yet")
-        ttk.Label(ctrl, textvariable=self._img_lbl).pack(side="left", padx=8)
-
-        self._fig = Figure(figsize=(6, 4), dpi=100, facecolor="#2b2b2b")
-        self._ax  = self._fig.add_subplot(111)
-        self._ax.set_facecolor("#2b2b2b")
-        self._ax.axis("off")
-
-        self._canvas_mpl = FigureCanvasTkAgg(self._fig, master=f)
-        self._canvas_mpl.get_tk_widget().grid(row=1, column=0, sticky="nsew")
-
-        self._imgs: list         = []
-        self._img_i: int         = 0
-        self._folder: Optional[str] = None
+    def grid(self, **kw):
+        self.frame.grid(**kw)
 
     def load_images(self, folder: Optional[str]):
         self._imgs = []
@@ -557,14 +1002,14 @@ class _UIBuilder:
         self.root.update_idletasks()
         sw = max(1, int(self.root.winfo_screenwidth()))
         sh = max(1, int(self.root.winfo_screenheight()))
-        max_w = max(520, sw - 40)
-        max_h = max(420, sh - 40)
+        max_w = max(1200, sw - 40)  # Larger to accommodate preview panel
+        max_h = max(700, sh - 40)
         req_w = int(self.root.winfo_reqwidth())
         req_h = int(self.root.winfo_reqheight())
         cur_w = int(self.root.winfo_width())
         cur_h = int(self.root.winfo_height())
-        target_w = min(max(cur_w, req_w, 760), max_w)
-        target_h = min(max(cur_h, req_h, 700), max_h)
+        target_w = min(max(cur_w, req_w, 1200), max_w)
+        target_h = min(max(cur_h, req_h, 800), max_h)
         x = int(self.root.winfo_x())
         y = int(self.root.winfo_y())
         x = min(max(0, x), max(0, sw - target_w))
@@ -572,7 +1017,7 @@ class _UIBuilder:
         self.root.maxsize(sw, sh)
         self.root.geometry(f"{target_w}x{target_h}+{x}+{y}")
 
-    def run_with_progress(self, task_fn, task_name="Working…", on_done=None):
+    def run_with_progress(self, task_fn, task_name="Working…", on_done=None, output_dir=None):
         """Run a function in a thread, showing a pop-out progress window with cancel."""
         win = ProgressWindow(self.root, task_name=task_name)
         cancel_event = win.cancelled
@@ -584,7 +1029,8 @@ class _UIBuilder:
 
         def worker():
             orig_stdout, orig_stderr = sys.stdout, sys.stderr
-            redir = _Redirect(self._res.log, self._buf)
+            # Always redirect to UI's ScrolledText widget with thread-safe updates
+            redir = _Redirect(self._res.log, self._buf, root=self.root)
             sys.stdout = redir
             sys.stderr = redir
             try:
@@ -598,24 +1044,42 @@ class _UIBuilder:
                 self.root.after(0, lambda: win.set_status(f"Error: {exc}"))
                 self.root.after(0, lambda: win.btn_cancel.config(text="Close", command=win.close))
             finally:
+                if hasattr(redir, 'close'):
+                    redir.close()
+                else:
+                    redir.flush()
                 sys.stdout = orig_stdout
                 sys.stderr = orig_stderr
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _init_ui(self):
-        """Build the entire user interface."""
+        """Build the entire user interface with horizontal layout (left: tabs+results, right: FOV preview)."""
         self._buf: list = []
 
-        # Use a PanedWindow to allow vertical resizing (top panel vs results)
-        paned = ttk.PanedWindow(self.root, orient="vertical")
-        paned.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        # Main horizontal PanedWindow: left (tabs+results) | right (FOV preview)
+        main_paned = ttk.PanedWindow(self.root, orient="horizontal")
+        main_paned.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        # Top panel (notebook with fitting options)
-        nb_frame = ttk.Frame(paned)
-        paned.add(nb_frame, weight=2)
+        # ─────────────────────────────────────────────────────────────────
+        # LEFT PANEL: Vertical layout with tabs (top) and results (bottom)
+        # ─────────────────────────────────────────────────────────────────
+        left_frame = ttk.Frame(main_paned)
+        main_paned.add(left_frame, weight=3)  # 3:2 weight ratio
+        left_frame.columnconfigure(0, weight=1)
+        left_frame.rowconfigure(0, weight=1)
+
+        # Vertical PanedWindow for left side
+        left_paned = ttk.PanedWindow(left_frame, orient="vertical")
+        left_paned.grid(row=0, column=0, sticky="nsew")
+        left_frame.columnconfigure(0, weight=1)
+        left_frame.rowconfigure(0, weight=1)
+
+        # Top: Notebook with fitting options
+        nb_frame = ttk.Frame(left_paned)
+        left_paned.add(nb_frame, weight=2)
         nb_frame.columnconfigure(0, weight=1)
         nb_frame.rowconfigure(0, weight=1)
 
@@ -628,17 +1092,28 @@ class _UIBuilder:
         self._build_machine_irf_tab()
         self._build_phasor_tab()
 
-        # Results panel (progress, summary, images)
-        results_frame = ttk.Frame(paned)
-        paned.add(results_frame, weight=1)
+        # Bottom: Results panel (progress, summary, images)
+        results_frame = ttk.Frame(left_paned)
+        left_paned.add(results_frame, weight=1)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
 
         self._res = ResultsPanel(results_frame)
         self._res.grid(row=0, column=0, sticky="nsew")
 
+        # ─────────────────────────────────────────────────────────────────
+        # RIGHT PANEL: FOV Preview
+        # ─────────────────────────────────────────────────────────────────
+        preview_frame = ttk.LabelFrame(main_paned, text="  FOV Preview  ", padding=4)
+        main_paned.add(preview_frame, weight=2)
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=1)
+
+        self._fov_preview = FOVPreviewPanel(preview_frame)
+        self._fov_preview.grid(row=0, column=0, sticky="nsew")
+
         # Redirect stdout/stderr to the log widget
-        redir = _Redirect(self._res.log, self._buf)
+        redir = _Redirect(self._res.log, self._buf, root=self.root)
         sys.stdout = redir
         sys.stderr = redir
 
@@ -690,6 +1165,10 @@ class _UIBuilder:
         ff.columnconfigure(1, weight=1)
         self.sv_ptu  = tk.StringVar()
         self.sv_xlsx = tk.StringVar()
+        
+        # Track PTU file changes to auto-load preview
+        self.sv_ptu.trace_add("write", self._on_fov_ptu_changed)
+        
         _row(ff, "PTU file *", self.sv_ptu, 0,
              lambda: _browse_file(self.sv_ptu, "PTU file",
                                   [("PTU", "*.ptu"), ("All", "*.*")]))
@@ -908,7 +1387,7 @@ class _UIBuilder:
         # Per-tile extras (shown only in tile_fit pipeline mode)
         self._tile_extras_frame = ttk.Frame(parent)
         self._tile_extras_frame.columnconfigure(0, weight=1)
-        self._tile_extras_frame.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        self._tile_extras_frame.grid(row=4, column=0, sticky="ew", pady=(0, 4))
         fte = _section(self._tile_extras_frame, "Per-Tile IRF Directory (optional)")
         fte.grid(row=0, column=0, sticky="ew")
         fte.columnconfigure(1, weight=1)
@@ -1139,7 +1618,7 @@ class _UIBuilder:
                         estimate_irf="machine_irf",
                         no_xlsx_irf=True,
                     )
-                    tile_results, canvas_h, canvas_w, _ = fit_flim_tiles(
+                    (tile_results, canvas_h, canvas_w, _, _, _, _, _, _) = fit_flim_tiles(
                         xlif_path=xlif_path, ptu_dir=Path(ptu_dir),
                         output_dir=roi_out, args=fit_args,
                         ptu_basename=ptu_basename, rotate_tiles=True, verbose=True,
@@ -1195,7 +1674,7 @@ class _UIBuilder:
 
         self._set_buttons("disabled")
         self.run_with_progress(
-            task, task_name=f"Batch ROI Fit ({len(xlif_files)} ROIs)", on_done=on_done)
+            task, task_name=f"Batch ROI Fit ({len(xlif_files)} ROIs)", on_done=on_done, output_dir=out_dir)
 
     # -------------------------------------------------------------------------
     # TAB 4 – Machine IRF Builder
@@ -1358,6 +1837,16 @@ class _UIBuilder:
         self.root.after_idle(self._fit_window_to_screen)
 
     # -------------------------------------------------------------------------
+    # FOV Preview auto-load
+    # -------------------------------------------------------------------------
+    def _on_fov_ptu_changed(self, var, index, mode):
+        """Auto-load FOV preview when PTU file is selected."""
+        ptu_path = self.sv_ptu.get().strip()
+        if ptu_path and hasattr(self, '_fov_preview'):
+            # Defer loading to give the UI a chance to update
+            self.root.after(100, lambda: self._fov_preview.load_fov(ptu_path))
+
+    # -------------------------------------------------------------------------
     # Run handlers
     # -------------------------------------------------------------------------
     def _run_fov(self):
@@ -1405,7 +1894,12 @@ class _UIBuilder:
         out_dir = str(Path(a.out).parent) \
                   if Path(a.out).parent != Path(".") \
                   else str(Path(ptu).parent)
-        self._launch(lambda: _run_flim_fit(a), out_dir)
+        self._launch(
+            lambda progress_callback=None, cancel_event=None: _run_flim_fit(a, progress_callback, cancel_event),
+            output_dir=out_dir,
+            ptu_path=ptu,
+            task_name="Single-FOV Fit"
+        )
 
     def _run_stitch(self):
         xlif     = self.sv_xlif.get().strip()
@@ -1487,8 +1981,43 @@ class _UIBuilder:
             self._res._nb.select(0)
             captured = "".join(self._buf)
             rows = _parse_summary(captured)
+            print(f"\n[on_done] pipeline={pipeline}, result type={type(result).__name__}, is dict={isinstance(result, dict)}")
+            
+            # For tile_fit, result is a dict with fit data
+            if pipeline == "tile_fit" and isinstance(result, dict):
+                print(f"[on_done] Executing tile_fit branch")
+                fit_result = result
+                global_summary = fit_result.get('global_summary', {})
+                global_popt = fit_result.get('global_popt')
+                
+                # Extract summary from fit result
+                if global_summary:
+                    extracted_rows = self._extract_summary_rows(global_summary, global_popt)
+                    if extracted_rows:
+                        rows = extracted_rows
+                        print(f"[on_done] Extracted {len(extracted_rows)} summary rows from global_summary")
+                
+                # Display fit results (decay + model) in FOV preview
+                try:
+                    self._fov_preview.display_fit_results(None, fit_result)
+                except Exception as e:
+                    import traceback
+                    print(f"[Warning] Could not display fit results:")
+                    traceback.print_exc()
+            else:
+                # For stitch_only and stitch_fit, load the stitched ROI
+                print(f"[on_done] Executing else branch (load_stitched_roi)")
+                try:
+                    self._fov_preview.load_stitched_roi(a.output_dir)
+                except Exception as e:
+                    print(f"Warning: Could not load stitched image: {e}")
+            
+            # Populate summary table
             if rows:
+                print(f"[on_done] Populating summary with {len(rows)} rows")
                 self._res.populate_summary(rows)
+            else:
+                print(f"[on_done] No rows to populate summary (rows={rows})")
 
         def task(progress_callback, cancel_event):
             if pipeline == "stitch_only":
@@ -1498,6 +2027,8 @@ class _UIBuilder:
                     output_dir=a.output_dir,
                     ptu_basename=a.ptu_basename,
                     rotate_tiles=a.rotate_tiles,
+                    register_tiles=a.register_tiles,
+                    reg_max_shift_px=a.reg_max_shift_px,
                     verbose=True,
                     progress_callback=progress_callback,
                     cancel_event=cancel_event,
@@ -1514,7 +2045,7 @@ class _UIBuilder:
         self._set_buttons("disabled")
         task_name = {"stitch_only": "Stitching", "stitch_fit": "Stitch + Fit",
                      "tile_fit": "Per-Tile Fit"}[pipeline]
-        self.run_with_progress(task, task_name=task_name, on_done=on_done)
+        self.run_with_progress(task, task_name=task_name, on_done=on_done, output_dir=a.output_dir)
 
     def _run_phasor(self):
         try:
@@ -1592,35 +2123,151 @@ class _UIBuilder:
                 verbose=True,
             )
 
-        self._launch(task_fn, output_dir=out_dir)
+        self._launch(task_fn, output_dir=out_dir, task_name="Building Machine IRF")
 
-    def _launch(self, fn, output_dir=None):
+    def _launch(self, fn, output_dir=None, ptu_path=None, task_name="Working…"):
         self._buf.clear()
         self._set_buttons("disabled")
         self._res.set_status("⏳  Running...")
         self._res._nb.select(0)
 
+        # Create a progress window manager for sub-operations
+        win_manager = ProgressWindowManager(self.root)
+        
+        # Create main progress window
+        win = ProgressWindow(self.root, task_name=task_name)
+        cancel_event = win.cancelled
+
+        def progress_callback(i, total):
+            win.set_progress(i, maximum=total)
+            if cancel_event.is_set():
+                win.set_status("Cancelling…")
+
         def _worker():
+            orig_stdout, orig_stderr = sys.stdout, sys.stderr
+            # Always redirect to UI's ScrolledText widget with thread-safe updates
+            redir = _Redirect(self._res.log, self._buf, root=self.root)
+            sys.stdout = redir
+            sys.stderr = redir
+            
             try:
-                fn()
+                # Call function with progress_callback if it supports it
+                sig = inspect.signature(fn)
+                if 'progress_callback' in sig.parameters or 'cancel_event' in sig.parameters:
+                    # Pass window manager for sub-operations
+                    if 'progress_window_manager' in sig.parameters:
+                        result = fn(progress_callback=progress_callback, cancel_event=cancel_event, 
+                                   progress_window_manager=win_manager)
+                    else:
+                        result = fn(progress_callback=progress_callback, cancel_event=cancel_event)
+                else:
+                    # Function doesn't support callbacks, call normally
+                    result = fn()
+                
+                self.root.after(0, lambda: win.close())
+                self.root.after(0, lambda: win_manager.close_all())
                 captured = "".join(self._buf)
                 rows     = _parse_summary(captured)
-                self.root.after(0, lambda: self._on_done(rows, output_dir))
+                self.root.after(0, lambda: self._on_done(rows, output_dir, result, ptu_path))
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
                 self.root.after(0, lambda: self._res.set_status(f"✗  Error: {exc}"))
             finally:
+                if hasattr(redir, 'close'):
+                    redir.close()
+                else:
+                    redir.flush()
+                sys.stdout = orig_stdout
+                sys.stderr = orig_stderr
                 self.root.after(0, lambda: self._set_buttons("normal"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_done(self, rows, output_dir):
+    def _on_done(self, rows, output_dir, fit_result=None, ptu_path=None):
         self._res.set_status("✓  Finished.")
+        
+        # Priority 1: Extract summary from fit_result dict (most reliable)
+        if fit_result is not None:
+            global_summary = fit_result.get('global_summary')
+            global_popt = fit_result.get('global_popt')
+            
+            # If fit_result has summary data, use it (overrides log parsing)
+            if global_summary is not None:
+                extracted_rows = self._extract_summary_rows(global_summary, global_popt)
+                if extracted_rows:
+                    rows = extracted_rows
+        
+        # Populate summary table with whatever rows we have
         if rows:
             self._res.populate_summary(rows)
-        if output_dir:
-            self._res.load_images(output_dir)
+        
+        # Update FOV preview with fit results (works for both single-FOV and tile fitting)
+        if fit_result is not None:
+            try:
+                self._fov_preview.display_fit_results(ptu_path, fit_result)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+
+    def _extract_summary_rows(self, global_summary: dict, global_popt=None) -> list:
+        """Extract fit summary rows from global_summary dict."""
+        rows = []
+        
+        if not global_summary:
+            return rows
+        
+        # Lifetime parameters
+        taus = global_summary.get('taus_ns', [])
+        amps = global_summary.get('amps', [])
+        fracs = global_summary.get('fractions', [])
+        
+        # If we have lists, extract components
+        if taus and amps and fracs:
+            for i, (tau, amp, frac) in enumerate(zip(taus, amps, fracs)):
+                rows.append((f"τ{i+1}", f"{tau:.4f}", "ns"))
+                rows.append((f"α{i+1}", f"{amp:.3e}", ""))
+                rows.append((f"f{i+1}", f"{frac:.4f}", ""))
+        
+        # Mean lifetimes
+        tau_mean_amp = global_summary.get('tau_mean_amp_ns')
+        if tau_mean_amp is not None:
+            rows.append(("τ_mean (amp-weighted)", f"{tau_mean_amp:.4f}", "ns"))
+        
+        tau_mean_int = global_summary.get('tau_mean_int_ns')
+        if tau_mean_int is not None:
+            rows.append(("τ_mean (int-weighted)", f"{tau_mean_int:.4f}", "ns"))
+        
+        # Background
+        bg_fit = global_summary.get('bg_fit')
+        if bg_fit is not None:
+            rows.append(("Background (fitted)", f"{bg_fit:.2f}", "cts/bin"))
+        
+        # IRF parameters
+        irf_shift = global_summary.get('irf_shift_bins')
+        if irf_shift is not None:
+            tcspc_res = global_summary.get('tcspc_res', 0)
+            irf_shift_ps = irf_shift * tcspc_res * 1e12 if tcspc_res > 0 else 0
+            rows.append(("IRF shift", f"{irf_shift:.3f}", "bins"))
+        
+        irf_sigma = global_summary.get('irf_sigma_bins')
+        if irf_sigma is not None:
+            rows.append(("IRF σ (broadening)", f"{irf_sigma:.3f}", "bins"))
+        
+        irf_fwhm = global_summary.get('irf_fwhm_eff_ns')
+        if irf_fwhm is not None:
+            rows.append(("IRF FWHM (eff.)", f"{irf_fwhm:.4f}", "ns"))
+        
+        # Chi-squared
+        chi2_r = global_summary.get('reduced_chi2')
+        if chi2_r is not None:
+            rows.append(("χ²_r (Neyman)", f"{chi2_r:.4f}", ""))
+        
+        chi2_r_pearson = global_summary.get('reduced_chi2_pearson')
+        if chi2_r_pearson is not None:
+            rows.append(("χ²_r (Pearson)", f"{chi2_r_pearson:.4f}", ""))
+        
+        return rows
 
     def _set_buttons(self, state):
         for btn in (self._btn_fov, self._btn_st, self._btn_batch, self._btn_mirf, self._btn_ph):

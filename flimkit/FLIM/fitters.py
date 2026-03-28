@@ -1,6 +1,11 @@
 import time
+import os
 import numpy as np
 from tqdm import tqdm
+
+# Disable tqdm globally – all progress is shown via progress windows instead
+tqdm.disable = True
+
 from scipy.optimize import least_squares, differential_evolution, nnls
 from scipy.stats.distributions import chi2 as chi2_dist
 from ..FLIM.irf_tools import build_full_irf
@@ -303,7 +308,8 @@ def _make_summary(popt, decay, tcspc_res, n_bins, irf_prompt,
 def fit_per_pixel(stack, tcspc_res, n_bins, irf_prompt,
                   has_tail, fit_bg, fit_sigma,
                   global_popt, n_exp,
-                  min_photons=MIN_PHOTONS_PERPIX) -> dict:
+                  min_photons=MIN_PHOTONS_PERPIX,
+                  progress_callback=None) -> dict:
     ny, nx, _ = stack.shape
 
     # Extract fixed IRF parameters from global fit using same unpacking order
@@ -341,11 +347,14 @@ def fit_per_pixel(stack, tcspc_res, n_bins, irf_prompt,
         maps[f"a{i+1}"]      = maps[f"alpha_{i+1}"]
 
     fitted = skipped = 0
-    print(f"  Per-pixel fitting: {ny}×{nx}={ny*nx} pixels "
-          f"(τ fixed, amplitudes + bg free) …")
+    # print(f"  Per-pixel fitting: {ny}×{nx}={ny*nx} pixels "
+    #       f"(τ fixed, amplitudes + bg free) …")
     t0 = time.time()
 
-    for yi in tqdm(range(ny), desc='  Per-pixel rows'):
+    # Always disable tqdm – progress is shown via progress windows instead
+    for yi in tqdm(range(ny), desc='  Per-pixel rows', disable=True):
+        if progress_callback is not None:
+            progress_callback(yi, ny)
         for xi in range(nx):
             decay_px = stack[yi, xi, :]
             if decay_px.sum() < min_photons:
@@ -382,6 +391,6 @@ def fit_per_pixel(stack, tcspc_res, n_bins, irf_prompt,
             fitted += 1
 
     elapsed = time.time() - t0
-    print(f"  Fitted: {fitted}/{ny*nx}  |  Skipped (<{min_photons} ph): {skipped}  "
-          f"|  {elapsed:.1f}s")
+    # print(f"  Fitted: {fitted}/{ny*nx}  |  Skipped (<{min_photons} ph): {skipped}  "
+    #       f"|  {elapsed:.1f}s")
     return maps

@@ -23,6 +23,10 @@ import numpy as np
 import tifffile
 from pathlib import Path
 from tqdm import tqdm
+
+# Disable tqdm globally – all progress is shown via progress windows instead
+tqdm.disable = True
+
 from typing import Tuple, Dict, Any, Optional, List
 
 from ..utils.xml_utils import (
@@ -34,7 +38,7 @@ from .decode import get_flim_histogram_from_ptufile, create_time_axis
 
 # Try to import GUI_MODE flag (set by gui.py if running in GUI mode)
 try:
-    from ...gui import GUI_MODE
+    from ..UI.gui import GUI_MODE
 except (ImportError, AttributeError):
     GUI_MODE = False
 
@@ -155,10 +159,8 @@ def stitch_flim_tiles(
     # ── Registration note for stitch_flim_tiles ───────────────────────────
     # If tile_positions are pre-supplied (from a prior fit_flim_tiles call
     # that already ran _register_tile_columns), they are used directly.
-    # For standalone stitch_only runs, registration runs post-stitch via
-    # the caller passing corrected_positions from fit_flim_tiles.
-    # (stitch_flim_tiles loads histograms, not intensity maps, so
-    #  _register_tile_columns cannot run here inline.)
+    # For standalone stitch_only runs, intensity maps are extracted from PTU files
+    # and registration runs inline via _register_tile_columns if register_tiles=True.
 
     if verbose:
         print(f"  Canvas: {canvas_height} × {canvas_width} pixels")
@@ -181,8 +183,9 @@ def stitch_flim_tiles(
 
     tiles_processed = tiles_skipped = 0
     total_tiles = len(tile_positions)
+    tile_results = []  # For registration: [{pixel_maps: {intensity}, pixel_y, pixel_x, tile_h, tile_w}, ...]
 
-    for i, t in enumerate(tqdm(tile_positions, desc='  Loading tiles', disable=GUI_MODE)):
+    for i, t in enumerate(tqdm(tile_positions, desc='  Loading tiles', disable=True)):
         if cancel_event is not None and cancel_event.is_set():
             if verbose:
                 print("\nStitching cancelled by user.")
@@ -217,6 +220,17 @@ def stitch_flim_tiles(
 
             ti = len(_hists)
             _hists.append((ti, y0, x0, hist[:dy, :dx, :]))
+            
+            # Extract intensity map for registration (sum over time bins)
+            intensity_map = hist[:dy, :dx, :].sum(axis=2).astype(np.float32)
+            tile_results.append({
+                'pixel_maps':     {'intensity': intensity_map},
+                'pixel_y':        y0,
+                'pixel_x':        x0,
+                'tile_h':         dy,
+                'tile_w':         dx,
+                'ptu_name':       t['file'],
+            })
 
             # Claim ownership of pixels closer to this tile's centre
             cy = y0 + tile_y / 2.0
@@ -237,9 +251,49 @@ def stitch_flim_tiles(
             tiles_skipped += 1
             continue
 
+    # ── Optional registration using intensity maps ─────────────────────────
+    if register_tiles and tiles_processed > 1 and tile_results:
+        if verbose:
+            print(f"\nRunning tile registration (phase correlation)...")
+        tile_results = _register_tile_columns(
+            tile_results,
+            max_shift_px=reg_max_shift_px,
+            verbose=verbose,
+        )
+        # Update tile_positions with corrected coordinates
+        for i, tr in enumerate(tile_results):
+            if i < len(tile_positions):
+                tile_positions[i]["pixel_y"] = tr["pixel_y"]
+                tile_positions[i]["pixel_x"] = tr["pixel_x"]
+        # Recalculate ownership map with corrected positions
+        _owner[:] = -1
+        _min_dist2[:] = np.inf
+        for ti, (hist_ti, y0_old, x0_old, h) in enumerate(_hists):
+            # Get corrected position
+            y0 = tile_positions[ti]["pixel_y"] if ti < len(tile_positions) else y0_old
+            x0 = tile_positions[ti]["pixel_x"] if ti < len(tile_positions) else x0_old
+            y1 = min(y0 + h.shape[0], canvas_height)
+            x1 = min(x0 + h.shape[1], canvas_width)
+            dy, dx = y1 - y0, x1 - x0
+            if dy <= 0 or dx <= 0:
+                continue
+            # Reclaim ownership with corrected positions
+            cy = y0 + h.shape[0] / 2.0
+            cx = x0 + h.shape[1] / 2.0
+            rows = np.arange(y0, y1, dtype=np.float64)
+            cols = np.arange(x0, x1, dtype=np.float64)
+            dist2 = (rows - cy)[:, np.newaxis] ** 2 + (cols - cx) ** 2
+            region  = _min_dist2[y0:y1, x0:x1]
+            closer  = dist2 < region
+            _min_dist2[y0:y1, x0:x1] = np.where(closer, dist2, region)
+            _owner[y0:y1, x0:x1]     = np.where(closer, ti, _owner[y0:y1, x0:x1])
+            # Update _hists with corrected position
+            _hists[ti] = (hist_ti, y0, x0, h)
+
     # Write each tile's data only for pixels it owns
     if verbose:
-        print(f"  Writing canvas (nearest-centre, no blending)...")
+        blending_mode = "with registration" if (register_tiles and tiles_processed > 1) else "no blending"
+        print(f"  Writing canvas (nearest-centre, {blending_mode})...")
     for ti, y0, x0, h in _hists:
         y1 = y0 + h.shape[0]
         x1 = x0 + h.shape[1]
@@ -861,7 +915,7 @@ def fit_flim_tiles(
     tcspc_ref    = None
 
     for i, t in enumerate(tqdm(tile_positions,
-                                desc='  Pass 1', disable=(GUI_MODE or not verbose))):
+                                desc='  Pass 1', disable=True)):
         if cancel_event is not None and cancel_event.is_set():
             break
         if progress_callback is not None:
@@ -948,7 +1002,7 @@ def fit_flim_tiles(
     tiles_skipped = 0
 
     for i, tc in enumerate(tqdm(tile_meta,
-                                 desc='  Pass 2', disable=(GUI_MODE or not verbose), leave=False)):
+                                 desc='  Pass 2', disable=True, leave=False)):
         # Print info header on first iteration
         if i == 0 and verbose:
             tqdm.write(f"Pass 2: per-pixel fit ({len(tile_meta)} tiles)...")
@@ -1054,4 +1108,4 @@ def fit_flim_tiles(
         {**tc['t'], 'pixel_y': tr['pixel_y'], 'pixel_x': tr['pixel_x']}
         for tc, tr in zip(tile_meta, tile_results)
     ]
-    return tile_results, canvas_h, canvas_w, corrected_positions
+    return tile_results, canvas_h, canvas_w, corrected_positions, pooled_decay, pooled_irf, tcspc_ref, global_popt, global_summary

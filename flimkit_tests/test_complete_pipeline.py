@@ -664,6 +664,43 @@ class TestPerTileFitPipeline:
         canvas_w = cols * self.TILE_W
         return results, canvas_h, canvas_w
 
+    def _fit_flim_tiles_return_value(self, tile_results, canvas_h, canvas_w, n_exp=1):
+        """Build full 9-element return tuple for fit_flim_tiles mock (new signature)."""
+        import numpy as np
+        
+        # Create synthetic pooled decay (1024 bins)
+        pooled_decay = np.random.exponential(scale=100, size=1024).astype(np.float32)
+        pooled_decay = np.maximum(pooled_decay, 1.0)  # Ensure positivity
+        
+        # Create synthetic pooled IRF
+        pooled_irf = np.random.exponential(scale=10, size=1024).astype(np.float32)
+        pooled_irf = pooled_irf / pooled_irf.sum()  # Normalize to probability
+        
+        # Use standard TCSPC resolution (~50 ps/bin)
+        tcspc_ref = 50e-12  # 50 ps in seconds
+        
+        # Create synthetic global_popt (number of params varies with n_exp)
+        # Standard exponential fit: tau + amplitude + bg + sigma + irf_shift
+        n_params = 2 * n_exp + 3  # taus + amplitudes + bg + sigma + irf_shift
+        global_popt = np.random.uniform(0.5, 5.0, n_params).astype(np.float32)
+        
+        # Use global_summary from first tile result
+        global_summary = {
+            'taus_ns': [2.0 + 0.1*k for k in range(n_exp)],
+            'amplitudes': [1.0 / n_exp for k in range(n_exp)],
+            'reduced_chi2': 1.2,
+            'reduced_chi2_tail': 1.1,
+            'n_pixels_fitted': len(tile_results) * self.TILE_H * self.TILE_W,
+            'tau_mean_amp_global_ns': 2.1,
+            'tau_std_amp_global_ns': 0.3,
+        }
+        
+        # Create corrected_positions (dummy, matching tile_results)
+        corrected_positions = [{'file': f'R_2_s{i+1}.ptu'} for i in range(len(tile_results))]
+        
+        return tile_results, canvas_h, canvas_w, corrected_positions, pooled_decay, pooled_irf, tcspc_ref, global_popt, global_summary
+
+
     def _base_args(self, output_dir, n_exp=1):
         """Minimal args namespace for _run_tile_fit."""
         import argparse
@@ -778,14 +815,20 @@ class TestPerTileFitPipeline:
         from unittest.mock import patch
 
         tile_results, ch, cw = self._tile_results("2x2", n_exp=1)
+        fit_flim_tiles_return = self._fit_flim_tiles_return_value(tile_results, ch, cw, n_exp=1)
 
         with tempfile.TemporaryDirectory() as tmp:
             args = self._base_args(Path(tmp))
 
             with patch('flimkit.PTU.stitch.fit_flim_tiles',
-                       return_value=(tile_results, ch, cw)):
-                canvas, global_summary = _run_tile_fit(args)
+                       return_value=fit_flim_tiles_return):
+                fit_result = _run_tile_fit(args)
 
+            # _run_tile_fit now returns a dict
+            assert isinstance(fit_result, dict)
+            canvas = fit_result['canvas']
+            global_summary = fit_result['global_summary']
+            
             assert 'intensity'    in canvas
             assert 'tau_mean_amp' in canvas
             assert global_summary['n_pixels_fitted'] > 0
@@ -810,6 +853,7 @@ class TestPerTileFitPipeline:
 
         # Use a 3×2 layout to verify non-square canvas handling
         tile_results, ch, cw = self._tile_results("3x2", n_exp=1)
+        fit_flim_tiles_return = self._fit_flim_tiles_return_value(tile_results, ch, cw, n_exp=1)
         expected_h = 3 * self.TILE_H
         expected_w = 2 * self.TILE_W
 
@@ -818,8 +862,9 @@ class TestPerTileFitPipeline:
             args.ptu_basename = 'R 3'
 
             with patch('flimkit.PTU.stitch.fit_flim_tiles',
-                       return_value=(tile_results, ch, cw)):
-                canvas, _ = _run_tile_fit(args)
+                       return_value=fit_flim_tiles_return):
+                fit_result = _run_tile_fit(args)
+                canvas = fit_result['canvas']
 
             h, w = canvas['intensity'].shape
             assert h == expected_h and w == expected_w, (
@@ -836,13 +881,15 @@ class TestPerTileFitPipeline:
         from unittest.mock import patch
 
         tile_results, ch, cw = self._tile_results("2x2", n_exp=2)
+        fit_flim_tiles_return = self._fit_flim_tiles_return_value(tile_results, ch, cw, n_exp=2)
 
         with tempfile.TemporaryDirectory() as tmp:
             args = self._base_args(Path(tmp), n_exp=2)
 
             with patch('flimkit.PTU.stitch.fit_flim_tiles',
-                       return_value=(tile_results, ch, cw)):
-                _, global_summary = _run_tile_fit(args)
+                       return_value=fit_flim_tiles_return):
+                fit_result = _run_tile_fit(args)
+                global_summary = fit_result['global_summary']
 
             assert 'tau1_mean_ns' in global_summary, "tau1_mean_ns missing"
             assert 'tau2_mean_ns' in global_summary, "tau2_mean_ns missing"

@@ -571,6 +571,7 @@ def test_tile_fit_pipeline():
         # ── Step 4: _run_tile_fit end-to-end (fit_flim_tiles patched) ─────────
         try:
             import argparse
+            import numpy as np
             from flimkit.interactive import _run_tile_fit
             from flimkit.configs import (
                 Tau_min, Tau_max, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM,
@@ -594,9 +595,34 @@ def test_tile_fit_pipeline():
                     tau_display_min=None, tau_display_max=None,
                 )
 
+                # Build synthetic fit_flim_tiles return value (9 elements)
+                pooled_decay = np.random.exponential(scale=100, size=1024).astype(np.float32)
+                pooled_decay = np.maximum(pooled_decay, 1.0)
+                pooled_irf = np.random.exponential(scale=10, size=1024).astype(np.float32)
+                pooled_irf = pooled_irf / pooled_irf.sum()
+                tcspc_ref = 50e-12
+                global_popt = np.array([2.0, 1.0, 0.1, 0.0], dtype=np.float32)
+                global_summary = {
+                    'taus_ns': [2.0],
+                    'amplitudes': [1.0],
+                    'reduced_chi2': 1.2,
+                    'reduced_chi2_tail': 1.1,
+                    'n_pixels_fitted': 4 * TILE_H * TILE_W,
+                    'tau_mean_amp_global_ns': 2.1,
+                    'tau_std_amp_global_ns': 0.3,
+                    'tau1_mean_ns': 2.0,
+                    'a1_mean_frac': 1.0,
+                }
+                fit_flim_tiles_return = (
+                    tile_results, canvas_h, canvas_w, [],
+                    pooled_decay, pooled_irf, tcspc_ref, global_popt, global_summary
+                )
+
                 with patch('flimkit.PTU.stitch.fit_flim_tiles',
-                           return_value=(tile_results, canvas_h, canvas_w)):
-                    result_canvas, result_gs = _run_tile_fit(args)
+                           return_value=fit_flim_tiles_return):
+                    result = _run_tile_fit(args)
+                    result_canvas = result['canvas']
+                    result_gs = result['global_summary']
 
                 assert 'intensity' in result_canvas
                 assert result_gs['n_pixels_fitted'] > 0

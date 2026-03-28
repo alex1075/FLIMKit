@@ -1,13 +1,21 @@
 #!/usr/bin/env python
+import argparse
 from pathlib import Path
-from flimkit.interactive import *
-import inquirer
-from flimkit._version import __version__, roadmap
-from flimkit.utils.fancy import display_banner, flim_fitting_banner, banner_goodbye
 
 
 
-def main(fast = False):
+def main(fast=False, gui=False):
+    if gui:
+        from flimkit.UI.gui import launch_gui
+        launch_gui()
+        return
+    
+    # Only import interactive components when needed (not GUI mode)
+    from flimkit.interactive import single_FOV_flim_fit, stitch_and_fit, stitch_tiles
+    import inquirer
+    from flimkit._version import __version__, roadmap
+    from flimkit.utils.fancy import display_banner, flim_fitting_banner, banner_goodbye
+    
     if fast == False:
         display_banner()
     print("Welcome to the FLIM data processing tool!")
@@ -54,4 +62,9 @@ def main(fast = False):
         return
     
 if __name__ == "__main__":
-    main(False)    
+    parser = argparse.ArgumentParser(description="FLIMKit — FLIM data processing toolkit")
+    parser.add_argument('--gui', action='store_true', help='Launch the graphical user interface')
+    parser.add_argument('--fast', action='store_true', help='Skip banner display')
+    args = parser.parse_args()
+    
+    main(fast=args.fast, gui=args.gui)    
