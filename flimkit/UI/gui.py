@@ -19,6 +19,7 @@ import matplotlib.image as mpimg
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from flimkit.UI.progress_window import ProgressWindow
+from flimkit.UI.phasor_panel import PhasorViewPanel
 
 # Modern theme support
 try:
@@ -573,12 +574,7 @@ class FOVPreviewPanel:
             decay_from_result = fit_result.get('decay')
             canvas = fit_result.get('canvas')
             
-            # Debug output
-            print(f"[FOV Preview] Displaying fit results")
-            print(f"  - decay in fit_result: {decay_from_result is not None}")
-            print(f"  - time_ns in fit_result: {time_ns_from_result is not None}")
-            print(f"  - canvas in fit_result: {canvas is not None}")
-            print(f"  - global_summary keys: {list(global_summary.keys()) if global_summary else 'None'}")
+            # (debug prints removed)
             
             # Use result data if available, otherwise load from PTU
             if decay_from_result is not None and time_ns_from_result is not None:
@@ -1111,6 +1107,28 @@ class _UIBuilder:
 
         self._fov_preview = FOVPreviewPanel(preview_frame)
         self._fov_preview.grid(row=0, column=0, sticky="nsew")
+
+        # Phasor panel shares the same right-panel cell; hidden until needed.
+        self._phasor_panel = PhasorViewPanel(preview_frame, max_cursors=6)
+        self._phasor_panel.frame.grid(row=0, column=0, sticky="nsew")
+        self._phasor_panel.frame.grid_remove()
+
+        # Swap right-panel content when the active tab changes.
+        def _on_tab_changed(event):
+            try:
+                tab_text = self._nb.tab(self._nb.select(), "text").strip()
+            except Exception:
+                return
+            if tab_text == "Phasor Analysis":
+                self._fov_preview.frame.grid_remove()
+                self._phasor_panel.frame.grid()
+                preview_frame.configure(text="  Phasor Analysis  ")
+            else:
+                self._phasor_panel.frame.grid_remove()
+                self._fov_preview.frame.grid()
+                preview_frame.configure(text="  FOV Preview  ")
+
+        self._nb.bind("<<NotebookTabChanged>>", _on_tab_changed)
 
         # Redirect stdout/stderr to the log widget
         redir = _Redirect(self._res.log, self._buf, root=self.root)
@@ -1756,76 +1774,88 @@ class _UIBuilder:
     # TAB 5 – Phasor
     # -------------------------------------------------------------------------
     def _build_phasor_tab(self):
-        tab = self._make_scroll_tab("  Phasor Analysis  ")
-        tab.columnconfigure(0, weight=1)
+        # Plain (non-scrolling) outer frame so the figure can resize freely.
+        outer = ttk.Frame(self._nb)
+        self._nb.add(outer, text="  Phasor Analysis  ")
+        outer.columnconfigure(0, weight=1)
+        # ── Controls strip (fixed height, top) ───────────────────────────────
+        ctrl = ttk.Frame(outer, padding=(6, 4))
+        ctrl.grid(row=0, column=0, sticky="ew")
+        ctrl.columnconfigure(0, weight=1)
 
-        fm = _section(tab, "Input Mode")
-        fm.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        fm.columnconfigure(1, weight=1)
+        # Input mode
+        mode_fr = _section(ctrl, "Input Mode")
+        mode_fr.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        mode_fr.columnconfigure(1, weight=1)
 
         self.sv_ph_mode = tk.StringVar(value="new")
-        ttk.Radiobutton(fm, text="Analyse a new PTU file",
+        ttk.Radiobutton(mode_fr, text="New PTU file",
                         variable=self.sv_ph_mode, value="new",
                         command=self._ph_mode_changed).grid(
-            row=0, column=0, sticky="w", padx=4, pady=2)
-        ttk.Radiobutton(fm, text="Resume a saved session (.npz)",
+            row=0, column=0, sticky="w", padx=4, pady=1)
+        ttk.Radiobutton(mode_fr, text="Resume session (.npz)",
                         variable=self.sv_ph_mode, value="session",
                         command=self._ph_mode_changed).grid(
-            row=1, column=0, sticky="w", padx=4, pady=2)
+            row=0, column=1, sticky="w", padx=4, pady=1)
 
-        self._ph_new = ttk.Frame(tab)
+        # New-PTU sub-frame
+        self._ph_new = ttk.Frame(ctrl)
         self._ph_new.columnconfigure(0, weight=1)
-        self._ph_new.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        self._ph_new.grid(row=1, column=0, sticky="ew")
         fn = _section(self._ph_new, "New Analysis")
         fn.grid(row=0, column=0, sticky="ew")
         fn.columnconfigure(1, weight=1)
-        self.sv_ph_ptu      = tk.StringVar()
-        self.sv_ph_irf      = tk.StringVar()
-        self.sv_ph_mirf     = tk.StringVar(value=str(_C()["MACHINE_IRF_DEFAULT_PATH"]))
-        _row(fn, "PTU file *",              self.sv_ph_ptu,  0,
+        self.sv_ph_ptu  = tk.StringVar()
+        self.sv_ph_irf  = tk.StringVar()
+        self.sv_ph_mirf = tk.StringVar(
+            value=str(_C()["MACHINE_IRF_DEFAULT_PATH"]))
+        _row(fn, "PTU file *",             self.sv_ph_ptu,  0,
              lambda: _browse_file(self.sv_ph_ptu, "PTU file",
                                   [("PTU", "*.ptu"), ("All", "*.*")]))
-        _row(fn, "IRF XLSX (optional)",     self.sv_ph_irf,  1,
+        _row(fn, "IRF XLSX (optional)",    self.sv_ph_irf,  1,
              lambda: _browse_file(self.sv_ph_irf, "IRF XLSX",
                                   [("Excel", "*.xlsx"), ("All", "*.*")]))
-        _row(fn, "Machine IRF (optional)",  self.sv_ph_mirf, 2,
+        _row(fn, "Machine IRF (optional)", self.sv_ph_mirf, 2,
              lambda: _browse_file(self.sv_ph_mirf, "Machine IRF",
                                   [("NumPy", "*.npy"), ("All", "*.*")]))
-        ttk.Label(fn,
-                  text="XLSX takes priority if both supplied; machine IRF used if no XLSX",
-                  foreground="grey").grid(row=3, column=1, columnspan=2, sticky="w", padx=4)
+        ttk.Label(fn, text="XLSX takes priority if both supplied",
+                  foreground="grey").grid(
+            row=3, column=1, columnspan=2, sticky="w", padx=4)
 
-        self._ph_sess = ttk.Frame(tab)
+        # Session sub-frame
+        self._ph_sess = ttk.Frame(ctrl)
         self._ph_sess.columnconfigure(0, weight=1)
-        self._ph_sess.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        self._ph_sess.grid(row=2, column=0, sticky="ew")
         fs = _section(self._ph_sess, "Resume Session")
         fs.grid(row=0, column=0, sticky="ew")
         fs.columnconfigure(1, weight=1)
         self.sv_ph_session = tk.StringVar()
-        _row(fs, "Session file (.npz) *", self.sv_ph_session, 0,
+        _row(fs, "Session (.npz) *", self.sv_ph_session, 0,
              lambda: _browse_file(self.sv_ph_session, "Session file",
                                   [("NPZ", "*.npz"), ("All", "*.*")]))
         self._ph_sess.grid_remove()
 
-        fo = _section(tab, "Display Options")
-        fo.grid(row=3, column=0, sticky="ew", pady=(0, 6))
-        ttk.Label(fo, text="Min photons (fraction):").grid(
+        # Display options
+        opt_fr = _section(ctrl, "Display Options")
+        opt_fr.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(opt_fr, text="Min photons (fraction):").grid(
             row=0, column=0, sticky="w", **PAD)
         self.sv_ph_minph = tk.StringVar(value="0.01")
-        ttk.Entry(fo, textvariable=self.sv_ph_minph, width=8).grid(
+        ttk.Entry(opt_fr, textvariable=self.sv_ph_minph, width=8).grid(
             row=0, column=1, sticky="w", padx=4)
-        ttk.Label(fo, text="Max cursors:").grid(row=0, column=2, sticky="w", padx=8)
+        ttk.Label(opt_fr, text="Max cursors:").grid(
+            row=0, column=2, sticky="w", padx=8)
         self.sv_ph_maxc = tk.StringVar(value="6")
-        ttk.Entry(fo, textvariable=self.sv_ph_maxc, width=4).grid(
+        ttk.Entry(opt_fr, textvariable=self.sv_ph_maxc, width=4).grid(
             row=0, column=3, sticky="w", padx=4)
-        ttk.Label(fo,
-                  text="The phasor tool opens in its own interactive matplotlib window.",
-                  foreground="grey").grid(
-            row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(4, 0))
 
-        self._btn_ph = ttk.Button(tab, text="▶  Launch Phasor Tool",
-                                  command=self._run_phasor)
-        self._btn_ph.grid(row=4, column=0, pady=8, ipadx=20, ipady=4)
+        # Run button
+        self._btn_ph = ttk.Button(ctrl, text="▶  Load & Analyse",
+                                   command=self._run_phasor)
+        self._btn_ph.grid(row=4, column=0, pady=(6, 2), ipadx=16, ipady=3,
+                          sticky="w")
+
+        # (PhasorViewPanel lives in the right FOV-preview panel — see _init_ui)
 
     def _ph_mode_changed(self):
         if self.sv_ph_mode.get() == "new":
@@ -1834,7 +1864,6 @@ class _UIBuilder:
         else:
             self._ph_new.grid_remove()
             self._ph_sess.grid()
-        self.root.after_idle(self._fit_window_to_screen)
 
     # -------------------------------------------------------------------------
     # FOV Preview auto-load
@@ -1981,7 +2010,7 @@ class _UIBuilder:
             self._res._nb.select(0)
             captured = "".join(self._buf)
             rows = _parse_summary(captured)
-            print(f"\n[on_done] pipeline={pipeline}, result type={type(result).__name__}, is dict={isinstance(result, dict)}")
+
             
             # For tile_fit, result is a dict with fit data
             if pipeline == "tile_fit" and isinstance(result, dict):
@@ -2048,48 +2077,93 @@ class _UIBuilder:
         self.run_with_progress(task, task_name=task_name, on_done=on_done, output_dir=a.output_dir)
 
     def _run_phasor(self):
+        """Dispatch PTU loading to a worker thread; update the embedded panel on done."""
         try:
             min_ph  = float(self.sv_ph_minph.get() or 0.01)
-            max_cur = int(self.sv_ph_maxc.get()    or 6)
+            max_cur = int(self.sv_ph_maxc.get() or 6)
         except ValueError:
             messagebox.showerror("Invalid input",
                                  "Min photons and max cursors must be numeric.")
             return
 
-        from flimkit.phasor_launcher import launch_phasor
+        self._phasor_panel.max_cursors = max_cur
 
-        if self.sv_ph_mode.get() == "new":
-            ptu = self.sv_ph_ptu.get().strip()
-            if not ptu or not Path(ptu).exists():
-                messagebox.showerror("Missing input", "Please select a valid PTU file.")
-                return
-            irf      = self.sv_ph_irf.get().strip() or None
-            mirf     = self.sv_ph_mirf.get().strip() or None
-            fn  = lambda: launch_phasor(ptu_path=ptu, irf_path=irf,
-                                        machine_irf_path=mirf,
-                                        min_photons=min_ph, max_cursors=max_cur)
-        else:
+        if self.sv_ph_mode.get() == "session":
             sess = self.sv_ph_session.get().strip()
             if not sess or not Path(sess).exists():
                 messagebox.showerror("Missing input",
                                      "Please select a valid .npz session file.")
                 return
-            fn = lambda: launch_phasor(session_path=sess,
-                                       min_photons=min_ph, max_cursors=max_cur)
 
-        self._set_buttons("disabled")
-        self._res.set_status("⏳  Phasor tool running…  (close the phasor window to return)")
-        self._res._nb.select(0)
-        try:
-            fn()
-            self._res.set_status("✓  Phasor tool closed.")
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            self._res.set_status(f"✗  Phasor error: {exc}")
-            messagebox.showerror("Phasor error", str(exc))
-        finally:
-            self._set_buttons("normal")
+            def _worker():
+                from flimkit.phasor_launcher import load_session
+                return load_session(sess)
+
+            def _done(result):
+                if isinstance(result, Exception):
+                    messagebox.showerror("Session load error", str(result))
+                    return
+                self._phasor_panel.load_session(result, min_photons=min_ph)
+                self._res.set_status("✓  Phasor session loaded.")
+
+            self._phasor_thread(_worker, _done, status="⏳  Loading session…")
+
+        else:
+            ptu = self.sv_ph_ptu.get().strip()
+            if not ptu or not Path(ptu).exists():
+                messagebox.showerror("Missing input",
+                                     "Please select a valid PTU file.")
+                return
+
+            xlsx_irf = self.sv_ph_irf.get().strip() or None
+            mach_irf = self.sv_ph_mirf.get().strip() or None
+            irf_path = xlsx_irf or mach_irf
+
+            def _worker():
+                from flimkit.phasor_launcher import _process_ptu
+                return _process_ptu(ptu, irf_path=irf_path)
+
+            def _done(result):
+                if isinstance(result, Exception):
+                    messagebox.showerror("Phasor error", str(result))
+                    return
+                self._phasor_panel.set_data(
+                    result['real_cal'],
+                    result['imag_cal'],
+                    result['mean'],
+                    result['frequency'],
+                    display_image=result.get('display_image'),
+                    min_photons=min_ph,
+                )
+                self._res.set_status(
+                    "✓  Phasor data loaded — click the phasor to place cursors.")
+
+            self._phasor_thread(_worker, _done,
+                                status="⏳  Loading PTU and computing phasors…")
+
+    def _phasor_thread(self, worker_fn, done_cb, *, status="⏳  Working…"):
+        """Run worker_fn in a daemon thread; call done_cb(result) on the main thread.
+        Only disables the phasor run button while running — the rest of the UI
+        stays responsive (unlike _launch which locks all buttons).
+        """
+        self._btn_ph.configure(state="disabled")
+        self._res.set_status(status)
+
+        def _run():
+            try:
+                result = worker_fn()
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                result = exc
+            self.root.after(0, lambda: _finish(result))
+
+        def _finish(result):
+            self._btn_ph.configure(state="normal")
+            done_cb(result)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
 
     def _run_build_machine_irf(self):
         src_dir = self.sv_mirf_src.get().strip()

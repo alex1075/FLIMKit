@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Configuration
 APP_NAME = "FLIMKit"
-MAIN_SCRIPT = "gui.py"
+MAIN_SCRIPT = "main.py"
 VERSION = "1.0.0"
 
 # Platform-specific config
@@ -109,7 +109,7 @@ def build_app():
     print(f"{'='*60}")
 
     # Prepare icon for current platform
-    icon_path = prepare_icon("flimkit/icon.png")
+    icon_path = prepare_icon("flimkit/UI/icon.png")
 
     cmd = [
         sys.executable,
@@ -144,7 +144,7 @@ def build_app():
         "--hidden-import", "tkinterdnd2",
         "--hidden-import", "TKinterModernThemes",
         "--add-data", "flimkit:flimkit",
-        "--add-data", "flimkit/icon.png:flimkit",
+        "--add-data", "flimkit/UI/icon.png:flimkit",
     ]
 
     # Add icon argument only if an icon file was prepared
@@ -268,8 +268,8 @@ def main():
     print(f"{'='*60}")
 
     # Check if we're in the right directory
-    if not Path("gui.py").exists():
-        print("✗ gui.py not found. Run this script from the FLIMKit root directory.")
+    if not Path("main.py").exists():
+        print("✗ main.py not found. Run this script from the FLIMKit root directory.")
         sys.exit(1)
 
     # Build

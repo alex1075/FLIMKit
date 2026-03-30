@@ -4,8 +4,8 @@ from pathlib import Path
 
 
 
-def main(fast=False, gui=False):
-    if gui:
+def main(fast=False, cli=False):
+    if not cli:
         from flimkit.UI.gui import launch_gui
         launch_gui()
         return
@@ -63,8 +63,8 @@ def main(fast=False, gui=False):
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FLIMKit — FLIM data processing toolkit")
-    parser.add_argument('--gui', action='store_true', help='Launch the graphical user interface')
+    parser.add_argument('--cli', action='store_true', help='=Run in CLI mode')
     parser.add_argument('--fast', action='store_true', help='Skip banner display')
     args = parser.parse_args()
     
-    main(fast=args.fast, gui=args.gui)    
+    main(fast=args.fast, cli=args.cli)    
