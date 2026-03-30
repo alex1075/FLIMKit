@@ -30,10 +30,10 @@ All binaries are in `dist/`
 The macOS app is automatically signed with a self-signed certificate:
 
 **Benefits:**
-- ✅ No setup required
-- ✅ One-time security warning for users
-- ✅ Completely free
-- ✅ Works great for beta and testing
+- No setup required
+- One-time security warning for users
+- Completely free
+- Works great for beta and testing
 
 **First-time user experience:**
 1. User double-clicks the app
