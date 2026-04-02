@@ -4,24 +4,23 @@
 
 ## Overview
 
-**FLIMKit** is a Python toolkit for Fluorescence Lifetime Imaging Microscopy (FLIM) data acquired on a Leica SP8 (or compatible PTU-based systems). It provides two complementary analysis workflows:
+**FLIMKit** is a Python toolkit for Fluorescence Lifetime Imaging Microscopy (FLIM) data acquired on a Leica SP8/FALCON (or any PTU-based system). It is designed as a drop-in replacement for Leica LAS X FLIM analysis and provides two complementary workflows:
 
-1. **Reconvolution fitting** — mono/bi/tri-exponential lifetime fitting with IRF deconvolution, per-pixel and summed modes, and multi-tile ROI stitching.
-2. **Phasor analysis** — calibrated phasor plots with interactive elliptical cursors, automatic peak detection, two-component decomposition, and session save/load.
+1. **Reconvolution fitting** — mono/bi/tri-exponential lifetime fitting with full IRF deconvolution, per-pixel and summed modes, multi-tile ROI stitching, and batch processing.
+2. **Phasor analysis** — calibrated phasor plots with interactive elliptical cursors, two-component decomposition, automatic peak detection, and session save/load.
 
-Both workflows can be launched through a guided terminal UI (`main.py`), standalone CLI scripts (`fit_cli.py`, `phasor_cli.py`), or used programmatically as a library.
+Both workflows are accessible through:
+- A **desktop GUI** (`python -m flimkit.UI.gui` or the compiled app)
+- A **guided terminal UI** (`python main.py`)
+- **Standalone CLI scripts** (`fit_cli.py`, `phasor_cli.py`)
+- **Python API** (import `flimkit`)
 
 ## Requirements
 
 - Python ≥ 3.14
-- See [requirements.txt](requirements.txt) for the full list. 
+- See [requirements.txt](requirements.txt) for the full dependency list.
 
-Key dependencies:
-  - numpy, scipy, matplotlib, xarray
-  - phasorpy 0.9
-  - ptufile
-  - inquirer (interactive prompts)
-  - ipywidgets + ipympl (notebook support)
+Key dependencies: `numpy`, `scipy`, `matplotlib`, `xarray`, `phasorpy 0.9`, `ptufile`, `opencv-python`, `pandas`, `tifffile`, `inquirer`, `ipywidgets`, `ipympl`
 
 ## Installation
 
@@ -33,25 +32,40 @@ pip install -r requirements.txt
 
 ### Validate installation
 
-Run the built-in validation script to verify everything is working:
-
 ```bash
 python validate_installation.py
 ```
 
-It checks dependencies, module imports, XLIF parsing, stitching, fitting, and the phasor pipeline.
-All checks should pass.
+Runs 9 checks covering dependencies, module imports, XLIF parsing, stitching, fitting, phasor pipeline, and the per-tile fit pipeline. All checks should pass.
 
 ### Run the test suite
 
 ```bash
 cd flimkit_tests
 python run_tests.py              # all tests
-python run_tests.py -c           # with coverage (text report)
+python run_tests.py -c           # with coverage report
 python run_tests.py integration  # integration tests only
 ```
 
 ## Usage
+
+### Desktop GUI (recommended)
+
+```bash
+python -m flimkit.UI.gui
+```
+
+The GUI provides five tabs:
+
+| Tab | Description |
+|---|---|
+| **Single FOV Fit** | Load one PTU file, select IRF method, run summed and/or per-pixel fitting |
+| **Tile Stitch / Fit** | Stitch multi-tile ROIs from XLIF metadata and run the full fitting pipeline |
+| **Batch ROI Fit** | Process a whole XLIF folder of ROIs sequentially, export CSV summary |
+| **Machine IRF Builder** | Build a machine IRF from paired PTU/XLSX files for reuse across sessions |
+| **Phasor Analysis** | Load a PTU file and analyse phasor coordinates interactively — embedded image and phasor plot update live as cursors are placed |
+
+The right-hand panel shows an **FOV Preview** (intensity image + summed decay) for all fitting tabs, and switches automatically to the interactive **Phasor panel** when the Phasor Analysis tab is selected.
 
 ### Guided terminal UI
 
@@ -59,170 +73,139 @@ python run_tests.py integration  # integration tests only
 python main.py
 ```
 
-Presents an interactive menu with all available workflows (FLIM fitting, phasor analysis, tile stitching).
+### Machine IRF setup (required before fitting)
 
-### Machine IRF setup (required)
+Before routine FLIM fitting, create a machine IRF once for your system/session.
 
-Before routine FLIM fitting, create a machine IRF once for your system/session from paired PTU and XLSX files.
+1. Launch the GUI and open the **Machine IRF Builder** tab.
+2. Select a folder containing matched `<name>.ptu` and `<name>.xlsx` pairs (10–20 pairs recommended).
+3. Build and save as `machine_irf_default.npy`.
 
-Recommended path:
-1. Launch the GUI with `python gui.py`.
-2. Open the `Machine IRF Builder` tab.
-3. Select a folder containing matched `<name>.ptu` and `<name>.xlsx` pairs.
-4. Build and save `machine_irf_default.npy` under `flimkit/machine_irf/`.
-
-Programmatic alternative:
+When running from the compiled app, the IRF is saved to `~/.flimkit/machine_irf/` (created automatically). When running from source it is saved to `flimkit/machine_irf/`.
 
 ```python
+# Programmatic alternative
 from flimkit.FLIM.irf_tools import build_machine_irf_from_folder
 
 build_machine_irf_from_folder(
-  folder="/path/to/pairs",
-  align_anchor="peak",
-  reducer="median",
-  save=True,
-  confirm_save=True,
-  output_name="machine_irf_default",
+    folder="/path/to/pairs",
+    align_anchor="peak",
+    reducer="median",
+    save=True,
+    output_name="machine_irf_default",
 )
 ```
-
-Once this file exists, interactive fitting supports `machine_irf` as an IRF method for:
-- single FOV fitting
-- stitch + fit workflow
-- per-tile ROI fit workflow
-
-Minimum pair count guidance (from notebook subsampling):
-- The simple 10%-of-N=20 plateau rule gave a minimum practical N of 4, but this was based only on weighted lifetime MAE and is noisy/non-monotonic across random splits.
-- Chi-squared stability improved at larger N, with variance dropping most clearly around N=18-20.
-- If your goal is only learning peak-placement rule: 4-6 pairs can work.
-- If your goal is stable machine IRF shape plus placement across conditions: use at least 10-12 pairs.
-- For robust production behavior across objectives/samples: target 15-20 pairs.
-- Practical default: avoid fewer than about 10 pairs unless your dataset is very homogeneous.
 
 ### FLIM fitting (CLI)
 
 ```bash
-python fit_cli.py --ptu path/to/file.ptu --irf-xlsx path/to/irf.xlsx --nexp 2 --optimizer de
+python fit_cli.py --ptu path/to/file.ptu --machine-irf path/to/machine_irf.npy --nexp 2 --optimizer de
 ```
 
 For all options: `python fit_cli.py --help`
 
-> Tip: If you are using the interactive or GUI fitting flows, generate a machine IRF first and select the `machine_irf` method during fitting.
-
 ### Phasor analysis (CLI)
 
 ```bash
-# Fully guided — prompts for PTU file and optional IRF
+# Guided prompts
 python phasor_cli.py
 
 # Direct paths
-python phasor_cli.py --ptu path/to/file.ptu --irf path/to/irf.xlsx
+python phasor_cli.py --ptu data.ptu --irf irf.xlsx
 
 # Resume a saved session
-python phasor_cli.py --session path/to/session.npz
+python phasor_cli.py --session session.npz
 ```
 
-### Phasor analysis (Python API)
+### Python API
 
 ```python
 from flimkit.phasor_launcher import launch_phasor
-
-# Interactive prompts
-state = launch_phasor()
-
-# Or pass paths directly
 state = launch_phasor('data.ptu', irf_path='irf.xlsx')
-
-# Resume a saved session
-state = launch_phasor(session_path='session.npz')
 ```
 
-The interactive phasor tool provides:
-- Click-to-place elliptical cursors with adjustable size and orientation
-- Per-cursor apparent-lifetime (τ_φ) maps
-- Two-component decomposition via semicircle intersection (first two cursors)
-- **Peaks** button — automatic peak detection on the phasor histogram
-- **Export** button — save the phasor figure (with all ROIs drawn) as PNG/PDF/SVG
-- **Save** button — persist arrays + cursor state to `.npz` for later editing
+## Compiled app (macOS / Windows / Linux)
+
+A standalone compiled app can be built with:
+
+```bash
+python fix_matplotlib_startup.py   # pre-warm font cache (run once)
+python build_and_sign.py
+```
+
+The compiled app requires no Python installation. Output files are saved to the same directory as the input PTU file.
 
 ## Project structure
 
 ```
-├── main.py                        # Main menu — guided terminal UI (all workflows)
+├── main.py                        # Guided terminal UI (all workflows)
 ├── fit_cli.py                     # FLIM reconvolution fitting CLI
 ├── phasor_cli.py                  # Phasor analysis CLI
-├── phasor.ipynb                   # Phasor walkthrough notebook
-├── validate_installation.py       # Quick import / sanity check
+├── build_and_sign.py              # PyInstaller build + codesign script
+├── validate_installation.py       # Installation sanity check
 ├── requirements.txt
-├── Dockerfile
 │
-├── flimkit/                        # ── Core library ──────────────────────────
-│   ├── __init__.py                # Top-level exports (launch_phasor, etc.)
-│   ├── _version.py                # Version string & roadmap
+├── flimkit/
 │   ├── configs.py                 # Default fitting parameters
-│   ├── interactive.py             # Guided FLIM fitting launcher (inquirer)
-│   ├── phasor_launcher.py         # Guided phasor analysis launcher (inquirer)
-│   ├── machine_irf/               # Saved machine IRF files (.npy/.csv/.json) - not provided, must be generated per system/session
+│   ├── interactive.py             # Guided FLIM fitting launcher
+│   ├── phasor_launcher.py         # Guided phasor analysis launcher
+│   ├── machine_irf/               # Machine IRF files (.npy) — generated per system
 │   │
-│   ├── PTU/                       # ── PTU file I/O ─────────────────────────
-│   │   ├── __init__.py
-│   │   ├── reader.py              # PTUFile / PTUArray5D classes
-│   │   ├── decode.py              # Low-level T3 record decoding
-│   │   ├── tools.py               # signal_from_PTUFile (→ xarray DataArray)
-│   │   └── stitch.py              # Multi-tile PTU stitching
+│   ├── UI/
+│   │   ├── gui.py                 # Tkinter desktop GUI
+│   │   └── phasor_panel.py        # Embedded phasor view panel
 │   │
-│   ├── FLIM/                      # ── Reconvolution fitting ─────────────────
-│   │   ├── __init__.py
-│   │   ├── models.py              # Exponential decay models
-│   │   ├── fitters.py             # fit_summed / fit_per_pixel
+│   ├── PTU/
+│   │   ├── reader.py              # PTUFile — T3 record decoding
+│   │   ├── decode.py              # Low-level histogram extraction
+│   │   ├── tools.py               # signal_from_PTUFile (xarray)
+│   │   └── stitch.py              # Multi-tile PTU stitching + registration
+│   │
+│   ├── FLIM/
+│   │   ├── models.py              # Decay models + DE cost functions
+│   │   ├── fitters.py             # fit_summed / fit_per_pixel (NNLS)
 │   │   ├── fit_tools.py           # IRF alignment, bin utilities
-│   │   └── irf_tools.py           # IRF extraction & estimation
+│   │   ├── assemble.py            # Tile map assembly + derive_global_tau
+│   │   └── irf_tools.py           # IRF estimation & machine IRF builder
 │   │
-│   ├── phasor/                    # ── Phasor analysis ───────────────────────
-│   │   ├── __init__.py            # Exports all phasor functions
+│   ├── phasor/
 │   │   ├── signal.py              # Phasor computation & IRF calibration
 │   │   ├── interactive.py         # Interactive cursor tool (notebook + script)
-│   │   └── peaks.py               # Automatic peak detection on phasor histograms
+│   │   └── peaks.py               # Automatic peak detection
 │   │
-│   ├── image/                     # ── Image utilities ───────────────────────
-│   │   ├── tools.py               # Intensity images, cell masking
-│   │   └── stitch.py              # Tile image stitching
+│   ├── image/
+│   │   └── tools.py               # Intensity images, cell masking
 │   │
-│   ├── LIF/                       # ── LIF format support ────────────────────
-│   │   └── utils.py               # LIF metadata helpers
-│   │
-│   └── utils/                     # ── Shared utilities ──────────────────────
-│       ├── __init__.py
-│       ├── plotting.py            # Summed-fit plots, pixel maps, histograms
-│       ├── enhanced_outputs.py    # Summary text, weighted-τ images, exports
+│   └── utils/
+│       ├── plotting.py            # Decay + pixel map plots
+│       ├── enhanced_outputs.py    # TIFF exports, summary text
+│       ├── lifetime_image.py      # Colourised lifetime image generation
 │       ├── xlsx_tools.py          # LAS X Excel file parsing
 │       ├── xml_utils.py           # XLIF tile-position parsing
-│       ├── misc.py                # Print helpers
-│       └── fancy.py               # Terminal banners & ASCII art
+│       ├── misc.py                # Logging helpers
+│       └── fancy.py               # Terminal banners
 │
-└── flimkit_tests/                  # ── Test suite ────────────────────────────
-    ├── pytest.ini
-    ├── requirements_test.txt
-    ├── run_tests.py               # Test runner script
-    ├── mock_data.py               # Synthetic data generators
-    ├── test_complete_pipeline.py  # End-to-end pipeline test
-    ├── TESTING.md
+└── flimkit_tests/
+    ├── run_tests.py
+    ├── mock_data.py
+    ├── test_complete_pipeline.py
     └── tests/
-        ├── __init__.py
-        ├── test_decode.py         # PTU decoding tests
-        ├── test_integration.py    # Integration tests
-        └── test_xml_utils.py      # XLIF parsing tests
+        ├── test_decode.py
+        ├── test_integration.py
+        └── test_xml_utils.py
 ```
 
 ## Roadmap
 
 - [x] Single FOV fitting
 - [x] Batch processing of multiple FOVs
-- [x] Reconstruction of multi-tile ROIs
-- [x] Phasor analysis with interactive cursors, peak detection, and save/load
-- [X] Documentation and tests
-- [x] Fitting multi-tile ROIs and exporting tau-fitted images/data
-- [ ] GUI development for easier use (WIP)
+- [x] Reconstruction and fitting of multi-tile ROIs
+- [x] Phasor analysis with interactive cursors, peak detection, session save/load
+- [x] Desktop GUI with embedded phasor panel, FOV preview, and fit summary
+- [x] Standalone compiled app (macOS, Windows, Linux)
+- [x] Documentation and tests
+- [ ] Chemical validation of fitting results with known fluorophores
+- [ ] Publication
 
 ## Contact
 

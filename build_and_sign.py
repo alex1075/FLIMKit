@@ -40,7 +40,7 @@ def run_command(cmd, shell=False):
 
 def prepare_icon(source_png):
     """
-    Convert source PNG to platform‑specific icon format.
+    Convert source PNG to platform-specific icon format.
 
     Returns the path to the icon file that should be passed to PyInstaller,
     or None if no conversion is needed.
@@ -52,20 +52,16 @@ def prepare_icon(source_png):
     source_png = Path(source_png)
 
     if system == "Darwin":
-        # Create a temporary .iconset folder
         iconset_dir = source_png.with_suffix(".iconset")
         iconset_dir.mkdir(exist_ok=True)
-        # Generate required sizes using sips
         sizes = [16, 32, 64, 128, 256, 512, 1024]
         for size in sizes:
-            # Standard size
             filename = f"icon_{size}x{size}.png"
             out_path = iconset_dir / filename
             subprocess.run(
                 ["sips", "-z", str(size), str(size), str(source_png), "--out", str(out_path)],
                 check=True, capture_output=True
             )
-            # Retina (2x) variant if size <= 512 (1024 is already double of 512)
             if size <= 512:
                 filename_2x = f"icon_{size}x{size}@2x.png"
                 out_path_2x = iconset_dir / filename_2x
@@ -73,23 +69,19 @@ def prepare_icon(source_png):
                     ["sips", "-z", str(size*2), str(size*2), str(source_png), "--out", str(out_path_2x)],
                     check=True, capture_output=True
                 )
-        # Convert iconset to icns
         icns_path = source_png.with_suffix(".icns")
         subprocess.run(
             ["iconutil", "-c", "icns", "-o", str(icns_path), str(iconset_dir)],
             check=True, capture_output=True
         )
-        # Clean up iconset
         subprocess.run(["rm", "-rf", str(iconset_dir)])
         return icns_path
 
     elif system == "Windows":
-        # Use PIL to convert PNG to ICO
         try:
             from PIL import Image
             ico_path = source_png.with_suffix(".ico")
             img = Image.open(source_png)
-            # ICO format supports multiple sizes; we'll generate a few common ones
             sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
             img.save(ico_path, format="ICO", sizes=sizes)
             return ico_path
@@ -97,8 +89,7 @@ def prepare_icon(source_png):
             print("Warning: Pillow not installed; cannot create ICO. Using PNG (may not work).")
             return source_png
 
-    else:  # Linux or others
-        # PyInstaller on Linux can use PNG for window icon; executable icon not supported.
+    else:  # Linux
         return source_png
 
 
@@ -108,22 +99,39 @@ def build_app():
     print(f"Building {APP_NAME} with PyInstaller")
     print(f"{'='*60}")
 
-    # Prepare icon for current platform
+    system = platform.system()
     icon_path = prepare_icon("flimkit/UI/icon.png")
+
+    # Pre-clean the old .app bundle with rm -rf before PyInstaller runs.
+    # Python's shutil.rmtree (used internally by PyInstaller) raises
+    # [Errno 66] Directory not empty on macOS .app bundles that contain
+    # framework symlinks or files with extended attributes.
+    if system == "Darwin":
+        old_app = Path(f"dist/{APP_NAME}.app")
+        if old_app.exists():
+            print(f"\n▶ rm -rf {old_app}  (pre-clean old bundle)")
+            subprocess.run(["rm", "-rf", str(old_app)], check=True)
 
     cmd = [
         sys.executable,
         "-m",
         "PyInstaller",
+        "--noconfirm",   # skip the interactive "will be REMOVED" prompt
         "--name", APP_NAME,
         "--windowed",
-        "--onefile",
+        # NOTE: --onefile is intentionally NOT used on macOS.
+        # --onefile uses a two-stage launcher on macOS (outer process extracts
+        # to /tmp/_MEIxxxxxx then spawns a child), which causes two dock icons
+        # with only one window. --onedir produces a proper .app bundle with a
+        # single process. Windows/Linux use --onefile for a portable binary.
         "--copy-metadata", "readchar",
         "--copy-metadata", "inquirer",
         "--copy-metadata", "blessed",
         "--copy-metadata", "tkinterdnd2",
         "--copy-metadata", "TKinterModernThemes",
-        "--collect-data", "TKinterModernThemes",   # <-- ADD THIS LINE
+        "--collect-data", "TKinterModernThemes",
+        "--collect-data", "scipy",   # bundles .npz data files (sobol etc.)
+        "--collect-data", "numpy",   # bundles numpy data files
         "--hidden-import", "tkinter",
         "--hidden-import", "tkinter.ttk",
         "--hidden-import", "PIL",
@@ -143,11 +151,17 @@ def build_app():
         "--hidden-import", "ptufile",
         "--hidden-import", "tkinterdnd2",
         "--hidden-import", "TKinterModernThemes",
+        "--add-data", "mpl-cache:mpl-cache",   # pre-warmed font cache
         "--add-data", "flimkit:flimkit",
         "--add-data", "flimkit/UI/icon.png:flimkit",
     ]
 
-    # Add icon argument only if an icon file was prepared
+    # Platform-specific packaging mode
+    if system == "Darwin":
+        cmd.append("--onedir")   # single process, proper .app bundle
+    else:
+        cmd.append("--onefile")  # single portable binary on Windows/Linux
+
     if icon_path:
         cmd.extend(["--icon", str(icon_path)])
 
@@ -156,7 +170,7 @@ def build_app():
 
 
 def sign_macos():
-    """Sign the macOS app with self-signed certificate."""
+    """Sign the macOS app bundle."""
     print(f"\n{'='*60}")
     print(f"Signing macOS app (self-signed)")
     print(f"{'='*60}")
@@ -164,25 +178,16 @@ def sign_macos():
     app_path = f"dist/{APP_NAME}.app"
 
     print("\n1 Code signing with self-signed certificate...")
-    sign_cmd = [
-        "codesign",
-        "--deep",
-        "--force",
-        "--sign", "-",
-        app_path,
-    ]
-    if not run_command(sign_cmd):
+    if not run_command(["codesign", "--deep", "--force", "--sign", "-", app_path]):
         return False
 
-    # Verify signature
     print("\n2 Verifying signature...")
-    verify_cmd = ["codesign", "-v", "--deep", app_path]
-    if not run_command(verify_cmd):
-        print("⚠ Verification had issues but app is signed")
+    run_command(["codesign", "-v", "--deep", app_path])
 
-    print("\n✓ macOS app self-signed and ready!")
-    print("   Users may see a security warning on first launch.")
-    print("   They can allow it: System Preferences → Security & Privacy → Open Anyway")
+    print("\n✓ macOS app signed.")
+    print("   Locally built apps are not quarantined so will open without a")
+    print("   security prompt on this machine.")
+    print("   For distribution, use a paid Apple Developer ID + notarization.")
     return True
 
 
@@ -197,11 +202,10 @@ def sign_windows():
         print("  WINDOWS_CERT_PATH - Path to .pfx certificate")
         print("  WINDOWS_CERT_PASSWORD - Certificate password")
         print("⚠ App built but not signed")
-        return True  # Build successful, signing optional
+        return True
 
     exe_path = f"dist/{APP_NAME}.exe"
 
-    # Check if signtool is available
     signtool_check = run_command("where signtool", shell=True)
     if not signtool_check:
         print("✗ signtool not found. Install Windows SDK or Visual Studio")
@@ -209,8 +213,7 @@ def sign_windows():
         return True
 
     sign_cmd = [
-        "signtool",
-        "sign",
+        "signtool", "sign",
         "/f", WINDOWS_CERT_PATH,
         "/p", WINDOWS_CERT_PASSWORD,
         "/t", "http://timestamp.comodoca.com",
@@ -234,20 +237,17 @@ def sign_linux():
 
     if not LINUX_GPG_KEY:
         print("⚠ GPG_KEY_ID not set. Skipping GPG signature.")
-        print("  You can sign later with: gpg --detach-sign dist/{APP_NAME}")
         return True
 
     exe_path = f"dist/{APP_NAME}"
 
-    # Check if gpg is available
     gpg_check = run_command("which gpg", shell=True)
     if not gpg_check:
         print("✗ GPG not found. Install gnupg package.")
         return True
 
     sign_cmd = [
-        "gpg",
-        "--detach-sign",
+        "gpg", "--detach-sign",
         "--default-key", LINUX_GPG_KEY,
         exe_path,
     ]
@@ -267,17 +267,19 @@ def main():
     print(f"Platform: {platform.system()}")
     print(f"{'='*60}")
 
-    # Check if we're in the right directory
     if not Path("main.py").exists():
         print("✗ main.py not found. Run this script from the FLIMKit root directory.")
         sys.exit(1)
 
-    # Build
+    if not Path("mpl-cache").exists():
+        print("⚠  mpl-cache/ not found.")
+        print("   Run fix_matplotlib_startup.py first to pre-warm the font cache.")
+        sys.exit(1)
+
     if not build_app():
         print("✗ Build failed!")
         sys.exit(1)
 
-    # Sign based on platform
     system = platform.system()
     success = False
 

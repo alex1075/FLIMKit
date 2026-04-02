@@ -1915,14 +1915,19 @@ class _UIBuilder:
         a.workers       = cfg["n_workers"]
         a.no_polish     = False
         a.channel       = cfg["channels"]
-        a.out           = self.sv_out_fov.get().strip() or cfg["OUT_NAME"]
+        _out_raw = self.sv_out_fov.get().strip() or cfg["OUT_NAME"]
+        # If the prefix has no directory component, anchor it to the PTU's
+        # parent so output files are never written to a read-only CWD
+        # (which happens inside a frozen .app bundle).
+        if Path(_out_raw).parent == Path("."):
+            a.out = str(Path(ptu).parent / _out_raw)
+        else:
+            a.out = _out_raw
         a.no_plots      = False
         a.cell_mask     = self.bv_cell.get()
         a.intensity_threshold = _thresh(self.bv_thr_fov, self.sv_thr_fov)
 
-        out_dir = str(Path(a.out).parent) \
-                  if Path(a.out).parent != Path(".") \
-                  else str(Path(ptu).parent)
+        out_dir = str(Path(a.out).parent)
         self._launch(
             lambda progress_callback=None, cancel_event=None: _run_flim_fit(a, progress_callback, cancel_event),
             output_dir=out_dir,
@@ -2285,62 +2290,97 @@ class _UIBuilder:
                 traceback.print_exc()
 
     def _extract_summary_rows(self, global_summary: dict, global_popt=None) -> list:
-        """Extract fit summary rows from global_summary dict."""
-        rows = []
-        
+        """Extract fit summary rows from global_summary dict.
+
+        Handles two schemas:
+          • fit_summed schema  — keys: taus_ns, amps, fractions, tau_mean_amp_ns …
+          • derive_global_tau schema — keys: tau_mean_amp_global_ns, tau1_mean_ns …
+        """
         if not global_summary:
-            return rows
-        
-        # Lifetime parameters
-        taus = global_summary.get('taus_ns', [])
-        amps = global_summary.get('amps', [])
+            return []
+
+        rows = []
+
+        # ── Schema A: fit_summed / fit_per_pixel (single-FOV fit) ─────────────
+        taus  = global_summary.get('taus_ns', [])
+        amps  = global_summary.get('amps',    [])
         fracs = global_summary.get('fractions', [])
-        
-        # If we have lists, extract components
-        if taus and amps and fracs:
-            for i, (tau, amp, frac) in enumerate(zip(taus, amps, fracs)):
-                rows.append((f"τ{i+1}", f"{tau:.4f}", "ns"))
-                rows.append((f"α{i+1}", f"{amp:.3e}", ""))
-                rows.append((f"f{i+1}", f"{frac:.4f}", ""))
-        
-        # Mean lifetimes
-        tau_mean_amp = global_summary.get('tau_mean_amp_ns')
-        if tau_mean_amp is not None:
-            rows.append(("τ_mean (amp-weighted)", f"{tau_mean_amp:.4f}", "ns"))
-        
-        tau_mean_int = global_summary.get('tau_mean_int_ns')
-        if tau_mean_int is not None:
-            rows.append(("τ_mean (int-weighted)", f"{tau_mean_int:.4f}", "ns"))
-        
-        # Background
+
+        if taus is not None and len(taus) > 0:
+            import numpy as np
+            taus  = list(np.atleast_1d(taus))
+            amps  = list(np.atleast_1d(amps))  if amps  is not None else []
+            fracs = list(np.atleast_1d(fracs)) if fracs is not None else []
+            for i in range(len(taus)):
+                rows.append((f"τ{i+1}", f"{taus[i]:.4f}", "ns"))
+                if i < len(amps):
+                    rows.append((f"α{i+1}", f"{amps[i]:.3e}", ""))
+                if i < len(fracs):
+                    rows.append((f"f{i+1} (amp frac)", f"{fracs[i]:.4f}", ""))
+
+        # Mean lifetimes — schema A names
+        for key, label in [
+            ('tau_mean_amp_ns', 'τ_mean (amp-weighted)'),
+            ('tau_mean_int_ns', 'τ_mean (int-weighted)'),
+        ]:
+            v = global_summary.get(key)
+            if v is not None:
+                rows.append((label, f"{v:.4f}", "ns"))
+
+        # ── Schema B: derive_global_tau (stitch / tile-fit pipeline) ──────────
+        tau_global = global_summary.get('tau_mean_amp_global_ns')
+        if tau_global is not None:
+            rows.append(("τ_mean amp-wtd (global)", f"{tau_global:.4f}", "ns"))
+
+        tau_std = global_summary.get('tau_std_amp_global_ns')
+        if tau_std is not None:
+            rows.append(("τ σ (pixel distrib.)", f"{tau_std:.4f}", "ns"))
+
+        tau_med = global_summary.get('tau_median_amp_global_ns')
+        if tau_med is not None:
+            rows.append(("τ_median (amp-wtd)", f"{tau_med:.4f}", "ns"))
+
+        n_px = global_summary.get('n_pixels_fitted')
+        if n_px is not None:
+            rows.append(("Pixels fitted", f"{n_px:,}", ""))
+
+        # Per-component rows for tile schema  (tau1_mean_ns, a1_mean_frac …)
+        k = 1
+        while True:
+            tau_k = global_summary.get(f'tau{k}_mean_ns')
+            if tau_k is None:
+                break
+            rows.append((f"τ{k} mean", f"{tau_k:.4f}", "ns"))
+            a_k = global_summary.get(f'a{k}_mean_frac')
+            if a_k is not None:
+                rows.append((f"f{k} mean (amp frac)", f"{a_k:.4f}", ""))
+            k += 1
+
+        # ── Shared fields (present in both schemas) ────────────────────────────
         bg_fit = global_summary.get('bg_fit')
         if bg_fit is not None:
             rows.append(("Background (fitted)", f"{bg_fit:.2f}", "cts/bin"))
-        
-        # IRF parameters
+
         irf_shift = global_summary.get('irf_shift_bins')
         if irf_shift is not None:
-            tcspc_res = global_summary.get('tcspc_res', 0)
-            irf_shift_ps = irf_shift * tcspc_res * 1e12 if tcspc_res > 0 else 0
             rows.append(("IRF shift", f"{irf_shift:.3f}", "bins"))
-        
+
         irf_sigma = global_summary.get('irf_sigma_bins')
         if irf_sigma is not None:
             rows.append(("IRF σ (broadening)", f"{irf_sigma:.3f}", "bins"))
-        
+
         irf_fwhm = global_summary.get('irf_fwhm_eff_ns')
         if irf_fwhm is not None:
             rows.append(("IRF FWHM (eff.)", f"{irf_fwhm:.4f}", "ns"))
-        
-        # Chi-squared
+
         chi2_r = global_summary.get('reduced_chi2')
         if chi2_r is not None:
             rows.append(("χ²_r (Neyman)", f"{chi2_r:.4f}", ""))
-        
-        chi2_r_pearson = global_summary.get('reduced_chi2_pearson')
-        if chi2_r_pearson is not None:
-            rows.append(("χ²_r (Pearson)", f"{chi2_r_pearson:.4f}", ""))
-        
+
+        chi2_p = global_summary.get('reduced_chi2_pearson')
+        if chi2_p is not None:
+            rows.append(("χ²_r (Pearson)", f"{chi2_p:.4f}", ""))
+
         return rows
 
     def _set_buttons(self, state):

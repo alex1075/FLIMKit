@@ -1,4 +1,15 @@
 #!/usr/bin/env python
+# ── matplotlib font-cache fast-path (must come before ANY matplotlib import) ──
+import os, sys
+if getattr(sys, 'frozen', False):
+    # Running as a PyInstaller bundle — point at the bundled mpl-cache/
+    _mpl_cache = os.path.join(sys._MEIPASS, 'mpl-cache')
+else:
+    # Running from source — use a local mpl-cache/ next to this file
+    _mpl_cache = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mpl-cache')
+os.makedirs(_mpl_cache, exist_ok=True)
+os.environ.setdefault('MPLCONFIGDIR', _mpl_cache)
+# ─────────────────────────────────────────────────────────────────────────────
 import argparse
 from pathlib import Path
 
@@ -62,6 +73,11 @@ def main(fast=False, cli=False):
         return
     
 if __name__ == "__main__":
+    # Required for PyInstaller + multiprocessing on macOS/Windows.
+    # Must be the first call inside __main__; harmless when not frozen.
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     parser = argparse.ArgumentParser(description="FLIMKit — FLIM data processing toolkit")
     parser.add_argument('--cli', action='store_true', help='=Run in CLI mode')
     parser.add_argument('--fast', action='store_true', help='Skip banner display')
