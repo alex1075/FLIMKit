@@ -10,13 +10,32 @@ on:
         description: "Publish artifacts to a GitHub Release"
         required: false
         default: "true"
-      release_tag:
-        description: "Release tag (e.g. v1.0.0). Leave empty to use the pushed tag."
-        required: false
-        default: ""
 
 jobs:
+  # ── Read version from flimkit/_version.py ──────────────────────────────────
+  # This is the single source of truth. The release tag is derived from it
+  # automatically so build_and_sign.py, _version.py, and the GitHub Release
+  # are always in sync without any manual tag or input required.
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag:     ${{ steps.read.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read version from flimkit/_version.py
+        id: read
+        run: |
+          VERSION=$(python -c "import re; m = re.search(r'__version__\s*=\s*[\"\'](.*?)[\"\']', open('flimkit/_version.py').read()); print(m.group(1))")
+          echo "version=$VERSION"  >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"     >> "$GITHUB_OUTPUT"
+          echo "Building FLIMKit $VERSION (tag: v$VERSION)"
+
+  # ── Build on all three platforms ───────────────────────────────────────────
   build:
+    needs: get-version
     strategy:
       matrix:
         include:
@@ -121,9 +140,9 @@ jobs:
           path: dist/FLIMKit-windows.zip
           retention-days: 30
 
-  # Create a GitHub Release and attach the builds when a tag is pushed
+  # ── Create GitHub Release ───────────────────────────────────────────────────
   release:
-    needs: build
+    needs: [get-version, build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || inputs.publish_release == 'true'
     permissions:
@@ -140,19 +159,13 @@ jobs:
           mkdir -p release
           cd artifacts
           for d in */; do
-            name="${d%/}"
-            # macOS already arrives as a .zip
-            if ls "$d"*.zip >/dev/null 2>&1; then
-              cp "$d"*.zip ../release/
-            else
-              zip -j "../release/${name}.zip" "$d"*
-            fi
+            cp "$d"*.zip ../release/
           done
           ls -lh ../release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag }}
-          files: release/*.zip
+          tag_name: ${{ needs.get-version.outputs.tag }}
+          name:     FLIMKit ${{ needs.get-version.outputs.version }}
+          files:    release/*.zip
