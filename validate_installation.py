@@ -514,6 +514,14 @@ def test_tile_fit_pipeline():
                 else:
                     pm[f'tau{k}'] = rng.uniform(1.0, 4.0, (TILE_H, TILE_W)).astype(np.float32)
                     pm[f'a{k}']   = rng.uniform(0.3, 0.7, (TILE_H, TILE_W)).astype(np.float32)
+            # assemble_tile_maps() reads 'tau_mean_amp' directly from pixel_maps.
+            # Without it the canvas stays all-NaN and make_lifetime_image() crashes.
+            # For n-exp fits this is the amplitude-weighted mean tau per pixel.
+            taus = np.stack([pm[f'tau{k}'] for k in range(1, n_exp + 1)])
+            amps = np.stack([pm[f'a{k}']   for k in range(1, n_exp + 1)])
+            pm['tau_mean_amp'] = (
+                np.sum(taus * amps, axis=0) / np.sum(amps, axis=0)
+            ).astype(np.float32)
             return pm
 
         # 2×2 grid of synthetic tile results

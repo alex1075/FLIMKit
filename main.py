@@ -73,8 +73,6 @@ def main(fast=False, cli=False):
         return
     
 if __name__ == "__main__":
-    # Required for PyInstaller + multiprocessing on macOS/Windows.
-    # Must be the first call inside __main__; harmless when not frozen.
     import multiprocessing
     multiprocessing.freeze_support()
 

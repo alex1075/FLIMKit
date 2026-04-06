@@ -52,7 +52,7 @@ python run_tests.py integration  # integration tests only
 ### Desktop GUI (recommended)
 
 ```bash
-python -m flimkit.UI.gui
+python main.py
 ```
 
 The GUI provides five tabs:
@@ -70,7 +70,7 @@ The right-hand panel shows an **FOV Preview** (intensity image + summed decay) f
 ### Guided terminal UI
 
 ```bash
-python main.py
+python main.py --cli
 ```
 
 ### Machine IRF setup (required before fitting)
@@ -129,7 +129,6 @@ state = launch_phasor('data.ptu', irf_path='irf.xlsx')
 A standalone compiled app can be built with:
 
 ```bash
-python fix_matplotlib_startup.py   # pre-warm font cache (run once)
 python build_and_sign.py
 ```
 

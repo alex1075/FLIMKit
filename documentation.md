@@ -125,7 +125,7 @@ Before routine fitting, build a machine IRF for your system once (see [Machine I
 ### Desktop GUI
 
 ```bash
-python -m flimkit.UI.gui
+python main.py
 ```
 
 The GUI provides five tabs. The right-hand panel shows the **FOV Preview** (intensity image + summed decay curve) for all fitting tabs, and switches automatically to the **Phasor panel** when the Phasor Analysis tab is active.
@@ -158,7 +158,7 @@ Per-cursor statistics (phase lifetime τ_φ, pixel count, 5th–95th percentile 
 ### Guided Terminal UI (`main.py`)
 
 ```bash
-python main.py
+python main.py --cli
 ```
 
 | Option | Description |
@@ -789,7 +789,8 @@ Saved as `.npz` archives containing:
 - [x] Desktop GUI with embedded phasor panel and live FOV preview
 - [x] Standalone compiled app (macOS, Windows, Linux)
 - [x] Documentation and tests
-- [ ] JOSS publication (pending Edinburgh Research & Innovation IP consultation)
+- [ ] Chemical validation of fitting results with known fluorophores
+- [ ] Publication
 
 ---
 
