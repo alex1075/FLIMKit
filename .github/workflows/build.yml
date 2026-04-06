@@ -11,7 +11,7 @@ on:
         required: false
         default: "true"
       release_tag:
-        description: "Release tag to create/update when publish_release=true (e.g. v1.0.0). If empty, uses the pushed tag if triggered by a tag push."
+        description: "Release tag (e.g. v1.0.0). Leave empty to use the pushed tag."
         required: false
         default: ""
 
@@ -49,7 +49,7 @@ jobs:
           pip install pyinstaller
           pip install -r requirements.txt
 
-      # tkinter is not bundled with the GitHub Actions Python on macOS or Linux
+      # tkinter is not bundled with the GitHub Actions Python on Ubuntu or macOS
       - name: Install tkinter + libGL (Ubuntu)
         if: runner.os == 'Linux'
         run: sudo apt-get install -y python3-tk libgl1
@@ -58,24 +58,46 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install python-tk@3.13
 
-      - name: Build with PyInstaller
-        run: >
-          pyinstaller
-          --name FLIMKit
-          --windowed
-          --onefile
-          --hidden-import tkinter
-          --hidden-import tkinter.ttk
-          --hidden-import PIL
-          --add-data "flimkit:flimkit"
-          --add-data "flimkit/icon.png:flimkit"
-          gui.py
+      # build_and_sign.py handles:
+      #   - mpl-cache generation (generate_mpl_cache)
+      #   - icon conversion (prepare_icon)
+      #   - PyInstaller invocation with all flags (build_app)
+      #     including --onedir on macOS and --onefile on Linux/Windows
+      #   - self-signed codesign on macOS (sign_macos)
+      #   - GPG signing on Linux if GPG_KEY_ID is set (sign_linux)
+      #   - signtool signing on Windows if certs are set (sign_windows)
+      - name: Build and sign
+        run: python build_and_sign.py
+        env:
+          # macOS signing (optional — only needed for Developer ID / notarization)
+          APPLE_TEAM_ID:       ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_DEVELOPER_ID:  ${{ secrets.APPLE_DEVELOPER_ID }}
+          APPLE_ID:            ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD:  ${{ secrets.APPLE_APP_PASSWORD }}
+          # Windows signing (optional — build succeeds without these)
+          WINDOWS_CERT_PATH:     ${{ secrets.WINDOWS_CERT_PATH }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          # Linux GPG signing (optional — build succeeds without this)
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
 
+      # ── Packaging ────────────────────────────────────────────────────────────
+      # macOS: PyInstaller produces a .app bundle (--onedir); zip it for upload
       - name: Package macOS app bundle
         if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent dist/FLIMKit.app dist/FLIMKit-macos.zip
 
-      - name: Upload artifact (macOS .app)
+      # Linux / Windows: --onefile produces a single binary; zip for consistency
+      - name: Package Linux binary
+        if: runner.os == 'Linux'
+        run: zip -j dist/FLIMKit-linux.zip dist/FLIMKit
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path dist\FLIMKit.exe -DestinationPath dist\FLIMKit-windows.zip
+        shell: pwsh
+
+      # ── Artifact upload ──────────────────────────────────────────────────────
+      - name: Upload artifact (macOS)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
@@ -83,15 +105,23 @@ jobs:
           path: dist/FLIMKit-macos.zip
           retention-days: 30
 
-      - name: Upload artifact (Linux / Windows)
-        if: runner.os != 'macOS'
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/
+          path: dist/FLIMKit-linux.zip
           retention-days: 30
 
-  # Optional: create a GitHub Release and attach the zipped builds when a tag is pushed
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/FLIMKit-windows.zip
+          retention-days: 30
+
+  # Create a GitHub Release and attach the builds when a tag is pushed
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -110,12 +140,15 @@ jobs:
           mkdir -p release
           cd artifacts
           for d in */; do
+            name="${d%/}"
+            # macOS already arrives as a .zip
             if ls "$d"*.zip >/dev/null 2>&1; then
               cp "$d"*.zip ../release/
             else
-              zip -r "../release/${d%/}.zip" "$d"
+              zip -j "../release/${name}.zip" "$d"*
             fi
           done
+          ls -lh ../release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
