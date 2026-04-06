@@ -9,11 +9,11 @@ import sys
 import subprocess
 import platform
 from pathlib import Path
-
+from flimkit._version import __version__
 # Configuration
 APP_NAME = "FLIMKit"
 MAIN_SCRIPT = "main.py"
-VERSION = "1.0.0"
+VERSION = __version__
 
 # Platform-specific config
 MACOS_TEAM_ID = os.getenv("APPLE_TEAM_ID")
@@ -91,6 +91,63 @@ def prepare_icon(source_png):
 
     else:  # Linux
         return source_png
+
+
+def generate_mpl_cache():
+    """
+    Pre-warm the matplotlib font cache into mpl-cache/ so PyInstaller can
+    bundle it.  This eliminates the 10-30 s font-scan delay on first launch
+    of the frozen app.
+
+    The cache only needs rebuilding when matplotlib or system fonts change,
+    but regenerating it on every build is cheap (~2 s) and keeps it fresh.
+    """
+    cache_dir = Path("mpl-cache")
+
+    print(f"\n{'='*60}")
+    print("Pre-warming matplotlib font cache")
+    print(f"{'='*60}")
+
+    cache_dir.mkdir(exist_ok=True)
+
+    # Run font manager rebuild in a subprocess so MPLCONFIGDIR is isolated
+    # to mpl-cache/ and doesn't touch the developer's own ~/.config/matplotlib.
+    script = (
+        "import os; "
+        "os.environ['MPLCONFIGDIR'] = 'mpl-cache'; "
+        "import matplotlib; "
+        "matplotlib.use('Agg'); "
+        "import matplotlib.font_manager as fm; "
+        "fm._load_fontmanager(try_read_cache=False); "
+        "print('  font manager rebuilt'); "
+        "import matplotlib.pyplot as plt; "
+        "plt.figure(); plt.close(); "
+        "print('  pyplot initialised')"
+    )
+
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        text=True,
+        capture_output=True,
+    )
+
+    if result.returncode != 0:
+        print("✗ mpl-cache generation failed:")
+        print(result.stderr)
+        sys.exit(1)
+
+    if result.stdout:
+        for line in result.stdout.strip().splitlines():
+            print(f"  {line}")
+
+    # Sanity-check: font list JSON must exist after the rebuild.
+    font_lists = list(cache_dir.glob("fontlist-*.json"))
+    if not font_lists:
+        print("✗ mpl-cache/ exists but contains no fontlist-*.json — rebuild failed.")
+        sys.exit(1)
+
+    print(f"✓ mpl-cache ready  ({len(list(cache_dir.iterdir()))} file(s))")
 
 
 def build_app():
@@ -271,10 +328,7 @@ def main():
         print("✗ main.py not found. Run this script from the FLIMKit root directory.")
         sys.exit(1)
 
-    if not Path("mpl-cache").exists():
-        print("⚠  mpl-cache/ not found.")
-        print("   Run fix_matplotlib_startup.py first to pre-warm the font cache.")
-        sys.exit(1)
+    generate_mpl_cache()
 
     if not build_app():
         print("✗ Build failed!")

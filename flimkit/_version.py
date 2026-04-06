@@ -14,4 +14,5 @@ Will be updated to 0.2.0 when ROI stitching works
 Need to add Phasor once added to the codebase, and update version to 1.0. And added some tests.
 0.8.0 -> added per-tile machine IRF fitting workflow, updated docs and examples
 0.8.1 -> added some error handling and user prompts to per-tile machine IRF workflow
-0.8.2 -> added some more error handling and user prompts to per-tile machine IRF workflow, and updated example notebook'''
+0.8.2 -> added some more error handling and user prompts to per-tile machine IRF workflow, and updated example notebook
+0.9.0 -> validation of fitting results with known fluorophores.'''
