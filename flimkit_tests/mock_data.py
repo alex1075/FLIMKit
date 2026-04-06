@@ -203,31 +203,32 @@ def generate_mock_ptu_tiles(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    import ptufile as _ptufile
+
     ptu_files = []
-    
+
     for tile_idx in range(n_tiles):
-        # Create mock PTU data
         mock_ptu = MockPTUFile(
             n_y=tile_shape[0],
             n_x=tile_shape[1],
-            n_bins=n_bins
+            n_bins=n_bins,
         )
-        
-        # Save as numpy array (in real code, this would be PTU format)
-        filename = f"{ptu_basename}_s{tile_idx + 1}.npy"
+
+        filename = f"{ptu_basename}_s{tile_idx + 1}.ptu"
         filepath = output_dir / filename
-        
-        # Save stack and metadata
-        data = {
-            'stack': mock_ptu._stack,
-            'tcspc_res': mock_ptu.tcspc_res,
-            'n_bins': mock_ptu.n_bins,
-            'frequency': mock_ptu.frequency,
-        }
-        
-        np.save(filepath, data, allow_pickle=True)
+
+        # ptufile.imwrite expects an unsigned-integer array shaped (Y, X, H).
+        # global_resolution = laser period (1 / frequency).
+        histogram = mock_ptu._stack.astype(np.uint16)
+        _ptufile.imwrite(
+            filepath,
+            histogram,
+            global_resolution=1.0 / mock_ptu.frequency,
+            tcspc_resolution=mock_ptu.tcspc_res,
+        )
+
         ptu_files.append(filepath)
-    
+
     return ptu_files
 
 
