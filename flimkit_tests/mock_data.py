@@ -203,7 +203,7 @@ def generate_mock_ptu_tiles(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    import ptufile as _ptufile
+    from flimkit.PTU.reader import PTUFile as _PTUFile
 
     ptu_files = []
 
@@ -214,17 +214,13 @@ def generate_mock_ptu_tiles(
             n_bins=n_bins,
         )
 
-        filename = f"{ptu_basename}_s{tile_idx + 1}.ptu"
-        filepath = output_dir / filename
+        filepath = output_dir / f"{ptu_basename}_s{tile_idx + 1}.ptu"
 
-        # ptufile.imwrite expects an unsigned-integer array shaped (Y, X, H).
-        # global_resolution = laser period (1 / frequency).
-        histogram = mock_ptu._stack.astype(np.uint16)
-        _ptufile.imwrite(
+        _PTUFile.write(
             filepath,
-            histogram,
-            global_resolution=1.0 / mock_ptu.frequency,
-            tcspc_resolution=mock_ptu.tcspc_res,
+            mock_ptu._stack.astype(np.uint16),
+            tcspc_res=mock_ptu.tcspc_res,
+            frequency=mock_ptu.frequency,
         )
 
         ptu_files.append(filepath)
@@ -398,26 +394,36 @@ def generate_synthetic_biexp_decay(
     return model
 
 
-def load_mock_ptu_file(ptu_path: Path) -> MockPTUFile:
+class _PtuFileWrapper:
     """
-    Load a mock PTU file created by generate_mock_ptu_tiles.
-    
-    Args:
-        ptu_path: Path to .npy file
-    
-    Returns:
-        MockPTUFile instance
+    Thin wrapper around PTUFile exposing the MockPTUFile interface:
+    .n_y, .n_x, .n_bins, .tcspc_res, .frequency, ._stack, .summed_decay().
+
+    Used by load_mock_ptu_file() so test code written against MockPTUFile
+    continues to work after generate_mock_ptu_tiles() switched to writing
+    real PTU files.
     """
-    data = np.load(ptu_path, allow_pickle=True).item()
-    
-    mock_ptu = MockPTUFile(
-        n_y=data['stack'].shape[0],
-        n_x=data['stack'].shape[1],
-        n_bins=data['stack'].shape[2],
-        tcspc_res=data['tcspc_res'],
-        frequency=data['frequency']
-    )
-    
-    mock_ptu._stack = data['stack']
-    
-    return mock_ptu
+
+    def __init__(self, ptu_path: Path):
+        from flimkit.PTU.reader import PTUFile as _PTUFile
+        ptu = _PTUFile(str(ptu_path), verbose=False)
+        stack = ptu.raw_pixel_stack().astype(np.float32)  # (Y, X, H)
+        self._stack    = stack
+        self.n_y       = ptu.n_y
+        self.n_x       = ptu.n_x
+        self.n_bins    = ptu.n_bins
+        self.tcspc_res = ptu.tcspc_res
+        self.frequency = ptu.sync_rate
+
+    def summed_decay(self, channel=None) -> np.ndarray:
+        return self._stack.sum(axis=(0, 1))
+
+
+def load_mock_ptu_file(ptu_path: Path) -> _PtuFileWrapper:
+    """
+    Load a PTU file written by generate_mock_ptu_tiles().
+
+    Returns a _PtuFileWrapper with the same interface as MockPTUFile:
+    .n_y, .n_x, .n_bins, .tcspc_res, .frequency, ._stack, .summed_decay().
+    """
+    return _PtuFileWrapper(Path(ptu_path))

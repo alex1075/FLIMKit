@@ -319,6 +319,139 @@ class PTUFile:
             pass
         return stack.astype(float)
 
+    @classmethod
+    def write(
+        cls,
+        path,
+        histogram,
+        tcspc_res: float,
+        frequency: float,
+        channel: int = 1,
+    ) -> int:
+        """Write a (Y, X, H) histogram as a PicoHarpT3 PTU file.
+
+        Produces a file readable by this class and by ptufile without any
+        external dependencies beyond numpy and the standard library.
+
+        Encodes photon counts as T3 TTTR records:
+          - line_start marker (ch=0xF, dtime=1) before each row
+          - photon records    (ch=channel, dtime=tbin, nsync=pixel_nsync)
+          - line_stop marker  (ch=0xF, dtime=2) after each row
+          - overflow records  (ch=0xF, dtime=0) whenever nsync wraps 65536
+
+        Parameters
+        ----------
+        path:
+            Output file path (.ptu extension recommended).
+        histogram:
+            Integer array shaped (Y, X, H). Values are photon counts per bin.
+        tcspc_res:
+            TCSPC bin width in seconds (e.g. 97e-12 for 97 ps).
+        frequency:
+            Laser sync rate in Hz (e.g. 19.5e6).
+        channel:
+            Photon channel index to encode (0-14). Default 1.
+
+        Returns
+        -------
+        int
+            Number of TTTR records written.
+        """
+        histogram = np.asarray(histogram, dtype=np.uint32)
+        if histogram.ndim != 3:
+            raise ValueError(
+                f"histogram must be (Y, X, H), got shape {histogram.shape}"
+            )
+        n_y, n_x, n_bins = histogram.shape
+        global_res      = 1.0 / frequency
+        syncs_per_pixel = max(1, int(round(global_res / tcspc_res / n_bins)))
+        syncs_per_line  = syncs_per_pixel * n_x
+        T3WRAPAROUND    = 65536
+
+        # ---- Tag encoding helpers -------------------------------------------
+        TYPE_INT   = 0x10000008
+        TYPE_FLOAT = 0x20000008
+        TYPE_STR   = 0x4001FFFF
+        TYPE_EMPTY = 0xFFFF0008
+
+        def _tag(ident: str, tagtyp: int, value, idx: int = -1) -> bytes:
+            head = (
+                ident.encode("ascii")[:32].ljust(32, b"\x00")
+                + struct.pack("<i", idx)
+                + struct.pack("<I", tagtyp)
+            )
+            if tagtyp == TYPE_STR:
+                s = value.encode("utf-8") + b"\x00"
+                return head + struct.pack("<q", len(s)) + s
+            elif tagtyp == TYPE_FLOAT:
+                return head + struct.pack("<d", float(value))
+            elif tagtyp == TYPE_EMPTY:
+                return head + struct.pack("<q", 0)
+            else:
+                return head + struct.pack("<q", int(value))
+
+        # ---- Encode TTTR records --------------------------------------------
+        records     = []
+        nsync_floor = 0   # running overflow baseline
+
+        def _advance(target: int) -> None:
+            nonlocal nsync_floor
+            while target - nsync_floor >= T3WRAPAROUND:
+                records.append(np.uint32(0xF0000000))
+                nsync_floor += T3WRAPAROUND
+
+        for row in range(n_y):
+            line_start = row * syncs_per_line
+            _advance(line_start)
+            records.append(
+                np.uint32(0xF0010000 | ((line_start - nsync_floor) & 0xFFFF))
+            )
+
+            for px in range(n_x):
+                px_nsync = line_start + px * syncs_per_pixel
+                _advance(px_nsync)
+                ns_px = (px_nsync - nsync_floor) & 0xFFFF
+                for tbin in range(n_bins):
+                    count = int(histogram[row, px, tbin])
+                    if count:
+                        rec = (
+                            ((channel & 0xF)   << 28) |
+                            ((tbin    & 0xFFF) << 16) |
+                            ns_px
+                        )
+                        records.extend([np.uint32(rec)] * count)
+
+            line_end = line_start + syncs_per_line - 1
+            _advance(line_end)
+            records.append(
+                np.uint32(0xF0020000 | ((line_end - nsync_floor) & 0xFFFF))
+            )
+
+        records_arr = np.array(records, dtype=np.uint32)
+        n_records   = len(records_arr)
+
+        # ---- Build header ---------------------------------------------------
+        tags  = b""
+        tags += _tag("Measurement_Mode",             TYPE_INT,   3)
+        tags += _tag("TTResultFormat_TTTRRecType",   TYPE_INT,   0x00010303)
+        tags += _tag("TTResultFormat_BitsPerRecord", TYPE_INT,   32)
+        tags += _tag("MeasDesc_Resolution",          TYPE_FLOAT, tcspc_res)
+        tags += _tag("MeasDesc_GlobalResolution",    TYPE_FLOAT, global_res)
+        tags += _tag("TTResult_SyncRate",            TYPE_INT,   int(frequency))
+        tags += _tag("TTResult_NumberOfRecords",     TYPE_INT,   n_records)
+        tags += _tag("ImgHdr_PixX",                  TYPE_INT,   n_x)
+        tags += _tag("ImgHdr_PixY",                  TYPE_INT,   n_y)
+        tags += _tag("ImgHdr_LineStart",             TYPE_INT,   1)
+        tags += _tag("ImgHdr_LineStop",              TYPE_INT,   2)
+        tags += _tag("ImgHdr_TimePerPixel",          TYPE_FLOAT, syncs_per_pixel * global_res * 1e3)
+        tags += _tag("HW_Type",                      TYPE_STR,   "FLIMKit_synthetic")
+        tags += _tag("Header_End",                   TYPE_EMPTY, 0)
+
+        with open(path, "wb") as fh:
+            fh.write(b"PQTTTR\x00\x00" + b"00.0.1\x00\x00" + tags + records_arr.tobytes())
+
+        return n_records
+
 
 class PTUArray5D:
     """
