@@ -411,30 +411,34 @@ class TestEdgeCases:
         """Test handling of missing PTU tiles."""
         try:
             from flimkit.PTU.stitch import stitch_flim_tiles
-            from mock_data import generate_mock_xlif
-            
+            from mock_data import generate_mock_xlif, generate_mock_ptu_tiles
+
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir)
-                
+
                 # Create XLIF for 4 tiles
                 xlif_path = generate_mock_xlif(
                     temp_path / "test.xlif",
                     n_tiles=4,
                     layout="2x2"
                 )
-                
+
                 # Create PTU directory with only 2 tiles
                 ptu_dir = temp_path / "PTUs"
                 ptu_dir.mkdir()
-                
-                # Create only 2 of 4 tiles
-                (ptu_dir / "R 2_s1.ptu").touch()
-                (ptu_dir / "R 2_s2.ptu").touch()
-                # Missing: s3, s4
-                
+
+                # Generate valid PTU files for the first two tiles only
+                generate_mock_ptu_tiles(
+                    ptu_dir,
+                    ptu_basename="R 2",
+                    n_tiles=2,          # only s1 and s2
+                    tile_shape=(512, 512),
+                    n_bins=256
+                )
+                # Tiles s3 and s4 are intentionally missing
+
                 output_dir = temp_path / "output"
-                
-                # Should still work but report skipped tiles
+
                 result = stitch_flim_tiles(
                     xlif_path=xlif_path,
                     ptu_dir=ptu_dir,
@@ -442,14 +446,12 @@ class TestEdgeCases:
                     ptu_basename="R 2",
                     verbose=False
                 )
-                
-                # Should process 0 tiles (they're empty files)
-                # but shouldn't crash
-                assert result['tiles_skipped'] >= 2
-                
+
+                assert result['tiles_processed'] == 2
+                assert result['tiles_skipped'] == 2
+
         except ImportError:
             pytest.skip("stitch module not available")
-    
     def test_empty_decay(self):
         """Test fitting with zero photons."""
         try:
