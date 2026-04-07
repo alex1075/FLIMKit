@@ -10,8 +10,8 @@
 2. **Phasor analysis** — calibrated phasor plots with interactive elliptical cursors, two-component decomposition, automatic peak detection, and session save/load.
 
 Both workflows are accessible through:
-- A **desktop GUI** (`python -m flimkit.UI.gui` or the compiled app)
-- A **guided terminal UI** (`python main.py`)
+- A **desktop GUI** (`python main.py` or the compiled app)
+- A **guided terminal UI** (`python main.py --cli`)
 - **Standalone CLI scripts** (`fit_cli.py`, `phasor_cli.py`)
 - **Python API** (import `flimkit`)
 
@@ -39,7 +39,7 @@ python validate_installation.py
 Runs 9 checks covering dependencies, module imports, XLIF parsing, stitching, fitting, phasor pipeline, and the per-tile fit pipeline. All checks should pass.
 
 ### Run the test suite
-
+Don't have to run the tests, but it's a good sanity check after making code changes. The test suite covers core functionality with unit and integration tests.
 ```bash
 cd flimkit_tests
 python run_tests.py              # all tests
@@ -197,7 +197,7 @@ The compiled app requires no Python installation. Output files are saved to the 
 ## Roadmap
 
 - [x] Single FOV fitting
-- [x] Batch processing of multiple FOVs
+- [x] Batch processing of multiple ROIs
 - [x] Reconstruction and fitting of multi-tile ROIs
 - [x] Phasor analysis with interactive cursors, peak detection, session save/load
 - [x] Desktop GUI with embedded phasor panel, FOV preview, and fit summary
@@ -205,6 +205,9 @@ The compiled app requires no Python installation. Output files are saved to the 
 - [x] Documentation and tests
 - [ ] Chemical validation of fitting results with known fluorophores
 - [ ] Publication
+- [ ] Batch phasor analysis of multiple FOVs in GUI (Can be done with a notebook in the FLIMkit-Examples repo in the meantime)
+- [ ] Adding image ROI selection post fitting for spatially resolved lifetime analysis #TBD
+- [ ] Fix object/cell detection from intensity image (hit or miss currently) #TBD
 
 ## Contact
 
