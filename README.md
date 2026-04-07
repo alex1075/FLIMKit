@@ -15,6 +15,8 @@ Both workflows are accessible through:
 - **Standalone CLI scripts** (`fit_cli.py`, `phasor_cli.py`)
 - **Python API** (import `flimkit`)
 
+[FLIMkit-Examples repo](https://github.com/alex1075/FLIMKit-Examples.git)
+
 ## Requirements
 
 - Python ≥ 3.14
@@ -205,7 +207,7 @@ The compiled app requires no Python installation. Output files are saved to the 
 - [x] Documentation and tests
 - [ ] Chemical validation of fitting results with known fluorophores
 - [ ] Publication
-- [ ] Batch phasor analysis of multiple FOVs in GUI (Can be done with a notebook in the FLIMkit-Examples repo in the meantime)
+- [ ] Batch phasor analysis of multiple FOVs in GUI (Can be done with a notebook in the [FLIMkit-Examples repo in the meantime](https://github.com/alex1075/FLIMKit-Examples.git))
 - [ ] Adding image ROI selection post fitting for spatially resolved lifetime analysis #TBD
 - [ ] Fix object/cell detection from intensity image (hit or miss currently) #TBD
 
