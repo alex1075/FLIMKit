@@ -1,6 +1,6 @@
 # FLIMKit
 
-> **Warning:** This project is in active development. Please cross-validate results with other software before drawing conclusions.
+> **Warning:** This project is in active development. Please cross-validate results with other software before drawing conclusions. Additionally, API and file formats may change without deprecation during this early stage.
 
 ## Overview
 
