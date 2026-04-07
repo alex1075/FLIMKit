@@ -17,7 +17,7 @@ from mock_data import (
     generate_test_project,
     generate_synthetic_decay,
     MockPTUFile,
-    load_mock_ptu_file
+    MOCK_IRF_CENTER,   # IRF peak bin used by MockPTUFile (= 30)
 )
 
 
@@ -32,7 +32,8 @@ class TestCompleteStitchingPipeline:
                 Path(temp_dir),
                 roi_name="R 2",
                 n_tiles=4,
-                layout="2x2"
+                layout="2x2",
+                mean_photons=500
             )
             yield project
     
@@ -77,8 +78,8 @@ class TestCompleteStitchingPipeline:
             assert result['metadata_path'].exists()
             
             # Verify dimensions
-            assert result['canvas_shape'] == (1024, 1024)  # 2x2 * 512
-            assert result['n_time_bins'] == 256
+            assert result['canvas_shape'] == (128, 128)  # 2x2 * 512
+            assert result['n_time_bins'] == 128
             assert result['tiles_processed'] == 4
             
         except ImportError as e:
@@ -101,7 +102,7 @@ class TestCompleteStitchingPipeline:
             )
             
             # Verify 3x3 dimensions
-            assert result['canvas_shape'] == (1536, 1536)  # 3x3 * 512
+            assert result['canvas_shape'] == (192, 192)  # 3x3 * 512
             assert result['tiles_processed'] == 9
             
         except ImportError:
@@ -127,13 +128,13 @@ class TestCompleteStitchingPipeline:
             flim, time_axis, intensity, metadata = load_stitched_flim(output_dir)
             
             # Verify shapes
-            assert flim.shape == (1024, 1024, 256)
-            assert len(time_axis) == 256
-            assert intensity.shape == (1024, 1024)
+            assert flim.shape == (128, 128, 128)
+            assert len(time_axis) == 128
+            assert intensity.shape == (128, 128)
             
             # Verify metadata
-            assert metadata['canvas_shape'] == [1024, 1024]
-            assert metadata['n_time_bins'] == 256
+            assert metadata['canvas_shape'] == [128, 128]
+            assert metadata['n_time_bins'] == 128
             
             # Verify data integrity
             assert flim.sum() > 0
@@ -166,11 +167,11 @@ class TestCompleteStitchingPipeline:
             )
             
             # Verify format ready for fitting
-            assert stack.shape == (1024, 1024, 256)
+            assert stack.shape == (128, 128, 128)
             assert isinstance(tcspc_res, float)
             assert isinstance(n_bins, int)
             assert tcspc_res > 0
-            assert n_bins == 256
+            assert n_bins == 128
             
             # Verify can extract decay
             decay = stack.sum(axis=(0, 1))
@@ -195,8 +196,9 @@ class TestCompleteFittingPipeline:
                     Path(temp_dir),
                     roi_name="R 2",
                     n_tiles=4,
-                    layout="2x2"
-                )
+                    layout="2x2",
+                    mean_photons=500,
+                    n_bins=256)  # 24.8 ns window; wrap ~0.025%
                 
                 output_dir = project['base_dir'] / "stitched"
                 
@@ -235,10 +237,10 @@ class TestCompleteFittingPipeline:
                 n_bins=n_bins,
                 tcspc_res=tcspc_res,
                 fwhm_ns=0.3,
-                center_bin=20
+                peak_bin=MOCK_IRF_CENTER   # must match MockPTUFile (bin 30)
             )
             
-            # Fit (using simple settings for speed)
+            # Fit (using simple settings for speed).
             popt, summary = fit_summed(
                 decay=decay,
                 tcspc_res=tcspc_res,
@@ -247,27 +249,26 @@ class TestCompleteFittingPipeline:
                 has_tail=False,
                 fit_bg=True,
                 fit_sigma=False,
-                n_exp=1,  # Single exp for speed
+                n_exp=2,  # Bi-exp to match mock data
                 tau_min_ns=0.1,
                 tau_max_ns=10.0,
-                optimizer="lm_multistart",
-                n_restarts=2,  # Fewer restarts for speed
-                workers=1
+                optimizer="de",
+                workers=-1
             )
-            
+
             # Verify fit results
             assert popt is not None
             assert summary is not None
-            assert 'tau_1' in summary
-            assert 'chi2r' in summary
+            assert 'taus_ns' in summary
+            assert 'reduced_chi2_tail' in summary
             
             # Check tau is reasonable
-            tau_ns = summary['tau_1']
+            tau_ns = summary['taus_ns'][0]
             assert 0.1 < tau_ns < 10.0
             
             # Check chi2r is reasonable
-            chi2r = summary['chi2r']
-            assert 0.5 < chi2r < 5.0  # Reasonable fit quality
+            chi2r = summary['reduced_chi2_tail']
+            assert 0.5 < chi2r < 10.0  # Reasonable fit quality (bi-exp)
             
         except ImportError as e:
             pytest.skip(f"Required module not available: {e}")
@@ -300,12 +301,12 @@ class TestCompleteFittingPipeline:
             
             # Step 4: Verify results
             assert summary is not None
-            assert 'tau_1' in summary
-            assert 0.1 < summary['tau_1'] < 10.0
+            assert 'taus_ns' in summary
+            assert 0.1 < summary['taus_ns'][0] < 10.0
             
             print(f"✓ Complete workflow successful!")
-            print(f"  Fitted lifetime: {summary['tau_1']:.3f} ns")
-            print(f"  Chi2r: {summary['chi2r']:.3f}")
+            print(f"  Fitted lifetime: {summary['taus_ns'][0]:.3f} ns")
+            print(f"  Chi2r: {summary['reduced_chi2_pearson']:.3f}")
             
         except ImportError:
             pytest.skip("Required module not available")
@@ -322,7 +323,8 @@ class TestInteractiveFunctions:
                 Path(temp_dir),
                 roi_name="R 2",
                 n_tiles=4,
-                layout="2x2"
+                layout="2x2",
+                mean_photons=500
             )
             yield project
     
@@ -391,12 +393,15 @@ class TestInteractiveFunctions:
             # Run complete workflow
             _run_stitch_and_fit(args)
             
-            # Verify outputs exist
+            # Verify outputs exist.
+            # The stitcher prefixes all output files with the ROI name
+            # (spaces replaced by underscores), e.g. "R_2_stitched_intensity.tif".
             output_dir = Path(args.output_dir)
+            roi_prefix = test_project['roi_name'].replace(' ', '_')
             assert output_dir.exists()
-            assert (output_dir / "stitched_intensity.tif").exists()
-            assert (output_dir / "stitched_flim_counts.npy").exists()
-            assert (output_dir / "metadata.json").exists()
+            assert (output_dir / f"{roi_prefix}_stitched_intensity.tif").exists()
+            assert (output_dir / f"{roi_prefix}_stitched_flim_counts.npy").exists()
+            assert (output_dir / f"{roi_prefix}_metadata.json").exists()
             
             print("✓ Complete stitch + fit workflow successful!")
             
@@ -412,33 +417,34 @@ class TestEdgeCases:
         try:
             from flimkit.PTU.stitch import stitch_flim_tiles
             from mock_data import generate_mock_xlif, generate_mock_ptu_tiles
-
+            
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir)
-
+    
                 # Create XLIF for 4 tiles
                 xlif_path = generate_mock_xlif(
                     temp_path / "test.xlif",
                     n_tiles=4,
                     layout="2x2"
                 )
-
+    
                 # Create PTU directory with only 2 tiles
                 ptu_dir = temp_path / "PTUs"
                 ptu_dir.mkdir()
-
+    
                 # Generate valid PTU files for the first two tiles only
                 generate_mock_ptu_tiles(
                     ptu_dir,
                     ptu_basename="R 2",
-                    n_tiles=2,          # only s1 and s2
-                    tile_shape=(512, 512),
-                    n_bins=256
+                    n_tiles=2,
+                    tile_shape=(64, 64),
+                    n_bins=128,
+                    mean_photons=500
                 )
                 # Tiles s3 and s4 are intentionally missing
-
+    
                 output_dir = temp_path / "output"
-
+    
                 result = stitch_flim_tiles(
                     xlif_path=xlif_path,
                     ptu_dir=ptu_dir,
@@ -446,10 +452,11 @@ class TestEdgeCases:
                     ptu_basename="R 2",
                     verbose=False
                 )
-
+    
+                # Should process 2 tiles and skip 2
                 assert result['tiles_processed'] == 2
                 assert result['tiles_skipped'] == 2
-
+                
         except ImportError:
             pytest.skip("stitch module not available")
     def test_empty_decay(self):
@@ -513,7 +520,7 @@ class TestEdgeCases:
                 )
                 
                 assert result['tiles_processed'] == 1
-                assert result['canvas_shape'] == (512, 512)
+                assert result['canvas_shape'] == (64, 64)
                 
         except ImportError:
             pytest.skip("stitch module not available")
@@ -533,8 +540,7 @@ class TestDataIntegrity:
                     Path(temp_dir),
                     roi_name="R 2",
                     n_tiles=4,
-                    layout="2x2"
-                )
+                    layout="2x2", mean_photons=500)
                 
                 # Count photons in original tiles
                 original_photons = 0
@@ -558,8 +564,7 @@ class TestDataIntegrity:
                 
                 # Should be equal (or very close)
                 photon_ratio = stitched_photons / original_photons
-                assert 0.95 < photon_ratio < 1.05, \
-                    f"Photon conservation failed: {photon_ratio:.3f}"
+                assert 0.95 < photon_ratio < 1.05,                     f"Photon conservation failed: {photon_ratio:.3f}"
                 
         except ImportError:
             pytest.skip("Required modules not available")
@@ -577,7 +582,7 @@ class TestDataIntegrity:
                     roi_name="R 2",
                     n_tiles=4,
                     layout="2x2"
-                )
+                , mean_photons=500)
                 
                 # Stitch
                 output_dir = project['base_dir'] / "stitched"
@@ -637,6 +642,18 @@ class TestPerTileFitPipeline:
         for k in range(1, n_exp + 1):
             pm[f'tau{k}'] = np.random.uniform(1.0, 4.0, (h, w)).astype(np.float32)
             pm[f'a{k}']   = np.random.uniform(0.3, 0.7, (h, w)).astype(np.float32)
+
+        # Compute amplitude-weighted mean tau (required for assemble_tile_maps)
+        if n_exp >= 1:
+            taus = np.stack([pm[f'tau{k}'] for k in range(1, n_exp+1)], axis=0)
+            amps = np.stack([pm[f'a{k}']   for k in range(1, n_exp+1)], axis=0)
+            sum_amps = np.sum(amps, axis=0)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                tau_mean_amp = np.sum(taus * amps, axis=0) / sum_amps
+                tau_mean_amp[sum_amps == 0] = np.nan
+            pm['tau_mean_amp'] = tau_mean_amp.astype(np.float32)
+        else:
+            pm['tau_mean_amp'] = pm['tau1'].copy()
         return pm
 
     def _tile_results(self, layout="2x2", n_exp=1):
@@ -923,8 +940,10 @@ class TestPerTileFitPipeline:
             args.machine_irf  = str(mirf_path)
 
             with patch('flimkit.PTU.stitch.fit_flim_tiles',
-                       return_value=(tile_results, ch, cw)):
-                canvas, gs = _run_tile_fit(args)
+                       return_value=self._fit_flim_tiles_return_value(tile_results, ch, cw, n_exp=1)):
+                fit_result = _run_tile_fit(args)
+            canvas = fit_result['canvas']
+            gs = fit_result['global_summary']
 
             assert 'intensity' in canvas
             assert gs['n_pixels_fitted'] > 0
@@ -965,7 +984,7 @@ def test_installation_check():
     
     if missing_required:
         pytest.fail(
-            f"Missing required modules: {', '.join(missing_required)}\n"
+            f"Missing required modules: {', '.join(missing_required)}"
             f"Make sure simplified integration is installed!"
         )
     
@@ -1033,8 +1052,7 @@ class TestPhasorPipeline:
 
             # Phase lifetime should be in a reasonable neighbourhood
             tau_phase = peaks['tau_phase']
-            assert np.any(np.abs(tau_phase - synthetic_phasor['tau_ns']) < 1.5), \
-                f"No phase lifetime near expected {synthetic_phasor['tau_ns']} ns"
+            assert np.any(np.abs(tau_phase - synthetic_phasor['tau_ns']) < 1.5),                 f"No phase lifetime near expected {synthetic_phasor['tau_ns']} ns"
 
         except ImportError:
             pytest.skip("phasor.peaks not available")

@@ -12,12 +12,9 @@ import sys
 import json
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from mock_data import (
-    generate_test_project,
-    generate_synthetic_decay,
-    load_mock_ptu_file
-)
-
+from mock_data import (generate_test_project,
+    generate_synthetic_decay)
+from flimkit.PTU.reader import PTUFile
 
 class TestStitchingWorkflow:
     """Test complete tile stitching workflow."""
@@ -47,10 +44,10 @@ class TestStitchingWorkflow:
             assert ptu_file.exists()
             
             # Load and verify
-            mock_ptu = load_mock_ptu_file(ptu_file)
-            assert mock_ptu.n_y == 512
-            assert mock_ptu.n_x == 512
-            assert mock_ptu.n_bins == 256
+            mock_ptu = PTUFile(str(ptu_file), verbose=False)
+            assert mock_ptu.n_y == 64
+            assert mock_ptu.n_x == 64
+            assert mock_ptu.n_bins == 128
     
     def test_stitching_output_structure(self, test_project):
         """Test that stitching creates expected output files."""
@@ -81,7 +78,7 @@ class TestFittingWorkflow:
     def synthetic_decay(self):
         """Create synthetic decay for testing."""
         return generate_synthetic_decay(
-            n_bins=256,
+            n_bins=128,
             tau_ns=2.0,
             bg=10.0,
             peak_counts=1000.0,
@@ -90,7 +87,7 @@ class TestFittingWorkflow:
     
     def test_synthetic_decay_properties(self, synthetic_decay):
         """Test synthetic decay has expected properties."""
-        assert len(synthetic_decay) == 256
+        assert len(synthetic_decay) == 128
         assert np.all(synthetic_decay >= 0)
         assert synthetic_decay.sum() > 0
         
@@ -134,7 +131,7 @@ class TestMemoryEfficiency:
             temp_path = Path(temp_dir)
             
             # Create a "large" memmap file
-            large_shape = (2048, 2048, 256)
+            large_shape = (2048, 2048, 128)
             memmap_file = temp_path / "large_flim.npy"
             
             # Create memmap
@@ -146,7 +143,7 @@ class TestMemoryEfficiency:
             )
             
             # Write some data
-            flim_memmap[100, 100, :] = np.random.poisson(100, size=256)
+            flim_memmap[100, 100, :] = np.random.poisson(100, size=128)
             flim_memmap.flush()
             
             # Close and reload
@@ -165,8 +162,8 @@ class TestMemoryEfficiency:
             
             # Check file exists and has reasonable size
             assert memmap_file.exists()
-            file_size_mb = memmap_file.stat().st_size / (1024 * 1024)
-            expected_size_mb = (np.prod(large_shape) * 4) / (1024 * 1024)  # 4 bytes per uint32
+            file_size_mb = memmap_file.stat().st_size / (128 * 128)
+            expected_size_mb = (np.prod(large_shape) * 4) / (128 * 128)  # 4 bytes per uint32
             assert abs(file_size_mb - expected_size_mb) < 1  # Within 1 MB
 
 
@@ -205,8 +202,8 @@ class TestEndToEnd:
         """Test metadata JSON structure."""
         # Create mock metadata
         metadata = {
-            'canvas_shape': (1024, 1024),
-            'n_time_bins': 256,
+            'canvas_shape': (128, 128),
+            'n_time_bins': 128,
             'time_range_ns': (0.0, 24.7),
             'tcspc_resolution_ps': 97.0,
             'pixel_size_um': 0.3,
@@ -262,40 +259,64 @@ class TestPerformance:
     """Performance and regression tests."""
     
     def test_stitching_speed(self):
-        """Test that stitching completes in reasonable time."""
+        """Test that stitching completes in reasonable time (reduced data)."""
         import time
-        
+        from flimkit.PTU.stitch import stitch_flim_tiles
+        from mock_data import generate_mock_xlif, generate_mock_ptu_tiles
+    
         with tempfile.TemporaryDirectory() as temp_dir:
-            project = generate_test_project(
-                Path(temp_dir),
+            temp_path = Path(temp_dir)
+    
+            # Create XLIF for 4 tiles (tiny tiles)
+            xlif_path = generate_mock_xlif(
+                temp_path / "test.xlif",
                 n_tiles=4,
-                layout="2x2"
+                layout="2x2",
+                tile_size=32          # 32×32 pixels
             )
-            
-            # Time the operation (would use actual stitch function)
+    
+            # Create PTU directory with 4 tiny tiles
+            ptu_dir = temp_path / "PTUs"
+            ptu_dir.mkdir()
+            generate_mock_ptu_tiles(
+                ptu_dir,
+                ptu_basename="R 2",
+                n_tiles=4,
+                tile_shape=(32, 32),
+                n_bins=64,            # only 64 time bins
+                mean_photons=50       # low photon count (needs mock_data change)
+            )
+    
+            output_dir = temp_path / "output"
+    
             start = time.time()
-            # stitch_flim_tiles(...) would go here
+            result = stitch_flim_tiles(
+                xlif_path=xlif_path,
+                ptu_dir=ptu_dir,
+                output_dir=output_dir,
+                ptu_basename="R 2",
+                rotate_tiles=True,
+                verbose=False
+            )
             elapsed = time.time() - start
-            
-            # Should complete quickly for 4 small tiles
-            # assert elapsed < 10.0  # 10 seconds max
-            
-            # For now, just verify project was created quickly
-            assert elapsed < 1.0  # Project generation should be fast
+    
+            assert result['tiles_processed'] == 4
+            # On a modern machine, 4 tiny tiles should stitch in < 15 seconds
+            assert elapsed < 15.0, f"Stitching took {elapsed:.2f}s (>15s)"
     
     def test_memory_usage_scaling(self):
         """Test memory usage scales appropriately."""
         # Small mosaic
-        small_shape = (512, 512, 256)
-        small_size_mb = (np.prod(small_shape) * 4) / (1024 * 1024)
+        small_shape = (64, 64, 128)
+        small_size_mb = (np.prod(small_shape) * 4) / (128 * 128)
         
         # Large mosaic
-        large_shape = (2048, 2048, 256)
-        large_size_mb = (np.prod(large_shape) * 4) / (1024 * 1024)
+        large_shape = (2048, 2048, 128)
+        large_size_mb = (np.prod(large_shape) * 4) / (128 * 128)
         
         # Should scale linearly with pixels
         size_ratio = large_size_mb / small_size_mb
-        pixel_ratio = (2048 * 2048) / (512 * 512)
+        pixel_ratio = (2048 * 2048) / (64 * 64)
         
         assert abs(size_ratio - pixel_ratio) < 0.01
 
@@ -307,7 +328,7 @@ def test_validate_outputs():
         temp_path = Path(temp_dir)
         
         # Create mock stitched data
-        shape = (1024, 1024, 256)
+        shape = (128, 128, 128)
         flim_file = temp_path / "stitched_flim_counts.npy"
         
         flim_data = np.memmap(

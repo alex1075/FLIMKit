@@ -7,7 +7,7 @@ for testing the FLIM pipeline without requiring real microscopy data.
 import numpy as np
 import json
 from pathlib import Path
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
 import xml.etree.ElementTree as ET
 
 
@@ -52,6 +52,7 @@ class MockPTUFile:
             self.n_bins = kwargs.get('n_bins', 256)
             self.tcspc_res = kwargs.get('tcspc_res', 97e-12)
             self.frequency = kwargs.get('frequency', 19.5e6)
+            self.mean_photons = kwargs.get('mean_photons', 500)   # <-- new
             self.sync_rate = self.frequency              # alias used by decode
             self.time_ns = np.arange(self.n_bins) * self.tcspc_res * 1e9
             self.photon_channel = 1
@@ -86,11 +87,10 @@ class MockPTUFile:
         spatial = 1.0 - 0.5 * (r / (self.n_y / 2))
         spatial = np.clip(spatial, 0.2, 1.0)
 
-        mean_photons = 500
         self._stack = np.zeros((self.n_y, self.n_x, self.n_bins), dtype=np.float32)
         for i in range(self.n_y):
             for j in range(self.n_x):
-                intensity = mean_photons * spatial[i, j]
+                intensity = self.mean_photons * spatial[i, j]
                 photon_dist = intensity * decay_profile
                 self._stack[i, j, :] = np.random.poisson(photon_dist)
     
@@ -184,8 +184,9 @@ def generate_mock_ptu_tiles(
     output_dir: Path,
     ptu_basename: str,
     n_tiles: int = 4,
-    tile_shape: Tuple[int, int] = (512, 512),
-    n_bins: int = 256
+    tile_shape: Tuple[int, int] = (64, 64),
+    n_bins: int = 128,
+    mean_photons: int = 50
 ) -> List[Path]:
     """
     Generate mock PTU tile files.
@@ -212,6 +213,7 @@ def generate_mock_ptu_tiles(
             n_y=tile_shape[0],
             n_x=tile_shape[1],
             n_bins=n_bins,
+            mean_photons=mean_photons,
         )
 
         filepath = output_dir / f"{ptu_basename}_s{tile_idx + 1}.ptu"
@@ -232,7 +234,11 @@ def generate_test_project(
     base_dir: Path,
     roi_name: str = "R 2",
     n_tiles: int = 4,
-    layout: str = "2x2"
+    layout: str = "2x2",
+    tile_shape: Tuple[int, int] = (64, 64),
+    n_bins: int = 128,
+    mean_photons: int = 50,
+    tile_size: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Generate a complete test project with XLIF and PTU files.
@@ -256,9 +262,11 @@ def generate_test_project(
     metadata_dir.mkdir(exist_ok=True)
     
     # Generate XLIF
+    _tile_size = tile_size if tile_size is not None else tile_shape[0]
     xlif_path = generate_mock_xlif(
         metadata_dir / f"{roi_name}.xlif",
         n_tiles=n_tiles,
+        tile_size=_tile_size,
         layout=layout
     )
     
@@ -266,7 +274,10 @@ def generate_test_project(
     ptu_files = generate_mock_ptu_tiles(
         ptu_dir,
         roi_name,
-        n_tiles=n_tiles
+        n_tiles=n_tiles,
+        tile_shape=tile_shape,
+        n_bins=n_bins,
+        mean_photons=mean_photons
     )
     
     return {
@@ -280,7 +291,7 @@ def generate_test_project(
 
 
 def generate_synthetic_decay(
-    n_bins: int = 256,
+    n_bins: int = 128,
     tcspc_res: float = MOCK_TCSPC_RES,
     tau_ns: float = 2.0,
     bg: float = 10.0,
@@ -345,7 +356,7 @@ def generate_synthetic_decay(
 
 
 def generate_synthetic_biexp_decay(
-    n_bins: int = 256,
+    n_bins: int = 128,
     tcspc_res: float = MOCK_TCSPC_RES,
     tau1_ns: float = MOCK_TAU1_NS,
     tau2_ns: float = MOCK_TAU2_NS,
@@ -394,36 +405,13 @@ def generate_synthetic_biexp_decay(
     return model
 
 
-class _PtuFileWrapper:
-    """
-    Thin wrapper around PTUFile exposing the MockPTUFile interface:
-    .n_y, .n_x, .n_bins, .tcspc_res, .frequency, ._stack, .summed_decay().
-
-    Used by load_mock_ptu_file() so test code written against MockPTUFile
-    continues to work after generate_mock_ptu_tiles() switched to writing
-    real PTU files.
-    """
-
-    def __init__(self, ptu_path: Path):
-        from flimkit.PTU.reader import PTUFile as _PTUFile
-        ptu = _PTUFile(str(ptu_path), verbose=False)
-        stack = ptu.raw_pixel_stack().astype(np.float32)  # (Y, X, H)
-        self._stack    = stack
-        self.n_y       = ptu.n_y
-        self.n_x       = ptu.n_x
-        self.n_bins    = ptu.n_bins
-        self.tcspc_res = ptu.tcspc_res
-        self.frequency = ptu.sync_rate
-
-    def summed_decay(self, channel=None) -> np.ndarray:
-        return self._stack.sum(axis=(0, 1))
-
-
-def load_mock_ptu_file(ptu_path: Path) -> _PtuFileWrapper:
-    """
-    Load a PTU file written by generate_mock_ptu_tiles().
-
-    Returns a _PtuFileWrapper with the same interface as MockPTUFile:
-    .n_y, .n_x, .n_bins, .tcspc_res, .frequency, ._stack, .summed_decay().
-    """
-    return _PtuFileWrapper(Path(ptu_path))
+def load_mock_ptu_file(ptu_path: Path):
+    """Load a PTU file written by generate_mock_ptu_tiles() and return an object with .summed_decay()."""
+    from flimkit.PTU.reader import PTUFile
+    ptu = PTUFile(str(ptu_path), verbose=False)
+    class _Wrapper:
+        def __init__(self, ptu):
+            self.ptu = ptu
+        def summed_decay(self, channel=None):
+            return self.ptu.summed_decay(channel)
+    return _Wrapper(ptu)

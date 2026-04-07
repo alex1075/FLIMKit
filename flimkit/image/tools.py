@@ -58,13 +58,14 @@ def make_cell_mask(intensity_image, save_mask=False, path=None, name=None):
     else:
         raise TypeError(f"Expected file path or ndarray, got {type(intensity_image)}")
 
-    # Contrast stretch + boost
+    # Contrast stretch (no multiplicative boost — it saturates all signal to 255
+    # and then THRESH_BINARY_INV would label only zero-photon gaps as tissue).
     img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    img = np.clip(img * 20, 0, 255).astype(np.uint8)
 
-    # Smooth + threshold  (THRESH_BINARY_INV → background is bright after boost)
+    # Smooth + threshold: fluorescence cells are bright → THRESH_BINARY labels
+    # pixels above threshold as foreground (correct for FLIM intensity images).
     blurred = cv2.GaussianBlur(img, (5, 5), 0)
-    _, thresh = cv2.threshold(blurred, 20, 255, cv2.THRESH_BINARY_INV)
+    _, thresh = cv2.threshold(blurred, 20, 255, cv2.THRESH_BINARY)
 
     # Fill contours to get a solid mask
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

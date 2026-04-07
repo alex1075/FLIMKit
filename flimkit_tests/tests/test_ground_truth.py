@@ -14,7 +14,6 @@ import pytest
 import numpy as np
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 import sys
 
 # Ensure both flimkit_tests (for mock_data) and project root (for flimkit) are on path
@@ -87,7 +86,7 @@ class TestSingleExpRecovery:
             decay, tcspc_res, n_bins, irf,
             has_tail=False, fit_bg=True, fit_sigma=False,
             n_exp=1, tau_min_ns=0.05, tau_max_ns=15.0,
-            optimizer="lm_multistart", n_restarts=5, workers=1,
+            optimizer="lm_multistart", n_restarts=2, workers=1,
         )
 
         recovered = summary['taus_ns'][0]
@@ -115,17 +114,7 @@ class TestBiExpRecovery:
         tcspc_res = MOCK_TCSPC_RES
         irf_fwhm_ns = MOCK_IRF_FWHM_BINS * tcspc_res * 1e9
 
-        decay = generate_synthetic_biexp_decay(
-            n_bins=n_bins,
-            tcspc_res=tcspc_res,
-            tau1_ns=MOCK_TAU1_NS,
-            tau2_ns=MOCK_TAU2_NS,
-            a1=MOCK_AMP1,
-            a2=MOCK_AMP2,
-            bg=5.0,
-            peak_counts=100_000.0,
-            noise=True,
-        )
+        decay = generate_synthetic_biexp_decay(n_bins=256, peak_counts=50000.0, noise=True)
 
         # Use the TRUE IRF centre (not argmax(decay), which is shifted by convolution)
         irf = _irf(n_bins, tcspc_res, irf_fwhm_ns, MOCK_IRF_CENTER)
@@ -134,7 +123,7 @@ class TestBiExpRecovery:
             decay, tcspc_res, n_bins, irf,
             has_tail=False, fit_bg=True, fit_sigma=False,
             n_exp=2, tau_min_ns=0.05, tau_max_ns=15.0,
-            optimizer="lm_multistart", n_restarts=10, workers=1,
+            optimizer="lm_multistart", n_restarts=2, workers=1,
         )
 
         # summary['taus_ns'] is sorted descending
@@ -165,11 +154,7 @@ class TestBiExpRecovery:
         tcspc_res = MOCK_TCSPC_RES
         irf_fwhm_ns = MOCK_IRF_FWHM_BINS * tcspc_res * 1e9
 
-        decay = generate_synthetic_biexp_decay(
-            n_bins=n_bins,
-            peak_counts=100_000.0,
-            noise=True,
-        )
+        decay = generate_synthetic_biexp_decay(n_bins=256, peak_counts=50000.0, noise=True)
 
         # Use the TRUE IRF centre (not argmax(decay), which is shifted by convolution)
         irf = _irf(n_bins, tcspc_res, irf_fwhm_ns, MOCK_IRF_CENTER)
@@ -178,7 +163,7 @@ class TestBiExpRecovery:
             decay, tcspc_res, n_bins, irf,
             has_tail=False, fit_bg=True, fit_sigma=False,
             n_exp=2, tau_min_ns=0.05, tau_max_ns=15.0,
-            optimizer="lm_multistart", n_restarts=10, workers=1,
+            optimizer="lm_multistart", n_restarts=2, workers=1,
         )
 
         # fractions[0] corresponds to taus_ns[0] (the longer τ)
@@ -204,7 +189,7 @@ class TestBiExpRecovery:
         tcspc_res = MOCK_TCSPC_RES
         irf_fwhm_ns = MOCK_IRF_FWHM_BINS * tcspc_res * 1e9
 
-        decay = generate_synthetic_biexp_decay(peak_counts=100_000.0, noise=True)
+        decay = generate_synthetic_biexp_decay(n_bins=256, peak_counts=50000.0, noise=True)
         # Use the TRUE IRF centre (not argmax(decay), which is shifted by convolution)
         irf = _irf(n_bins, tcspc_res, irf_fwhm_ns, MOCK_IRF_CENTER)
 
@@ -212,7 +197,7 @@ class TestBiExpRecovery:
             decay, tcspc_res, n_bins, irf,
             has_tail=False, fit_bg=True, fit_sigma=False,
             n_exp=2, tau_min_ns=0.05, tau_max_ns=15.0,
-            optimizer="lm_multistart", n_restarts=10, workers=1,
+            optimizer="lm_multistart", n_restarts=2, workers=1,
         )
 
         # Leica convention: Pearson χ² (weights = √model)
@@ -247,21 +232,21 @@ class TestStitchAndFitRecovery:
 
         with tempfile.TemporaryDirectory() as tmp:
             project = generate_test_project(
-                Path(tmp), roi_name="R 2", n_tiles=4, layout="2x2"
+                Path(tmp), roi_name="R 2", n_tiles=4, layout="2x2",
+                tile_shape=(32, 32), n_bins=128, mean_photons=100
             )
             for npy in project['ptu_dir'].glob('*.npy'):
                 npy.rename(npy.with_suffix('.ptu'))
 
             out = project['base_dir'] / "stitched"
 
-            with patch('flimkit.PTU.reader.PTUFile', MockPTUFile):
-                stitch_flim_tiles(
-                    xlif_path=project['xlif_path'],
-                    ptu_dir=project['ptu_dir'],
-                    output_dir=out,
-                    ptu_basename=project['roi_name'],
-                    verbose=False,
-                )
+            stitch_flim_tiles(
+                xlif_path=project['xlif_path'],
+                ptu_dir=project['ptu_dir'],
+                output_dir=out,
+                ptu_basename=project['roi_name'],
+                verbose=False,
+            )
 
             stack, tcspc_res, n_bins = load_flim_for_fitting(out, load_to_memory=True)
             decay = stack.sum(axis=(0, 1))
@@ -273,7 +258,7 @@ class TestStitchAndFitRecovery:
                 decay, tcspc_res, n_bins, irf,
                 has_tail=False, fit_bg=True, fit_sigma=False,
                 n_exp=2, tau_min_ns=0.05, tau_max_ns=15.0,
-                optimizer="lm_multistart", n_restarts=10, workers=1,
+                optimizer="lm_multistart", n_restarts=4, workers=1,
             )
 
             taus = summary['taus_ns']

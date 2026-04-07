@@ -466,6 +466,16 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progres
 
     print(f"  Total photons (tissue): {decay.sum():,.0f}")
 
+    if decay.sum() == 0:
+        print("  \u26a0 WARNING: tissue mask produced zero photons "
+              "(mask may be inverted or canvas gaps only). "
+              "Falling back to full-canvas summed decay.")
+        decay = np.zeros(n_bins, dtype=np.float64)
+        for r0 in range(0, ny, CHUNK_ROWS):
+            r1 = min(r0 + CHUNK_ROWS, ny)
+            decay += stack[r0:r1].astype(np.float64).sum(axis=(0, 1))
+        print(f"  Total photons (full canvas): {decay.sum():,.0f}")
+
     print(f"\n{'='*60}")
     print(f"  STEP 3: FLIM FITTING")
     print(f"{'='*60}")

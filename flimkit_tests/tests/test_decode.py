@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mock_data import generate_mock_ptu_tiles, MockPTUFile
+from flimkit.PTU.reader import PTUFile
 
 
 class TestDecode:
@@ -144,8 +145,7 @@ class TestDecodeIntegration:
     
     def test_mock_ptu_save_load(self, temp_dir):
         """Test saving and loading mock PTU files."""
-        from mock_data import generate_mock_ptu_tiles, load_mock_ptu_file
-        
+                
         # Generate mock PTU
         ptu_files = generate_mock_ptu_tiles(
             temp_dir,
@@ -159,7 +159,7 @@ class TestDecodeIntegration:
         assert ptu_files[0].exists()
         
         # Load it back
-        mock_ptu = load_mock_ptu_file(ptu_files[0])
+        mock_ptu = PTUFile(str(ptu_files[0]), verbose=False)
         
         # Check properties
         assert mock_ptu.n_y == 256
