@@ -1206,10 +1206,9 @@ class ResultsPanel:
 class _UIBuilder:
     """Common UI building methods (used by both themed and fallback versions)."""
 
-    def _make_scroll_tab(self, title: str) -> ttk.Frame:
-        """Create a notebook tab whose contents are vertically scrollable."""
-        outer = ttk.Frame(self._nb)
-        self._nb.add(outer, text=title)
+    def _make_scroll_frame(self, parent: ttk.Frame) -> tuple:
+        """Create a vertically scrollable frame. Returns (outer_frame, inner_content_frame)."""
+        outer = ttk.Frame(parent)
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(0, weight=1)
 
@@ -1232,7 +1231,7 @@ class _UIBuilder:
         inner.bind("<Configure>", _on_inner_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
 
-        return inner
+        return outer, inner
 
     def _fit_window_to_screen(self):
         """Clamp window geometry to visible screen bounds."""
@@ -1291,52 +1290,126 @@ class _UIBuilder:
         threading.Thread(target=worker, daemon=True).start()
 
     def _init_ui(self):
-        """Build the entire user interface with horizontal layout (left: tabs+results, right: FOV preview)."""
+        """Build the entire user interface with left tab buttons and central content area."""
         self._buf: list = []
 
-        # Main horizontal PanedWindow: left (tabs+results) | right (FOV preview)
+        # Main horizontal PanedWindow: left (tabs+content+results) | right (FOV preview)
         main_paned = ttk.PanedWindow(self.root, orient="horizontal")
         main_paned.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
         # ─────────────────────────────────────────────────────────────────
-        # LEFT PANEL: Vertical layout with tabs (top) and results (bottom)
+        # LEFT PANEL: Tab buttons (vertical) + Content area (vertical paned)
         # ─────────────────────────────────────────────────────────────────
         left_frame = ttk.Frame(main_paned)
         main_paned.add(left_frame, weight=3)  # 3:2 weight ratio
-        left_frame.columnconfigure(0, weight=1)
+        left_frame.columnconfigure(0, weight=0)  # Tab buttons (narrow)
+        left_frame.columnconfigure(1, weight=1)  # Content area (expand)
         left_frame.rowconfigure(0, weight=1)
 
-        # Vertical PanedWindow for left side
-        left_paned = ttk.PanedWindow(left_frame, orient="vertical")
-        left_paned.grid(row=0, column=0, sticky="nsew")
-        left_frame.columnconfigure(0, weight=1)
+        # Left sidebar with vertical buttons
+        btn_frame = ttk.Frame(left_frame, width=100)
+        btn_frame.grid(row=0, column=0, sticky="ns", padx=(0, 4))
+        btn_frame.columnconfigure(0, weight=1)
+        btn_frame.grid_propagate(False)
+
+        ttk.Label(btn_frame, text="Modes", font=("TkDefaultFont", 9, "bold")).pack(pady=(4, 8))
+
+        self._form_buttons = {}
+        self._form_frames = {}
+        self._current_form = None
+
+        def make_button_click(form_name):
+            def on_click():
+                self._switch_form(form_name)
+            return on_click
+
+        # Create buttons for each form
+        form_list = [
+            ("fov", "Single FOV Fit"),
+            ("stitch", "Tile Stitch/Fit"),
+            ("batch", "Batch Processing"),
+            ("irf", "Machine IRF"),
+            ("phasor", "Phasor Analysis"),
+        ]
+
+        for form_id, form_label in form_list:
+            btn = ttk.Button(btn_frame, text=form_label, command=make_button_click(form_id))
+            btn.pack(fill="x", padx=2, pady=2)
+            self._form_buttons[form_id] = btn
+
+        # Vertical PanedWindow: content (top) | results (bottom)
+        content_paned = ttk.PanedWindow(left_frame, orient="vertical")
+        content_paned.grid(row=0, column=1, sticky="nsew")
+        left_frame.columnconfigure(1, weight=1)
         left_frame.rowconfigure(0, weight=1)
 
-        # Top: Notebook with fitting options
-        nb_frame = ttk.Frame(left_paned)
-        left_paned.add(nb_frame, weight=2)
-        nb_frame.columnconfigure(0, weight=1)
-        nb_frame.rowconfigure(0, weight=1)
+        # Create wrapper frames for each form (initially hidden)
+        form_wrapper = ttk.Frame(content_paned)
+        content_paned.add(form_wrapper, weight=2)
+        form_wrapper.columnconfigure(0, weight=1)
+        form_wrapper.rowconfigure(0, weight=1)
 
-        self._nb = ttk.Notebook(nb_frame)
-        self._nb.grid(row=0, column=0, sticky="nsew")
+        # ── Analysis Notebook: Fit Settings | Fit Results | ROI Analysis (Phase 3) ──
+        # Only shown for FOV and Stitch modes
+        self._analysis_tabs = ttk.Notebook(form_wrapper)
+        self._analysis_tabs.grid(row=0, column=0, sticky="nsew")
+        self._analysis_tabs.grid_remove()  # Hidden by default
+        
+        # Tab 0: Fit Settings (form content goes here)
+        fit_settings_outer = ttk.Frame(self._analysis_tabs)
+        self._analysis_tabs.add(fit_settings_outer, text="  Fit Settings  ")
+        fit_settings_outer.columnconfigure(0, weight=1)
+        fit_settings_outer.rowconfigure(0, weight=1)
+        self._fit_settings_tab = fit_settings_outer
+        
+        # Tab 1: ROI Analysis
+        roi_frame = ttk.Frame(self._analysis_tabs, padding=4)
+        self._analysis_tabs.add(roi_frame, text="  ROI Analysis  ")
+        roi_frame.columnconfigure(0, weight=1)
+        roi_frame.rowconfigure(0, weight=1)
+        roi_label = ttk.Label(roi_frame, text="ROI drawing tools and region statistics (Phase 3)", 
+                              foreground="grey", font=("Courier", 9))
+        roi_label.pack(pady=20)
+        self._roi_analysis_frame = roi_frame
 
-        self._build_fov_tab()
-        self._build_stitch_tab()
-        self._build_batch_tab()
-        self._build_machine_irf_tab()
-        self._build_phasor_tab()
+        self._form_content_frame = form_wrapper
+        self._form_inner_frames = {}
+
+        # Create scrollable frames for each form
+        # For FOV/Stitch: forms go in "Fit Settings" tab and can be toggled
+        # For others: forms in traditional layout
+        for form_id, form_label in form_list:
+            if form_id in ("fov", "stitch"):
+                # FOV and Stitch forms go inside the Fit Settings tab
+                outer, inner = self._make_scroll_frame(self._fit_settings_tab)
+                outer.grid(row=0, column=0, sticky="nsew")
+                outer.grid_remove()  # Hide initially; show on demand
+                self._form_inner_frames[form_id] = (outer, inner)
+            else:
+                # Batch, IRF, Phasor forms use traditional layout
+                outer, inner = self._make_scroll_frame(form_wrapper)
+                outer.grid(row=0, column=0, sticky="nsew")
+                outer.grid_remove()
+                self._form_inner_frames[form_id] = (outer, inner)
+            self._form_frames[form_id] = self._form_inner_frames[form_id]
 
         # Bottom: Results panel (progress, summary, images)
-        results_frame = ttk.Frame(left_paned)
-        left_paned.add(results_frame, weight=1)
+        results_frame = ttk.Frame(content_paned)
+        content_paned.add(results_frame, weight=1)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
 
         self._res = ResultsPanel(results_frame)
         self._res.grid(row=0, column=0, sticky="nsew")
+
+        # Build form content for each form
+        self._build_fov_tab()
+        self._build_stitch_tab()
+        self._build_batch_tab()
+        self._build_machine_irf_tab()
+        self._build_phasor_tab()
 
         # ─────────────────────────────────────────────────────────────────
         # RIGHT PANEL: FOV Preview
@@ -1353,23 +1426,10 @@ class _UIBuilder:
         self._phasor_panel = PhasorViewPanel(preview_frame, max_cursors=6)
         self._phasor_panel.frame.grid(row=0, column=0, sticky="nsew")
         self._phasor_panel.frame.grid_remove()
+        self._preview_frame_label = preview_frame
 
-        # Swap right-panel content when the active tab changes.
-        def _on_tab_changed(event):
-            try:
-                tab_text = self._nb.tab(self._nb.select(), "text").strip()
-            except Exception:
-                return
-            if tab_text == "Phasor Analysis":
-                self._fov_preview.frame.grid_remove()
-                self._phasor_panel.frame.grid()
-                preview_frame.configure(text="  Phasor Analysis  ")
-            else:
-                self._phasor_panel.frame.grid_remove()
-                self._fov_preview.frame.grid()
-                preview_frame.configure(text="  FOV Preview  ")
-
-        self._nb.bind("<<NotebookTabChanged>>", _on_tab_changed)
+        # Show first form by default
+        self._switch_form("fov")
 
         # Redirect stdout/stderr to the log widget
         redir = _Redirect(self._res.log, self._buf, root=self.root)
@@ -1384,6 +1444,47 @@ class _UIBuilder:
 
         # Set window icon if available
         self._set_window_icon()
+
+    def _switch_form(self, form_id: str):
+        """Switch to the specified form and update preview panel accordingly."""
+        # Hide all buttons' active state
+        for btn in self._form_buttons.values():
+            btn.state(["!pressed"])
+
+        # Show selected form
+        if form_id in self._form_inner_frames:
+            self._form_buttons[form_id].state(["pressed"])
+            self._current_form = form_id
+
+            # For FOV and Stitch: hide other analysis forms and show their notebook
+            if form_id in ("fov", "stitch"):
+                self._analysis_tabs.grid()
+                # Hide the other FOV/Stitch form if visible
+                other_id = "stitch" if form_id == "fov" else "fov"
+                self._form_inner_frames[other_id][0].grid_remove()
+                # Show the selected form
+                self._form_inner_frames[form_id][0].grid()
+                # Select Fit Settings tab by default
+                self._analysis_tabs.select(0)
+            else:
+                # For other forms: hide notebook, hide other traditional forms
+                self._analysis_tabs.grid_remove()
+                for fid in ("batch", "irf", "phasor"):
+                    if fid != form_id and fid in self._form_inner_frames:
+                        self._form_inner_frames[fid][0].grid_remove()
+                # Show the selected form
+                if form_id in self._form_inner_frames:
+                    self._form_inner_frames[form_id][0].grid()
+
+            # Update preview panel based on form
+            if form_id == "phasor":
+                self._fov_preview.frame.grid_remove()
+                self._phasor_panel.frame.grid()
+                self._preview_frame_label.configure(text="  Phasor Analysis  ")
+            else:
+                self._phasor_panel.frame.grid_remove()
+                self._fov_preview.frame.grid()
+                self._preview_frame_label.configure(text="  FOV Preview  ")
 
     def _set_window_icon(self):
         base_path = Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else Path(__file__).parent
@@ -1416,7 +1517,7 @@ class _UIBuilder:
     # TAB 1 – Single-FOV FLIM fit
     # -------------------------------------------------------------------------
     def _build_fov_tab(self):
-        tab = self._make_scroll_tab("  Single FOV Fit  ")
+        outer, tab = self._form_inner_frames["fov"]
         tab.columnconfigure(0, weight=1)
 
         ff = _section(tab, "Input Files")
@@ -1497,7 +1598,7 @@ class _UIBuilder:
     # TAB 2 – Tile Stitch / Fit
     # -------------------------------------------------------------------------
     def _build_stitch_tab(self):
-        tab = self._make_scroll_tab("  Tile Stitch / Fit  ")
+        outer, tab = self._form_inner_frames["stitch"]
         tab.columnconfigure(0, weight=1)
 
         ff = _section(tab, "Input Files")
@@ -1683,7 +1784,7 @@ class _UIBuilder:
     # TAB 3 – Batch ROI Fit
     # -------------------------------------------------------------------------
     def _build_batch_tab(self):
-        tab = self._make_scroll_tab("  Batch ROI Fit  ")
+        outer, tab = self._form_inner_frames["batch"]
         tab.columnconfigure(0, weight=1)
 
         ff = _section(tab, "Input / Output")
@@ -1939,7 +2040,7 @@ class _UIBuilder:
     # TAB 4 – Machine IRF Builder
     # -------------------------------------------------------------------------
     def _build_machine_irf_tab(self):
-        tab = self._make_scroll_tab("  Machine IRF Builder  ")
+        outer, tab = self._form_inner_frames["irf"]
         tab.columnconfigure(0, weight=1)
 
         cfg = _C()
@@ -2015,12 +2116,11 @@ class _UIBuilder:
     # TAB 5 – Phasor
     # -------------------------------------------------------------------------
     def _build_phasor_tab(self):
-        # Plain (non-scrolling) outer frame so the figure can resize freely.
-        outer = ttk.Frame(self._nb)
-        self._nb.add(outer, text="  Phasor Analysis  ")
-        outer.columnconfigure(0, weight=1)
+        # Get outer and inner frames from tuple
+        outer, inner = self._form_inner_frames["phasor"]
+        inner.columnconfigure(0, weight=1)
         # ── Controls strip (fixed height, top) ───────────────────────────────
-        ctrl = ttk.Frame(outer, padding=(6, 4))
+        ctrl = ttk.Frame(inner, padding=(6, 4))
         ctrl.grid(row=0, column=0, sticky="ew")
         ctrl.columnconfigure(0, weight=1)
 
