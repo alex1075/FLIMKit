@@ -15,4 +15,7 @@ Need to add Phasor once added to the codebase, and update version to 1.0. And ad
 0.8.0 -> added per-tile machine IRF fitting workflow, updated docs and examples
 0.8.1 -> added some error handling and user prompts to per-tile machine IRF workflow
 0.8.2 -> added some more error handling and user prompts to per-tile machine IRF workflow, and updated example notebook
-0.9.0 -> validation of fitting results with known fluorophores.'''
+0.9.0 -> made flim fitted image visible in GUI
+0.9.5 -> selectable ROIs in FLIM image in GUI and export of region stats
+1.0.0 -> release version with all core features implemented and tested
+1.5.0 (or 2.0) -> validation of fitting results with known fluorophores.'''

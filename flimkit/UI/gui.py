@@ -495,10 +495,14 @@ class FOVPreviewPanel:
         self.frame.columnconfigure(0, weight=1)
         self.frame.rowconfigure(0, weight=1)
 
-        # Create figure with matplotlib
-        self._fig = Figure(figsize=(5, 6), dpi=100, facecolor="#f0f0f0")
-        self._ax_img = self._fig.add_subplot(211)
-        self._ax_decay = self._fig.add_subplot(212)
+        # Create figure with GridSpec layout: intensity & FLIM side-by-side | decay below
+        from matplotlib.gridspec import GridSpec
+        self._fig = Figure(figsize=(10, 8), dpi=100, facecolor="#ffffff")
+        gs = GridSpec(2, 2, figure=self._fig, height_ratios=[1, 0.6], hspace=0.3, wspace=0.3)
+        
+        self._ax_img = self._fig.add_subplot(gs[0, 0])    # Intensity (top-left)
+        self._ax_flim = self._fig.add_subplot(gs[0, 1])   # FLIM (top-right)
+        self._ax_decay = self._fig.add_subplot(gs[1, :])  # Decay (bottom, full width)
         
         self._canvas_mpl = FigureCanvasTkAgg(self._fig, master=self.frame)
         self._canvas_mpl.get_tk_widget().grid(row=0, column=0, sticky="nsew")
@@ -509,6 +513,17 @@ class FOVPreviewPanel:
             row=1, column=0, sticky="w", padx=4, pady=(2, 4))
 
         self._ptu_path = None
+        
+        # ── FLIM image display state (Phase 1) ──
+        self._lifetime_map = None  # Cached intensity-weighted lifetime map
+        self._intensity_map = None  # Cached intensity (photon count) map
+        self._flim_color_scale = {  # Color scale parameters
+            'vmin': None,   # Auto-detect
+            'vmax': None,   # Auto-detect
+            'gamma': 1.0,   # Linear
+            'cmap': 'viridis',
+        }
+        self._n_exp = 1  # Number of exponential components in last fit
 
     def load_fov(self, ptu_path: Optional[str]):
         """Load and display intensity image + decay curve from PTU file."""
@@ -534,11 +549,19 @@ class FOVPreviewPanel:
 
             # Plot intensity image
             self._ax_img.clear()
-            self._ax_img.imshow(intensity, cmap="inferno", origin="upper")
+            # Clip at 99th percentile for better contrast
+            intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
+            self._ax_img.imshow(intensity_clipped, cmap="inferno", origin="upper")
             self._ax_img.set_title("Intensity Image", fontsize=10, fontweight="bold")
             self._ax_img.set_xlabel("X (pixels)")
             self._ax_img.set_ylabel("Y (pixels)")
             self._ax_img.tick_params(labelsize=8)
+
+            # Clear FLIM axes (no fit data yet)
+            self._ax_flim.clear()
+            self._ax_flim.text(0.5, 0.5, "Waiting for fit...", ha='center', va='center',
+                              transform=self._ax_flim.transAxes, fontsize=9, color='#888')
+            self._ax_flim.set_title("FLIM Lifetime", fontsize=10, fontweight="bold")
 
             # Plot decay curve
             self._ax_decay.clear()
@@ -549,7 +572,6 @@ class FOVPreviewPanel:
             self._ax_decay.grid(True, alpha=0.3)
             self._ax_decay.tick_params(labelsize=8)
 
-            self._fig.tight_layout(pad=0.8)
             self._canvas_mpl.draw_idle()
 
             n_photons = int(decay.sum())
@@ -607,6 +629,37 @@ class FOVPreviewPanel:
                 intensity = np.ones((512, 512), dtype=np.float32)  # Placeholder
                 print(f"  - No intensity data available, using placeholder")
             
+            # ── Compute FLIM lifetime map (Phase 1) ──
+            from flimkit.utils.flim_display import compute_intensity_weighted_lifetime
+            
+            pixel_maps = fit_result.get('pixel_maps')  # For single-FOV fits
+            if pixel_maps is None and canvas is not None:
+                # For tile fits, extract pixel_maps from canvas
+                pixel_maps = {k: v for k, v in canvas.items() 
+                             if k not in ('intensity', 'coverage')}
+            
+            nexp = global_summary.get('n_exp', len(global_summary.get('taus_ns', [])))
+            lifetime_map = None
+            
+            if pixel_maps and nexp > 0:
+                try:
+                    lifetime_map = compute_intensity_weighted_lifetime(
+                        pixel_maps, intensity, n_exp=nexp
+                    )
+                    print(f"  - Computed intensity-weighted lifetime map ({lifetime_map.shape})")
+                    print(f"    Lifetime map range: {np.nanmin(lifetime_map):.4f} – {np.nanmax(lifetime_map):.4f} ns")
+                    print(f"    pixel_maps keys: {list(pixel_maps.keys())[:10]}")  # Show first 10 keys
+                except Exception as e:
+                    print(f"  - Warning: Could not compute lifetime map: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    lifetime_map = None
+            
+            # Cache for interactive updates (Phase 2+)
+            self._lifetime_map = lifetime_map
+            self._intensity_map = intensity
+            self._n_exp = nexp
+            
             # Extract fit data
             taus_fit = global_summary.get('taus_ns', [])
             nexp = len(taus_fit)
@@ -623,11 +676,59 @@ class FOVPreviewPanel:
             
             # Update intensity image
             self._ax_img.clear()
-            self._ax_img.imshow(intensity, cmap="inferno", origin="upper")
+            # Clip at 99th percentile for better contrast
+            intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
+            self._ax_img.imshow(intensity_clipped, cmap="inferno", origin="upper")
             self._ax_img.set_title("Intensity Image", fontsize=10, fontweight="bold")
             self._ax_img.set_xlabel("X (pixels)")
             self._ax_img.set_ylabel("Y (pixels)")
             self._ax_img.tick_params(labelsize=8)
+
+            # Update FLIM lifetime image (Phase 2.1)
+            self._ax_flim.clear()
+            if self._lifetime_map is not None and np.any(~np.isnan(self._lifetime_map)):
+                from flimkit.utils.flim_display import apply_color_scale, get_colormap
+                
+                # Apply color scaling
+                scaled = apply_color_scale(
+                    self._lifetime_map,
+                    vmin=self._flim_color_scale['vmin'],
+                    vmax=self._flim_color_scale['vmax'],
+                    gamma=self._flim_color_scale['gamma'],
+                )
+                
+                # Get colormap and set NaN to black
+                cmap = get_colormap(self._flim_color_scale['cmap'])
+                cmap.set_bad(color='black')
+                
+                im = self._ax_flim.imshow(scaled, cmap=cmap, origin="upper", vmin=0, vmax=1)
+                self._ax_flim.set_title("FLIM Lifetime (ns)", fontsize=10, fontweight="bold")
+                self._ax_flim.set_xlabel("X (pixels)")
+                self._ax_flim.set_ylabel("Y (pixels)")
+                self._ax_flim.tick_params(labelsize=8)
+                
+                # Colorbar with actual data range from lifetime map
+                valid_data = self._lifetime_map[~np.isnan(self._lifetime_map)]
+                if valid_data.size > 0:
+                    data_min = np.min(valid_data)
+                    data_max = np.max(valid_data)
+                    
+                    # Create colorbar with correct lifetime scale (not 0-1)
+                    cbar = self._fig.colorbar(im, ax=self._ax_flim, fraction=0.030, pad=0.02)
+                    cbar.set_label(f"τ (ns)", fontsize=8)
+                    
+                    # Manually set colorbar tick labels to lifetime values
+                    n_ticks = 5
+                    tick_positions = np.linspace(0, 1, n_ticks)
+                    tick_values = data_min + tick_positions * (data_max - data_min)
+                    cbar.set_ticks(tick_positions)
+                    cbar.set_ticklabels([f"{v:.2f}" for v in tick_values], fontsize=7)
+            else:
+                self._ax_flim.text(0.5, 0.6, "No FLIM data", ha='center', va='center',
+                                  transform=self._ax_flim.transAxes, fontsize=9, color='#888')
+                self._ax_flim.text(0.5, 0.35, "(enable per-pixel fitting)", ha='center', va='center',
+                                  transform=self._ax_flim.transAxes, fontsize=8, color='#666', style='italic')
+                self._ax_flim.set_title("FLIM Lifetime", fontsize=10, fontweight="bold")
 
             # Plot decay with fit and IRF
             self._ax_decay.clear()
@@ -673,7 +774,6 @@ class FOVPreviewPanel:
             self._ax_decay.grid(True, alpha=0.3)
             self._ax_decay.tick_params(labelsize=8)
 
-            self._fig.tight_layout(pad=0.8)
             self._canvas_mpl.draw_idle()
 
             # Update status with fit summary
@@ -722,11 +822,19 @@ class FOVPreviewPanel:
             
             # Clear axes and display stitched image
             self._ax_img.clear()
-            self._ax_img.imshow(intensity, cmap="inferno", origin="upper")
+            # Clip at 99th percentile for better contrast
+            intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
+            self._ax_img.imshow(intensity_clipped, cmap="inferno", origin="upper")
             self._ax_img.set_title("Stitched ROI", fontsize=10, fontweight="bold")
             self._ax_img.set_xlabel("X (pixels)")
             self._ax_img.set_ylabel("Y (pixels)")
             self._ax_img.tick_params(labelsize=8)
+            
+            # Clear FLIM axes
+            self._ax_flim.clear()
+            self._ax_flim.text(0.5, 0.5, "Waiting for fit...", ha='center', va='center',
+                              transform=self._ax_flim.transAxes, fontsize=9, color='#888')
+            self._ax_flim.set_title("FLIM Lifetime", fontsize=10, fontweight="bold")
             
             # Clear decay plot
             self._ax_decay.clear()
@@ -734,7 +842,6 @@ class FOVPreviewPanel:
                                ha="center", va="center", transform=self._ax_decay.transAxes,
                                fontsize=10, color="steelblue")
             
-            self._fig.tight_layout(pad=0.8)
             self._canvas_mpl.draw_idle()
             
             img_shape = intensity.shape
@@ -747,14 +854,15 @@ class FOVPreviewPanel:
             self._status.set(f"Error loading stitched: {str(e)[:50]}")
 
     def _clear(self):
-        """Clear both axes."""
+        """Clear all axes."""
         self._ax_img.clear()
+        self._ax_flim.clear()
         self._ax_decay.clear()
         self._ax_img.set_title("No FOV loaded")
+        self._ax_flim.set_title("FLIM Lifetime")
         self._ax_decay.text(0.5, 0.5, "Load a PTU file →", 
                            ha="center", va="center", transform=self._ax_decay.transAxes,
-                           fontsize=10, color="grey")
-        self._fig.tight_layout(pad=0.8)
+                           fontsize=10, color="#888")
         self._canvas_mpl.draw_idle()
 
     def grid(self, **kw):
@@ -894,7 +1002,6 @@ class ResultsPanel:
                 self._ax.text(0.5, 0.5, f"Cannot load image:\n{e}",
                               ha="center", va="center", color="red",
                               fontsize=9, transform=self._ax.transAxes)
-        self._fig.tight_layout(pad=0.3)
         self._canvas_mpl.draw_idle()
 
     def _img_prev(self):
