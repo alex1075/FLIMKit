@@ -2612,6 +2612,8 @@ class _UIBuilder:
                     if 'lifetime' in image_dict and isinstance(image_dict['lifetime'], np.ndarray):
                         try:
                             lifetime = image_dict['lifetime']
+                            # Replace NaN with 0
+                            lifetime = np.nan_to_num(lifetime, nan=0.0)
                             lifetime_32bit = lifetime.astype(np.float32)
                             
                             output_file = output_path / "lifetime.ome.tiff"
