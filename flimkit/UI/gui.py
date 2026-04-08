@@ -16,6 +16,7 @@ from typing import Optional
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.image as mpimg
+import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from flimkit.UI.progress_window import ProgressWindow
@@ -355,6 +356,21 @@ def _row(parent, label, var, row, browse_fn, width=45, state="normal"):
     e.grid(row=row, column=1, sticky="ew", padx=4, pady=3)
     ttk.Button(parent, text="Browse...", command=browse_fn).grid(
         row=row, column=2, padx=4, pady=3)
+    
+    # Add drag-and-drop support if available
+    if HAS_DND:
+        try:
+            def _drop_handler(event):
+                data = event.data.strip()
+                if data.startswith("{") and data.endswith("}"):
+                    data = data[1:-1]
+                var.set(data)
+            
+            e.drop_target_register(DND_FILES, DND_TEXT)
+            e.dnd_bind("<<Drop>>", _drop_handler)
+        except Exception:
+            pass
+    
     return e
 
 
@@ -697,6 +713,19 @@ class FOVPreviewPanel:
             self._intensity_map = intensity
             self._n_exp = nexp
             
+            # ── Store images in fit_result for export and reloading ──
+            # Add intensity if not already there
+            if 'intensity' not in fit_result and intensity is not None:
+                fit_result['intensity'] = intensity
+            
+            # Add lifetime map if computed
+            if lifetime_map is not None:
+                fit_result['lifetime'] = lifetime_map
+            
+            # Add pixel maps if available
+            if pixel_maps:
+                fit_result['pixel_maps'] = pixel_maps
+            
             # Extract fit data
             taus_fit = global_summary.get('taus_ns', [])
             nexp = len(taus_fit)
@@ -956,6 +985,9 @@ class FOVPreviewPanel:
             self._flim_color_scale['gamma'] = gamma
             self._flim_color_scale['cmap'] = cmap_name
             
+            # Save updated color scale to session (quick update)
+            self._save_color_scale_update()
+            
             # Recompute scaled image
             scaled = flim_display.apply_color_scale(
                 self._lifetime_map, vmin=vmin, vmax=vmax, gamma=gamma
@@ -998,6 +1030,38 @@ class FOVPreviewPanel:
             self._canvas_mpl.draw_idle()
         except Exception as e:
             print(f"Error updating FLIM display: {e}")
+    
+    def _save_color_scale_update(self):
+        """Save updated color scale to existing session file (quick update, no full recompute)."""
+        try:
+            # Only save if we have a PTU path and session file exists
+            if not self._ptu_path:
+                return
+            
+            from pathlib import Path
+            import json
+            import numpy as np
+            
+            ptu_path = Path(self._ptu_path)
+            session_file = ptu_path.parent / f"{ptu_path.stem}.roi_session.npz"
+            
+            if not session_file.exists():
+                return  # No session to update
+            
+            # Load existing session
+            existing_data = np.load(session_file, allow_pickle=True)
+            session_data = {key: existing_data[key].item() if existing_data[key].ndim == 0 else existing_data[key] 
+                           for key in existing_data.files}
+            
+            # Update only color scale (don't touch fit data)
+            session_data["fov_color_scale"] = json.dumps(self._flim_color_scale)
+            
+            # Save back to same file
+            np.savez_compressed(session_file, **session_data)
+            print(f"[Color Scale] ✓ Saved to {session_file.name}")
+            
+        except Exception as e:
+            print(f"[Color Scale] Could not save update: {e}")
 
     def grid(self, **kw):
         self.frame.grid(**kw)
@@ -1009,7 +1073,9 @@ class FOVPreviewPanel:
 
 class ResultsPanel:
 
-    def __init__(self, parent):
+    def __init__(self, parent, root=None):
+        self.parent = parent
+        self.root = root  # Reference to main window for dialogs
         self.frame = ttk.Frame(parent)
         self.frame.columnconfigure(0, weight=1)
         self.frame.rowconfigure(0, weight=1)
@@ -1019,6 +1085,14 @@ class ResultsPanel:
 
         self._build_progress()
         self._build_summary()
+        
+        # Store references for export and load functionality
+        self._fit_result = None
+        self._output_dir = None
+        self._current_npz_path = None  # Track current fit NPZ file location
+        self._export_callback = None
+        self._load_callback = None
+        self._save_npz_callback = None
 
         self._status = tk.StringVar(value="Ready.")
         ttk.Label(self.frame, textvariable=self._status, foreground="grey").grid(
@@ -1036,6 +1110,7 @@ class ResultsPanel:
 
         btn_bar = ttk.Frame(f)
         btn_bar.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Button(btn_bar, text="Load Fitted Data…", command=self._load_fitted_data).pack(side="left", padx=4)
         ttk.Button(btn_bar, text="Save log…", command=self._save_log).pack(side="left",  padx=4)
         ttk.Button(btn_bar, text="Clear log", command=self._clear_log).pack(side="right", padx=4)
 
@@ -1056,6 +1131,66 @@ class ResultsPanel:
         if path:
             Path(path).write_text(text, encoding="utf-8")
             self._status.set(f"Log saved → {Path(path).name}")
+
+    def _on_export_clicked(self):
+        """Handle export button click."""
+        try:
+            print(f"[Export Button] Clicked - callback={self._export_callback is not None}, fit_result={self._fit_result is not None}, output_dir={self._output_dir}")
+            if self._export_callback and self._fit_result and self._output_dir:
+                print(f"[Export Button] Calling callback...")
+                self._export_callback(self._fit_result, self._output_dir)
+            else:
+                print(f"[Export Button] Missing: callback={self._export_callback} fit_result={self._fit_result is not None} output_dir={self._output_dir}")
+        except Exception as e:
+            print(f"[Export Button Error] {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def set_fit_result(self, fit_result: dict, output_dir: str, npz_path: str = None):
+        """Store fit result and enable export/save buttons."""
+        self._fit_result = fit_result
+        self._output_dir = output_dir
+        if npz_path:
+            self._current_npz_path = npz_path
+        # Enable buttons if there are images to export
+        has_images = any(isinstance(v, np.ndarray) for v in (fit_result or {}).values())
+        self._export_btn.configure(state="normal" if has_images else "disabled")
+        # Always enable save NPZ button when fit result is available
+        self._save_npz_btn.configure(state="normal")
+    
+    def set_export_callback(self, callback):
+        """Set the callback function for export button."""
+        self._export_callback = callback
+    
+    def set_load_callback(self, callback):
+        """Set the callback function for loading fitted data."""
+        self._load_callback = callback
+    
+    def set_save_npz_callback(self, callback):
+        """Set the callback function for saving NPZ."""
+        self._save_npz_callback = callback
+    
+    def _on_save_npz_clicked(self):
+        """Handle save NPZ button click."""
+        try:
+            if self._save_npz_callback and self._output_dir:
+                self._save_npz_callback(self._output_dir)
+        except Exception as e:
+            print(f"[Save NPZ Error] {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _load_fitted_data(self):
+        """Show file dialog to load previously fitted ROI data from NPZ."""
+        npz_file = filedialog.askopenfilename(
+            title="Load Fitted Data",
+            filetypes=[("NumPy Archives", "*.npz"), ("All", "*.*")],
+            defaultextension=".npz")
+        if not npz_file:
+            return
+        
+        if self._load_callback:
+            self._load_callback(npz_file)
 
     def _build_summary(self):
         f = ttk.Frame(self._nb, padding=4)
@@ -1081,6 +1216,17 @@ class ResultsPanel:
         tv.tag_configure("even", background="#ffffff", foreground="#000000")
         tv.tag_configure("warn", foreground="#c0550a", background="#fff8f0")
         self._tv = tv
+        
+        # Add export and save buttons below treeview
+        btn_bar = ttk.Frame(f)
+        btn_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._export_btn = ttk.Button(btn_bar, text="Export Images…", 
+                                     command=self._on_export_clicked, state="disabled")
+        self._export_btn.pack(side="left", padx=4)
+        
+        self._save_npz_btn = ttk.Button(btn_bar, text="Save NPZ", 
+                                       command=self._on_save_npz_clicked, state="disabled")
+        self._save_npz_btn.pack(side="left", padx=4)
 
     def populate_summary(self, rows: list):
         for item in self._tv.get_children():
@@ -1228,8 +1374,28 @@ class _UIBuilder:
         def _on_canvas_configure(evt):
             canvas.itemconfigure(window_id, width=evt.width)
 
+        def _on_mousewheel(evt):
+            # Windows: evt.delta, Mac: evt.delta, Linux: evt.num
+            if evt.num == 5 or evt.delta < 0:
+                canvas.yview_scroll(3, "units")
+            elif evt.num == 4 or evt.delta > 0:
+                canvas.yview_scroll(-3, "units")
+
         inner.bind("<Configure>", _on_inner_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
+        # Bind mousewheel events for all platforms
+        canvas.bind("<MouseWheel>", _on_mousewheel)  # Windows & Mac
+        canvas.bind("<Button-4>", _on_mousewheel)    # Linux scroll up
+        canvas.bind("<Button-5>", _on_mousewheel)    # Linux scroll down
+        inner.bind("<MouseWheel>", _on_mousewheel)
+        inner.bind("<Button-4>", _on_mousewheel)
+        inner.bind("<Button-5>", _on_mousewheel)
+
+        # Store canvas and window_id references on the inner frame for later refresh
+        inner._canvas = canvas
+        inner._window_id = window_id
+        outer._canvas = canvas
+        outer._window_id = window_id
 
         return outer, inner
 
@@ -1292,6 +1458,9 @@ class _UIBuilder:
     def _init_ui(self):
         """Build the entire user interface with left tab buttons and central content area."""
         self._buf: list = []
+        self._current_session_file = None  # Track current session file for auto-save
+        self._current_npz_path = None  # For backward compatibility
+        self._last_loaded_ptu = None  # Guard against duplicate auto-loads
 
         # Main horizontal PanedWindow: left (tabs+content+results) | right (FOV preview)
         main_paned = ttk.PanedWindow(self.root, orient="horizontal")
@@ -1401,8 +1570,12 @@ class _UIBuilder:
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
 
-        self._res = ResultsPanel(results_frame)
+        self._res = ResultsPanel(results_frame, root=self.root)
         self._res.grid(row=0, column=0, sticky="nsew")
+        # Set callbacks for export, save, and load buttons
+        self._res.set_export_callback(self._show_export_dialog)
+        self._res.set_load_callback(self._load_fitted_data_from_file)
+        self._res.set_save_npz_callback(self._save_npz_quick)
 
         # Build form content for each form
         self._build_fov_tab()
@@ -1445,6 +1618,72 @@ class _UIBuilder:
         # Set window icon if available
         self._set_window_icon()
 
+    def _refresh_scrollable_frame(self, form_id: str):
+        """Refresh the scrollable frame canvas after it's been shown. Fixes display issues when switching back to hidden forms."""
+        if form_id not in self._form_inner_frames:
+            return
+        
+        outer, inner = self._form_inner_frames[form_id]
+        
+        # Schedule refresh on next event loop iteration to allow grid() to complete
+        def do_refresh():
+            try:
+                # Process all pending events first
+                self.root.update_idletasks()
+                
+                # For notebook-contained forms (FOV/Stitch), also update the notebook
+                if form_id in ("fov", "stitch"):
+                    # Update the notebook to reflect size changes
+                    self._fit_settings_tab.update_idletasks()
+                    self._analysis_tabs.update_idletasks()
+                
+                # Now refresh the canvas
+                if hasattr(outer, '_canvas') and hasattr(outer, '_window_id'):
+                    canvas = outer._canvas
+                    window_id = outer._window_id
+                    
+                    # Make sure outer frame is properly laid out
+                    outer.update()
+                    
+                    # Get canvas dimensions
+                    canvas_width = canvas.winfo_width()
+                    canvas_height = canvas.winfo_height()
+                    
+                    # Ensure canvas window width matches canvas width
+                    if canvas_width > 1:
+                        canvas.itemconfigure(window_id, width=canvas_width)
+                    
+                    # Update inner frame to get its requested size
+                    inner.update()
+                    inner_height = inner.winfo_reqheight()
+                    
+                    # Configure window height to inner frame's requested height
+                    # This ensures scrollbar works properly
+                    if inner_height > 1:
+                        canvas.itemconfigure(window_id, height=inner_height)
+                    
+                    # Recalculate scroll region based on all content
+                    bbox = canvas.bbox("all")
+                    if bbox:
+                        canvas.configure(scrollregion=bbox)
+                    else:
+                        # Fallback: use reasonable defaults
+                        h = max(canvas_height, inner_height, 300) if inner_height > 1 else 500
+                        w = max(canvas_width, 300) if canvas_width > 1 else 400
+                        canvas.configure(scrollregion=(0, 0, w, h))
+                    
+                    # Reset scroll position to top
+                    canvas.yview_moveto(0)
+                    
+                    # Final update to ensure everything is rendered
+                    canvas.update()
+            except Exception as e:
+                # Silently ignore errors if widgets have been destroyed
+                pass
+        
+        # Schedule with after() to let grid() complete first (200ms)
+        self.root.after(200, do_refresh)
+
     def _switch_form(self, form_id: str):
         """Switch to the specified form and update preview panel accordingly."""
         # Hide all buttons' active state
@@ -1458,23 +1697,54 @@ class _UIBuilder:
 
             # For FOV and Stitch: hide other analysis forms and show their notebook
             if form_id in ("fov", "stitch"):
-                self._analysis_tabs.grid()
-                # Hide the other FOV/Stitch form if visible
-                other_id = "stitch" if form_id == "fov" else "fov"
-                self._form_inner_frames[other_id][0].grid_remove()
-                # Show the selected form
-                self._form_inner_frames[form_id][0].grid()
-                # Select Fit Settings tab by default
-                self._analysis_tabs.select(0)
-            else:
-                # For other forms: hide notebook, hide other traditional forms
-                self._analysis_tabs.grid_remove()
+                # Hide ALL other forms (batch, irf, phasor, and the other FOV/Stitch)
                 for fid in ("batch", "irf", "phasor"):
+                    if fid in self._form_inner_frames:
+                        self._form_inner_frames[fid][0].grid_remove()
+                
+                # Hide the other FOV/Stitch form
+                other_id = "stitch" if form_id == "fov" else "fov"
+                other_frame = self._form_inner_frames[other_id][0]
+                other_frame.grid_remove()
+                
+                # Now show the selected form
+                selected_frame = self._form_inner_frames[form_id][0]
+                selected_frame.grid(row=0, column=0, sticky="nsew")
+                
+                # Raise the frame to ensure it's on top
+                selected_frame.lift()
+                selected_frame.tkraise()
+                
+                # Now show the notebook
+                self._analysis_tabs.grid(row=0, column=0, sticky="nsew")
+                self._analysis_tabs.lift()
+                self._analysis_tabs.tkraise()
+                
+                # Select Fit Settings tab
+                self._analysis_tabs.select(0)
+                
+                # Force notebook update before refresh
+                self._fit_settings_tab.update()
+                
+                # Refresh canvas to ensure content displays properly
+                self._refresh_scrollable_frame(form_id)
+            else:
+                # For other forms: hide notebook first
+                self._analysis_tabs.grid_remove()
+                
+                # Hide all other traditional forms AND FOV/Stitch forms
+                for fid in ("batch", "irf", "phasor", "fov", "stitch"):
                     if fid != form_id and fid in self._form_inner_frames:
                         self._form_inner_frames[fid][0].grid_remove()
+                
                 # Show the selected form
                 if form_id in self._form_inner_frames:
-                    self._form_inner_frames[form_id][0].grid()
+                    selected_frame = self._form_inner_frames[form_id][0]
+                    selected_frame.grid(row=0, column=0, sticky="nsew")
+                    selected_frame.lift()
+                    selected_frame.tkraise()
+                    # Refresh canvas to ensure content displays properly
+                    self._refresh_scrollable_frame(form_id)
 
             # Update preview panel based on form
             if form_id == "phasor":
@@ -1512,6 +1782,994 @@ class _UIBuilder:
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
         self.root.destroy()
+
+    def _capture_form_state(self) -> dict:
+        """Capture all current form field values into a serializable dict."""
+        try:
+            state = {
+                # Current active form mode
+                "active_form": self.iv_form.get() if hasattr(self, 'iv_form') else 0,
+                
+                # Input files (common to all)
+                "ptu_file": self.sv_ptu.get() if hasattr(self, 'sv_ptu') else "",
+                "xlsx_file": self.sv_xlsx.get() if hasattr(self, 'sv_xlsx') else "",
+                
+                # IRF settings (common to all)
+                "irf_method": self._irf_fov.sv_method.get() if hasattr(self, '_irf_fov') else "irf_xlsx",
+                "irf_file": self._irf_fov.sv_path.get() if hasattr(self, '_irf_fov') else "",
+                
+                # FOV mode fitting parameters
+                "nexp_fov": self.iv_nexp_fov.get() if hasattr(self, 'iv_nexp_fov') else 3,
+                "tau_fit_lo": self.sv_tau_fit_lo.get() if hasattr(self, 'sv_tau_fit_lo') else "0.1",
+                "tau_fit_hi": self.sv_tau_fit_hi.get() if hasattr(self, 'sv_tau_fit_hi') else "10.0",
+                
+                # Stitch mode parameters
+                "nexp_st": self.iv_nexp_st.get() if hasattr(self, 'iv_nexp_st') else 3,
+                
+                # Batch mode parameters
+                "nexp_batch": self.iv_nexp_batch.get() if hasattr(self, 'iv_nexp_batch') else 3,
+                
+                # Other common settings
+                "register": self.bv_register.get() if hasattr(self, 'bv_register') else False,
+                "channel": self.sv_channel_focus.get() if hasattr(self, 'sv_channel_focus') else "auto",
+                "threshold": self.sv_int_threshold.get() if hasattr(self, 'sv_int_threshold') else "5",
+
+                "out_fov":        self.sv_out_fov.get() if hasattr(self, 'sv_out_fov') else "",
+                "mode_fov":       self.sv_mode_fov.get() if hasattr(self, 'sv_mode_fov') else "both",
+                "tau_min_fov":    self.sv_tau_min_fov.get() if hasattr(self, 'sv_tau_min_fov') else "",
+                "tau_max_fov":    self.sv_tau_max_fov.get() if hasattr(self, 'sv_tau_max_fov') else "",
+                "thr_fov_en":     self.bv_thr_fov.get() if hasattr(self, 'bv_thr_fov') else False,
+                "thr_fov_val":    self.sv_thr_fov.get() if hasattr(self, 'sv_thr_fov') else "5",
+                "cell_mask":      self.bv_cell.get() if hasattr(self, 'bv_cell') else False,
+            }
+            print(f"[Session] Captured form state: active_form={state.get('active_form')}")
+            return state
+        except Exception as e:
+            print(f"[Session] Could not capture form state: {e}")
+            return {}
+
+    def _restore_form_state(self, state: dict):
+        """Restore all form field values from captured state dict."""
+        try:
+            # Restore input files (always available)
+            if "ptu_file" in state and hasattr(self, 'sv_ptu'):
+                self.sv_ptu.set(state["ptu_file"])
+            if "xlsx_file" in state and hasattr(self, 'sv_xlsx'):
+                self.sv_xlsx.set(state["xlsx_file"])
+            
+            # Restore IRF settings
+            if "irf_method" in state and hasattr(self, '_irf_fov'):
+                self._irf_fov.sv_method.set(state["irf_method"])
+            if "irf_file" in state and hasattr(self, '_irf_fov'):
+                self._irf_fov.sv_path.set(state["irf_file"])
+            
+            # Restore fitting parameters (for all modes)
+            if "nexp_fov" in state and hasattr(self, 'iv_nexp_fov'):
+                self.iv_nexp_fov.set(state["nexp_fov"])
+            if "nexp_st" in state and hasattr(self, 'iv_nexp_st'):
+                self.iv_nexp_st.set(state["nexp_st"])
+            if "nexp_batch" in state and hasattr(self, 'iv_nexp_batch'):
+                self.iv_nexp_batch.set(state["nexp_batch"])
+            
+            if "tau_fit_lo" in state and hasattr(self, 'sv_tau_fit_lo'):
+                self.sv_tau_fit_lo.set(state["tau_fit_lo"])
+            if "tau_fit_hi" in state and hasattr(self, 'sv_tau_fit_hi'):
+                self.sv_tau_fit_hi.set(state["tau_fit_hi"])
+
+            if "out_fov" in state and hasattr(self, 'sv_out_fov'): self.sv_out_fov.set(state["out_fov"])
+            if "mode_fov" in state and hasattr(self, 'sv_mode_fov'): self.sv_mode_fov.set(state["mode_fov"])
+            if "tau_min_fov" in state and hasattr(self, 'sv_tau_min_fov'): self.sv_tau_min_fov.set(state["tau_min_fov"])
+            if "tau_max_fov" in state and hasattr(self, 'sv_tau_max_fov'): self.sv_tau_max_fov.set(state["tau_max_fov"])
+            if "thr_fov_en" in state and hasattr(self, 'bv_thr_fov'): self.bv_thr_fov.set(state["thr_fov_en"])
+            if "thr_fov_val" in state and hasattr(self, 'sv_thr_fov'): self.sv_thr_fov.set(state["thr_fov_val"])
+            if "cell_mask" in state and hasattr(self, 'bv_cell'): self.bv_cell.set(state["cell_mask"])    
+                        
+            # Restore other settings
+            if "register" in state and hasattr(self, 'bv_register'):
+                self.bv_register.set(state["register"])
+            if "channel" in state and hasattr(self, 'sv_channel_focus'):
+                self.sv_channel_focus.set(state["channel"])
+            if "threshold" in state and hasattr(self, 'sv_int_threshold'):
+                self.sv_int_threshold.set(state["threshold"])
+            
+            # Restore active form mode (switch to the right tab)
+            if "active_form" in state and hasattr(self, 'iv_form'):
+                self.iv_form.set(state["active_form"])
+                self._switch_form([None, "fov", "stitch", "batch", "irf", "phasor"][state["active_form"]])
+            
+            print(f"[Session] Restored form state")
+        except Exception as e:
+            print(f"[Session] Could not restore form state: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _save_roi_progress(self, path: str, fit_result: dict, summary_rows: list):
+        """Save comprehensive session: fit results, form state, and file paths - ALL IN ONE FILE."""
+        try:
+            from pathlib import Path
+            import json
+            from datetime import datetime
+            import numpy as np
+            
+            base_path = Path(path)
+            # For PTU files, save next to the PTU; for directories, save inside it
+            if base_path.is_file():
+                session_file = base_path.parent / f"{base_path.stem}.roi_session.npz"
+            else:
+                session_file = base_path / "roi_session.npz"
+            
+            # Capture current form state
+            form_state = self._capture_form_state()
+            
+            # Build comprehensive session data - ONE FILE WITH EVERYTHING
+            session_data = {
+                "timestamp": datetime.now().isoformat(),
+                "source": str(path),
+                "form_state_json": json.dumps(form_state, default=str),  # All form settings
+            }
+            
+            # Save all numpy arrays from fit_result
+            print(f"[Session] Saving fit_result keys: {list(fit_result.keys())}")
+            for key, val in fit_result.items():
+                if isinstance(val, np.ndarray):
+                    session_data[key] = val
+                    print(f"  ✓ Saved array: {key} {val.shape}")
+                elif isinstance(val, dict):
+                    # Save complex types as JSON
+                    try:
+                        session_data[f"{key}_json"] = json.dumps(val, default=str)
+                        print(f"  ✓ Saved dict: {key}")
+                    except:
+                        pass
+                elif isinstance(val, (list, tuple)):
+                    # Save lists/tuples as arrays if they're numeric
+                    try:
+                        arr = np.array(val)
+                        if arr.dtype != object:
+                            session_data[key] = arr
+                            print(f"  ✓ Saved list: {key} {arr.shape}")
+                    except:
+                        pass
+                elif val is not None and not callable(val):
+                    # Save scalar metadata
+                    try:
+                        session_data[key] = val
+                    except:
+                        pass
+            
+            # Add summary table
+            summary_params = []
+            summary_values = []
+            summary_units = []
+            for param, value, unit in summary_rows:
+                summary_params.append(param)
+                summary_values.append(value)
+                summary_units.append(unit)
+            
+            if summary_params:
+                session_data["summary_params"] = np.array(summary_params, dtype=object)
+                session_data["summary_values"] = np.array(summary_values, dtype=object)
+                session_data["summary_units"] = np.array(summary_units, dtype=object)
+            
+            # Add FOV preview state
+            if self._fov_preview._ptu_path:
+                session_data["fov_ptu_path"] = self._fov_preview._ptu_path
+            if self._fov_preview._lifetime_map is not None:
+                session_data["fov_lifetime_map"] = self._fov_preview._lifetime_map
+            if self._fov_preview._intensity_map is not None:
+                session_data["fov_intensity_map"] = self._fov_preview._intensity_map
+            session_data["fov_color_scale"] = json.dumps(self._fov_preview._flim_color_scale)
+            session_data["fov_n_exp"] = self._fov_preview._n_exp
+            
+            # Write single comprehensive session NPZ file
+            np.savez_compressed(session_file, **session_data)
+            print(f"✓ Session saved: {session_file}")
+            print(f"  Saved {len(session_data)} items (fit results + form state + FOV preview)")
+            
+            # Also store the path for quick save
+            self._current_session_file = str(session_file)
+            
+        except Exception as e:
+            import traceback
+            print(f"[Save Error] {e}")
+            traceback.print_exc()
+
+    def _load_roi_session(self, session_path: str) -> dict:
+        """Load complete session from .roi_session.npz file."""
+        try:
+            import numpy as np
+            import json
+            
+            data = np.load(session_path, allow_pickle=True)
+            loaded = {}
+            
+            # Extract all arrays from NPZ
+            for key in data.files:
+                val = data[key]
+                # Convert object arrays back to lists if needed
+                if hasattr(val, 'dtype') and val.dtype == object:
+                    val = val.tolist()
+                loaded[key] = val
+            
+            print(f"✓ Loaded session from {session_path}")
+            # Also store for later use
+            self._current_session_file = session_path
+            return loaded
+        except Exception as e:
+            print(f"[Load Session Error] {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
+
+    def _auto_load_session_for_ptu(self, ptu_path: str):
+        """Check for and auto-load session file when PTU is selected."""
+        try:
+            from pathlib import Path
+            import json
+            import numpy as np
+            
+            ptu_path = Path(ptu_path)
+            session_file = ptu_path.parent / f"{ptu_path.stem}.roi_session.npz"
+            
+            if session_file.exists():
+                print(f"[Auto-Load] Found session for PTU: {session_file.name}")
+                
+                # Load the session
+                session_data = self._load_roi_session(str(session_file))
+                if not session_data:
+                    return
+                
+                # Restore form state
+                if "form_state_json" in session_data:
+                    try:
+                        form_state_str = session_data["form_state_json"]
+                        # Handle numpy array scalar
+                        if isinstance(form_state_str, np.ndarray):
+                            form_state_str = form_state_str.item()
+                        if isinstance(form_state_str, bytes):
+                            form_state_str = form_state_str.decode('utf-8')
+                        form_state = json.loads(form_state_str)
+                        self._restore_form_state(form_state)
+                    except Exception as e:
+                        print(f"[Auto-Load] Could not restore form state: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Restore fit results to display
+                try:
+                    # Extract summary
+                    params = session_data.get("summary_params", [])
+                    values = session_data.get("summary_values", [])
+                    units = session_data.get("summary_units", [])
+                    
+                    if isinstance(params, np.ndarray):
+                        params = params.tolist()
+                    if isinstance(values, np.ndarray):
+                        values = values.tolist()
+                    if isinstance(units, np.ndarray):
+                        units = units.tolist()
+                    
+                    rows = []
+                    for param, val, unit in zip(params, values, units):
+                        if isinstance(param, bytes):
+                            param = param.decode('utf-8')
+                        if isinstance(val, bytes):
+                            val = val.decode('utf-8')
+                        if isinstance(unit, bytes):
+                            unit = unit.decode('utf-8')
+                        rows.append((str(param), str(val), str(unit)))
+                    
+                    # Display summary
+                    if rows:
+                        self._res.populate_summary(rows)
+                    
+                    # Restore FOV preview
+                    if "fov_intensity_map" in session_data and "fov_lifetime_map" in session_data:
+                        intensity = session_data["fov_intensity_map"]
+                        lifetime = session_data["fov_lifetime_map"]
+                        
+                        if isinstance(intensity, np.ndarray):
+                            self._fov_preview._intensity_map = intensity
+                        if isinstance(lifetime, np.ndarray):
+                            self._fov_preview._lifetime_map = lifetime
+                        
+                        # Restore color scale
+                        if "fov_color_scale" in session_data:
+                            try:
+                                import json
+                                cs = session_data["fov_color_scale"]
+                                if isinstance(cs, bytes):
+                                    cs = cs.decode('utf-8')
+                                self._fov_preview._flim_color_scale = json.loads(cs)
+                            except:
+                                pass
+                        
+                        if "fov_n_exp" in session_data:
+                            n_exp = session_data["fov_n_exp"]
+                            if isinstance(n_exp, (np.integer, int)):
+                                self._fov_preview._n_exp = int(n_exp)
+                        try:
+                            # Redraw the FOV preview decay with fit overlay
+                            ax_decay = self._fov_preview._ax_decay
+                            ax_decay.clear()
+                            if "decay" in session_data and "time_ns" in session_data:
+                                decay   = session_data["decay"]
+                                time_ns = session_data["time_ns"]
+                                if isinstance(decay, np.ndarray) and isinstance(time_ns, np.ndarray):
+                                    ax_decay.semilogy(time_ns, decay, 'o-', color="steelblue",
+                                                    linewidth=1.5, markersize=3, label="Measured", alpha=0.7)
+                                    irf = session_data.get("irf_prompt")
+                                    if irf is not None and isinstance(irf, np.ndarray) and irf.max() > 0:
+                                        irf_scaled = (irf / irf.max()) * decay.max() * 0.2
+                                        ax_decay.semilogy(time_ns[:len(irf)], np.maximum(irf_scaled, 1e-2),
+                                                        color="orange", linewidth=2.0, label="IRF", alpha=0.8)
+                                    gs = {}
+                                    if "global_summary_json" in session_data:
+                                        try:
+                                            gsj = session_data["global_summary_json"]
+                                            if isinstance(gsj, bytes): gsj = gsj.decode()
+                                            gs = json.loads(gsj) if isinstance(gsj, str) else {}
+                                        except: pass
+                                    model = gs.get('model')
+                                    if model is not None and len(model) > 0:
+                                        ax_decay.semilogy(time_ns, model, color="red", linewidth=2.0,
+                                                        label="Fitted", alpha=0.8)
+                                    ax_decay.legend(fontsize=8, loc="upper right")
+                            ax_decay.set_title("Summed Decay (reloaded)", fontsize=10, fontweight="bold")
+                            ax_decay.set_xlabel("Time (ns)")
+                            ax_decay.set_ylabel("Photon Count")
+                            ax_decay.grid(True, alpha=0.3)
+                            ax_decay.tick_params(labelsize=8)
+
+                            # Update status
+                            self._res._status.set("✓ Session restored — ready to export or re-fit")
+                            self._fov_preview._ctrl_frame.grid()
+                            self._res._export_btn.configure(state="normal")
+                            self._fov_preview._canvas_mpl.draw_idle()
+                            print("[Auto-Load] ✓ Session restored")
+                        except Exception as e:
+                            print(f"[Auto-Load] Could not redraw FOV: {e}")
+                    
+                except Exception as e:
+                    print(f"[Auto-Load] Could not restore results: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"[Auto-Load] No session found for {ptu_path.name}")
+        except Exception as e:
+            print(f"[Auto-Load Error] {e}")
+
+    def load_roi_fit(self, npz_path: str) -> dict:
+        """Load previously saved ROI fit data from NPZ file."""
+        try:
+            import numpy as np
+            
+            data = np.load(npz_path, allow_pickle=True)
+            loaded = {}
+            
+            # Extract all arrays from NPZ
+            for key in data.files:
+                val = data[key]
+                # Convert object arrays back to lists if needed
+                if hasattr(val, 'dtype') and val.dtype == object:
+                    val = val.tolist()
+                loaded[key] = val
+            
+            print(f"✓ Loaded ROI fit from {npz_path}")
+            return loaded
+        except Exception as e:
+            print(f"✗ Failed to load ROI fit: {e}")
+            return {}
+
+    def _save_npz_quick(self, output_dir: str):
+        """Quick save session: prompt user for location and copy session file."""
+        try:
+            from pathlib import Path
+            import shutil
+            import numpy as np
+            
+            # Find the existing session file - prefer stored path, then look next to PTU
+            session_source = None
+            
+            # First try the stored session path (from loading or just saved)
+            if self._current_session_file:
+                session_source = Path(self._current_session_file)
+                if session_source.exists():
+                    print(f"[Save Session] Using stored session path: {session_source}")
+                else:
+                    print(f"[Save Session] Stored path no longer exists: {session_source}")
+                    session_source = None
+            
+            # Fallback: look for session file next to PTU file
+            if not session_source:
+                ptu_path = self._fov_preview._ptu_path if self._fov_preview else None
+                
+                # Convert ptu_path to string if it's an ndarray or bytes
+                if ptu_path is not None:
+                    if isinstance(ptu_path, np.ndarray):
+                        ptu_path = ptu_path.item() if ptu_path.ndim == 0 else str(ptu_path[0])
+                    if isinstance(ptu_path, bytes):
+                        ptu_path = ptu_path.decode('utf-8')
+                    ptu_path = str(ptu_path)
+                
+                if ptu_path:
+                    base_path = Path(ptu_path)
+                    if base_path.is_file():
+                        session_source = base_path.parent / f"{base_path.stem}.roi_session.npz"
+                        if session_source.exists():
+                            print(f"[Save Session] Found session next to PTU: {session_source}")
+                        else:
+                            session_source = None
+            
+            if not session_source or not session_source.exists():
+                messagebox.showwarning("No session data", "No saved session (.roi_session.npz) found.\n\nRun a fit first to create a session.")
+                return
+            
+            # Ask user where to save
+            output_path = Path(filedialog.askdirectory(
+                title="Save Session File",
+                initialdir=output_dir))
+            
+            if not output_path or output_path == Path():
+                return  # User cancelled
+            
+            # Check if source and dest are the same file
+            session_dest = output_path / session_source.name
+            
+            if session_source.samefile(session_dest) if session_dest.exists() else session_source == session_dest:
+                messagebox.showinfo("Already Saved", 
+                    f"Session already saved at:\n{session_source}")
+                return
+            
+            # If destination exists, ask to override
+            if session_dest.exists():
+                response = messagebox.askyesno("File Exists", 
+                    f"File already exists:\n{session_dest.name}\n\nOverride?")
+                if not response:
+                    return
+            
+            # Copy to chosen location
+            session_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(session_source, session_dest)
+            
+            messagebox.showinfo("Success", f"Session saved:\n{session_dest.name}\nat {output_path}")
+            print(f"✓ Session saved: {session_dest}")
+            
+        except Exception as e:
+            print(f"[Save Session Error] {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to save session:\n{str(e)}")
+
+    def _load_fitted_data_from_file(self, npz_path: str):
+        """Load previously fitted data from NPZ and display in results panel."""
+        try:
+            import numpy as np
+            import json
+            from pathlib import Path
+            
+            fit_result = self.load_roi_fit(npz_path)
+            if not fit_result:
+                messagebox.showerror("Load Error", f"Failed to load fitted data from:\n{npz_path}")
+                return
+            
+            # Extract summary data
+            params = fit_result.get("summary_params", [])
+            values = fit_result.get("summary_values", [])
+            units = fit_result.get("summary_units", [])
+            
+            # Build rows for display
+            rows = []
+            if isinstance(params, np.ndarray):
+                params = params.tolist()
+            if isinstance(values, np.ndarray):
+                values = values.tolist()
+            if isinstance(units, np.ndarray):
+                units = units.tolist()
+            
+            for param, val, unit in zip(params, values, units):
+                if isinstance(param, bytes):
+                    param = param.decode('utf-8')
+                if isinstance(val, bytes):
+                    val = val.decode('utf-8')
+                if isinstance(unit, bytes):
+                    unit = unit.decode('utf-8')
+                rows.append((str(param), str(val), str(unit)))
+            
+            # Display in results panel
+            if rows:
+                self._res.populate_summary(rows)
+            
+            # Restore FOV preview state if available
+            if "fov_ptu_path" in fit_result:
+                ptu_path = fit_result["fov_ptu_path"]
+                # Handle various types: bytes, ndarray, str
+                if isinstance(ptu_path, bytes):
+                    ptu_path = ptu_path.decode('utf-8')
+                elif isinstance(ptu_path, np.ndarray):
+                    # Convert 0-d array to scalar
+                    ptu_path = ptu_path.item() if ptu_path.ndim == 0 else str(ptu_path[0])
+                    if isinstance(ptu_path, bytes):
+                        ptu_path = ptu_path.decode('utf-8')
+                self._fov_preview._ptu_path = str(ptu_path) if ptu_path else None
+            
+            if "fov_lifetime_map" in fit_result:
+                lifetime = fit_result["fov_lifetime_map"]
+                if isinstance(lifetime, np.ndarray):
+                    self._fov_preview._lifetime_map = lifetime
+            
+            if "fov_intensity_map" in fit_result:
+                intensity = fit_result["fov_intensity_map"]
+                if isinstance(intensity, np.ndarray):
+                    self._fov_preview._intensity_map = intensity
+            
+            if "fov_color_scale" in fit_result:
+                try:
+                    cs = fit_result["fov_color_scale"]
+                    if isinstance(cs, bytes):
+                        cs = cs.decode('utf-8')
+                    self._fov_preview._flim_color_scale = json.loads(cs)
+                except:
+                    pass
+            
+            if "fov_n_exp" in fit_result:
+                n_exp = fit_result["fov_n_exp"]
+                if isinstance(n_exp, (np.integer, int)):
+                    self._fov_preview._n_exp = int(n_exp)
+            
+            # Redraw FOV preview with restored data
+            try:
+                if self._fov_preview._lifetime_map is not None and self._fov_preview._intensity_map is not None:
+                    from flimkit.UI import flim_display
+
+                    intensity = self._fov_preview._intensity_map
+                    lifetime  = self._fov_preview._lifetime_map
+
+                    ax_img  = self._fov_preview._ax_img
+                    ax_flim = self._fov_preview._ax_flim
+                    ax_cbar = self._fov_preview._ax_cbar
+                    fig     = self._fov_preview._fig
+
+                    # — Intensity image —
+                    ax_img.clear()
+                    intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
+                    ax_img.imshow(intensity_clipped, cmap="inferno", origin="upper")
+                    ax_img.set_title("Intensity Image", fontsize=10, fontweight="bold")
+                    ax_img.set_xlabel("X (pixels)")
+                    ax_img.set_ylabel("Y (pixels)")
+
+                    # — FLIM image (FIX: use Colormap object so set_bad works) —
+                    cs = self._fov_preview._flim_color_scale
+                    scaled = flim_display.apply_color_scale(
+                        lifetime,
+                        vmin=cs.get('vmin'),
+                        vmax=cs.get('vmax'),
+                        gamma=cs.get('gamma', 1.0),
+                    )
+                    cmap_obj = flim_display.get_colormap(cs.get('cmap', 'viridis'))
+                    cmap_obj.set_bad(color='black')                          # ← KEY FIX
+                    ax_flim.clear()
+                    ax_cbar.clear()
+                    im = ax_flim.imshow(scaled, cmap=cmap_obj, origin="upper", vmin=0, vmax=1)
+                    ax_flim.set_title("FLIM Lifetime (τ-weighted)", fontsize=10, fontweight="bold")
+                    ax_flim.set_xlabel("X (pixels)")
+                    ax_flim.set_ylabel("Y (pixels)")
+
+                    # Colorbar
+                    valid = lifetime[~np.isnan(lifetime)]
+                    if valid.size > 0:
+                        vmin_cb = cs.get('vmin') or float(np.nanmin(valid))
+                        vmax_cb = cs.get('vmax') or float(np.nanmax(valid))
+                        cbar = fig.colorbar(im, cax=ax_cbar)
+                        cbar.set_label("τ (ns)", fontsize=8)
+                        ticks = np.linspace(0, 1, 5)
+                        cbar.set_ticks(ticks)
+                        cbar.set_ticklabels([f"{vmin_cb + t*(vmax_cb - vmin_cb):.2f}" for t in ticks], fontsize=7)
+
+                    # — Decay + model + IRF (FIX: draw into FOV preview, not non-existent _res._ax_decay) —
+                    ax_decay = self._fov_preview._ax_decay
+                    ax_decay.clear()
+                    decay    = fit_result.get("decay")
+                    time_ns  = fit_result.get("time_ns")
+                    if decay is not None and time_ns is not None:
+                        ax_decay.semilogy(time_ns, decay, 'o-', color="steelblue",
+                                        linewidth=1.5, markersize=3, label="Measured", alpha=0.7)
+                        irf = fit_result.get("irf_prompt")
+                        if irf is not None and len(irf) > 0 and irf.max() > 0:
+                            irf_scaled = (irf / irf.max()) * decay.max() * 0.2
+                            ax_decay.semilogy(time_ns[:len(irf)], np.maximum(irf_scaled, 1e-2),
+                                            color="orange", linewidth=2.0, label="IRF", alpha=0.8)
+                        # Reconstruct global_summary for model
+                        gs = {}
+                        gs_json = fit_result.get("global_summary_json")
+                        if gs_json:
+                            if isinstance(gs_json, bytes): gs_json = gs_json.decode()
+                            try: gs = json.loads(gs_json)
+                            except: pass
+                        model = gs.get('model')
+                        if model is not None and len(model) > 0:
+                            ax_decay.semilogy(time_ns, model, color="red", linewidth=2.0,
+                                            label="Fitted", alpha=0.8)
+                        ax_decay.legend(fontsize=8, loc="upper right")
+                    ax_decay.set_title("Summed Decay", fontsize=10, fontweight="bold")
+                    ax_decay.set_xlabel("Time (ns)")
+                    ax_decay.set_ylabel("Photon Count")
+                    ax_decay.grid(True, alpha=0.3)
+                    ax_decay.tick_params(labelsize=8)
+
+                    self._fov_preview._ctrl_frame.grid()
+                    self._fov_preview._canvas_mpl.draw_idle()
+                    print(f"[Load] Restored FOV preview from cached data")
+            except Exception as e:
+                import traceback
+                print(f"[Load] Could not redraw FOV preview: {e}")
+                traceback.print_exc()
+
+            # — FIX: restore form state —
+            if "form_state_json" in fit_result:
+                try:
+                    fs = fit_result["form_state_json"]
+                    if isinstance(fs, np.ndarray): fs = fs.item()
+                    if isinstance(fs, bytes): fs = fs.decode()
+                    self._restore_form_state(json.loads(fs))
+                except Exception as e:
+                    print(f"[Load] Could not restore form state: {e}")
+
+            
+            # Store fit result for export (use NPZ directory as output dir)
+            output_dir = str(Path(npz_path).parent)
+            self._res.set_fit_result(fit_result, output_dir, npz_path=npz_path)
+            
+            # Switch to Results panel
+            self._switch_form("results")
+            
+            messagebox.showinfo("Success", f"Loaded fitted data from:\n{Path(npz_path).name}")
+            
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to load fitted data:\n{str(e)}")
+
+    def _show_export_dialog(self, image_dict: dict, output_dir: str):
+        """Show export options dialog for fit images and NPZ data."""
+        try:
+            print(f"[Export Dialog] Starting with {len(image_dict)} items")
+            
+            if not image_dict or not any(isinstance(v, np.ndarray) for v in image_dict.values()):
+                messagebox.showinfo("No images", "No fit images available to export.")
+                return
+            
+            # Find all numpy arrays that look like images (2D or 3D with reasonable size)
+            available_images = {}
+            for k, v in image_dict.items():
+                if isinstance(v, np.ndarray):
+                    # Must be 2D (grayscale) or 3D with 3 channels (RGB)
+                    if (v.ndim == 2) or (v.ndim == 3 and v.shape[2] == 3):
+                        available_images[k] = v
+                        print(f"[Export] Found image: {k} shape={v.shape}")
+            
+            if not available_images:
+                messagebox.showinfo("No images", "No valid FLIM result images found to export.")
+                return
+            
+            print(f"[Export] {len(available_images)} images available: {list(available_images.keys())}")
+            print(f"[Export Dialog] Creating Toplevel on root={self.root}")
+            
+            # Create dialog
+            dlg = tk.Toplevel(self.root)
+            dlg.title("Export Results")
+            dlg.geometry("550x480")
+            dlg.transient(self.root)
+            dlg.grab_set()
+            print(f"[Export Dialog] Dialog created successfully")
+            
+            # Options
+            bv_scalebar = tk.BooleanVar(value=True)
+            bv_annotations = tk.BooleanVar(value=True)
+            image_vars = {}  # Initialize dictionary
+
+            for key in available_images.keys():
+                image_vars[key] = tk.BooleanVar(value=True)
+            
+            # Title
+            ttk.Label(dlg, text="Export Results", font=("TkDefaultFont", 11, "bold")).pack(pady=10)
+            
+            # Image selection section
+            img_frame = ttk.LabelFrame(dlg, text="Images to Export", padding=10)
+            img_frame.pack(fill="both", expand=True, padx=20, pady=5)
+            for key in sorted(available_images.keys()):
+                ttk.Checkbutton(img_frame, text=key.replace('_', ' ').title(), 
+                               variable=image_vars[key]).pack(anchor="w", pady=3)
+            
+            # Select all / None buttons
+            sel_btn_frame = ttk.Frame(img_frame)
+            sel_btn_frame.pack(fill="x", pady=(10, 0))
+            def select_all():
+                for v in image_vars.values():
+                    v.set(True)
+            def select_none():
+                for v in image_vars.values():
+                    v.set(False)
+            ttk.Button(sel_btn_frame, text="All", command=select_all, width=8).pack(side="left", padx=2)
+            ttk.Button(sel_btn_frame, text="None", command=select_none, width=8).pack(side="left", padx=2)
+            
+            # Image rendering options
+            opt_frame = ttk.LabelFrame(dlg, text="Rendering Options", padding=10)
+            opt_frame.pack(fill="x", padx=20, pady=5)
+            ttk.Checkbutton(opt_frame, text="Include scale bar", variable=bv_scalebar).pack(anchor="w", pady=3)
+            ttk.Checkbutton(opt_frame, text="Include ROI annotations", variable=bv_annotations).pack(anchor="w", pady=3)
+            
+            # Format selection
+            fmt_frame = ttk.LabelFrame(dlg, text="Image Format", padding=10)
+            fmt_frame.pack(fill="x", padx=20, pady=5)
+            bv_format = tk.StringVar(value="png")
+            ttk.Radiobutton(fmt_frame, text="PNG (smaller file size, web-friendly)", 
+                           variable=bv_format, value="png").pack(anchor="w", pady=3)
+            ttk.Radiobutton(fmt_frame, text="OME-TIFF (lossless, metadata-rich)", 
+                           variable=bv_format, value="ometiff").pack(anchor="w", pady=3)
+            
+            # Export location
+            loc_frame = ttk.LabelFrame(dlg, text="Save Location", padding=10)
+            loc_frame.pack(fill="x", padx=20, pady=5)
+            export_path = tk.StringVar(value=output_dir)
+            ttk.Label(loc_frame, text="Path:").pack(side="left")
+            ttk.Entry(loc_frame, textvariable=export_path, width=40).pack(side="left", padx=5, fill="x", expand=True)
+            
+            def browse_folder():
+                from tkinter import filedialog
+                folder = filedialog.askdirectory(initialdir=output_dir, title="Select export folder")
+                if folder:
+                    export_path.set(folder)
+                    print(f"[Export] Save location changed to: {folder}")
+            
+            ttk.Button(loc_frame, text="Browse", command=browse_folder, width=8).pack(side="left", padx=2)
+            
+            def do_export():
+                try:
+                    # Filter images to only those selected
+                    selected_images = {k: v for k, v in available_images.items() 
+                                     if image_vars[k].get()}
+                    if not selected_images:
+                        messagebox.showwarning("No selection", "Please select at least one image to export.")
+                        return
+                    
+                    export_dir = export_path.get()
+                    if not export_dir.strip():
+                        messagebox.showwarning("No path", "Please select an export directory.")
+                        return
+                    
+                    fmt = bv_format.get()
+                    print(f"[Export] Exporting {len(selected_images)} images in {fmt.upper()} format to {export_dir}")
+                    self._export_images(selected_images, export_dir, 
+                                       with_scalebar=bv_scalebar.get(),
+                                       with_annotations=bv_annotations.get(),
+                                       format=fmt)
+                    dlg.destroy()
+                    messagebox.showinfo("Success", f"Results exported to\n{export_dir}")
+                except Exception as e:
+                    print(f"[Export Error] {e}")
+                    import traceback
+                    traceback.print_exc()
+                    messagebox.showerror("Export Error", f"Failed to export:\n{str(e)}")
+            
+            btn_frame = ttk.Frame(dlg)
+            btn_frame.pack(pady=15, fill="x", padx=20)
+            
+            # Export button (main action)
+            export_btn = ttk.Button(btn_frame, text="💾 Export", command=do_export)
+            export_btn.pack(side="left", padx=5, fill="x", expand=True)
+            
+            # Cancel button
+            cancel_btn = ttk.Button(btn_frame, text="Cancel", command=dlg.destroy)
+            cancel_btn.pack(side="left", padx=5)
+            
+            print(f"[Export Dialog] Dialog fully created, awaiting user input")
+            
+        except Exception as e:
+            print(f"[Export Dialog Error] {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Dialog Error", f"Failed to create export dialog:\n{str(e)}")
+
+    def _export_images(self, image_dict: dict, output_dir: str, 
+                      with_scalebar: bool = True, with_annotations: bool = True,
+                      format: str = "png"):
+        """Export intensity and lifetime images in PNG or OME-TIFF format."""
+        try:
+            from pathlib import Path
+            import numpy as np
+            import matplotlib.pyplot as plt
+            
+            fmt = format.lower()
+            print(f"[Export Images] Exporting {len(image_dict)} images in {fmt.upper()} format to {output_dir}")
+            
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            exported_count = 0
+            
+            if fmt == "ometiff":
+                # Try to use tifffile for OME-TIFF export (lossless, preserves metadata)
+                try:
+                    import tifffile
+                    
+                    # Export intensity as OME-TIFF
+                    if 'intensity' in image_dict and isinstance(image_dict['intensity'], np.ndarray):
+                        try:
+                            intensity = image_dict['intensity']
+                            intensity_16bit = (intensity / intensity.max() * 65535).astype(np.uint16) if intensity.max() > 0 else intensity.astype(np.uint16)
+                            
+                            output_file = output_path / "intensity.ome.tiff"
+                            tifffile.imwrite(output_file, intensity_16bit, photometric='minisblack',
+                                           metadata={'description': 'FLIM Intensity Image'})
+                            print(f"✓ Exported OME-TIFF intensity: {output_file.name} ({intensity.shape})")
+                            exported_count += 1
+                        except Exception as e:
+                            print(f"[Export] Error exporting intensity TIFF: {e}")
+                    
+                    # Export lifetime as OME-TIFF
+                    if 'lifetime' in image_dict and isinstance(image_dict['lifetime'], np.ndarray):
+                        try:
+                            lifetime = image_dict['lifetime']
+                            lifetime_32bit = lifetime.astype(np.float32)
+                            
+                            output_file = output_path / "lifetime.ome.tiff"
+                            tifffile.imwrite(output_file, lifetime_32bit, photometric='minisblack',
+                                           metadata={'description': 'FLIM Lifetime Map (ns)'})
+                            print(f"✓ Exported OME-TIFF lifetime: {output_file.name} ({lifetime.shape})")
+                            exported_count += 1
+                        except Exception as e:
+                            print(f"[Export] Error exporting lifetime TIFF: {e}")
+                            
+                except ImportError:
+                    print(f"[Export] tifffile not installed, falling back to PNG")
+                    fmt = "png"
+            
+            if fmt == "png":
+                # Export as PNG (high quality)
+                # Export intensity image at maximum resolution
+                if 'intensity' in image_dict and isinstance(image_dict['intensity'], np.ndarray):
+                    try:
+                        intensity = image_dict['intensity']
+                        print(f"[Export] Intensity shape: {intensity.shape}")
+                        
+                        # Create figure with no margins for maximum resolution
+                        h, w = intensity.shape
+                        fig = plt.figure(figsize=(w/100, h/100), dpi=100, facecolor='black', edgecolor='black')  # 1:1 pixel ratio
+                        ax = fig.add_axes([0, 0, 1, 1])  # Full figure area
+                        ax.set_facecolor('black')
+                        
+                        intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
+                        im = ax.imshow(intensity_clipped, cmap='inferno', origin='upper', aspect='auto')
+                        ax.axis('off')
+                        
+                        output_file = output_path / "intensity.png"
+                        fig.savefig(output_file, dpi=100, bbox_inches='tight', pad_inches=0, facecolor='black')
+                        plt.close(fig)
+                        print(f"✓ Exported PNG intensity: {output_file.name} ({intensity.shape})")
+                        exported_count += 1
+                    except Exception as e:
+                        print(f"[Export] Error exporting intensity PNG: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Export lifetime/FLIM map at maximum resolution
+                if 'lifetime' in image_dict and isinstance(image_dict['lifetime'], np.ndarray):
+                    try:
+                        lifetime = image_dict['lifetime']
+                        print(f"[Export] Lifetime shape: {lifetime.shape}")
+                        
+                        # Create figure with no margins for maximum resolution
+                        h, w = lifetime.shape[:2]
+                        fig = plt.figure(figsize=(w/100, h/100), dpi=100, facecolor='black', edgecolor='black')  # 1:1 pixel ratio
+                        ax = fig.add_axes([0, 0, 1, 1])  # Full figure area
+                        ax.set_facecolor('black')
+                        
+                        im = ax.imshow(lifetime, cmap='viridis', origin='upper', aspect='auto')
+                        ax.axis('off')
+                        
+                        output_file = output_path / "lifetime.png"
+                        fig.savefig(output_file, dpi=100, bbox_inches='tight', pad_inches=0, facecolor='black')
+                        plt.close(fig)
+                        print(f"✓ Exported PNG lifetime: {output_file.name} ({lifetime.shape})")
+                        exported_count += 1
+                    except Exception as e:
+                        print(f"[Export] Error exporting lifetime PNG: {e}")
+                        import traceback
+                        traceback.print_exc()
+            
+            # Export summed decay plot for reference (always PNG)
+            try:
+                if self._fov_preview is not None and hasattr(self._fov_preview, '_ax_decay'):
+                    ax_decay = self._fov_preview._ax_decay
+                    
+                    # Create a high-quality decay plot
+                    fig, ax = plt.subplots(figsize=(14, 8), dpi=150, facecolor='white', edgecolor='white')
+                    ax.set_facecolor('white')
+                    
+                    # Clone all lines from the preview
+                    for line in ax_decay.get_lines():
+                        ax.plot(line.get_xdata(), line.get_ydata(), 
+                               color=line.get_color(), linewidth=2.5,
+                               marker=line.get_marker(), markersize=line.get_markersize(),
+                               label=line.get_label(), alpha=line.get_alpha())
+                    
+                    ax.set_yscale('log')
+                    ax.set_title('Summed Decay - Measured, IRF, and Fitted', fontsize=16, fontweight='bold', color='black')
+                    ax.set_xlabel('Time (ns)', fontsize=13, color='black')
+                    ax.set_ylabel('Photon Count', fontsize=13, color='black')
+                    ax.tick_params(colors='black')
+                    ax.legend(fontsize=12, loc='upper right', framealpha=0.9)
+                    ax.grid(True, alpha=0.3, color='gray')
+                    
+                    output_file = output_path / "summed_decay.png"
+                    fig.savefig(output_file, dpi=150, bbox_inches='tight', facecolor='white')
+                    plt.close(fig)
+                    print(f"✓ Exported decay plot: {output_file.name}")
+                    exported_count += 1
+            except Exception as e:
+                print(f"[Export] Error exporting decay: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            print(f"✓ Export complete: {exported_count} high-resolution images to {output_path}")
+            
+            # Open the folder in finder
+            try:
+                import subprocess
+                subprocess.Popen(['open', str(output_path)])
+                print(f"✓ Opened export folder in Finder")
+            except Exception as e:
+                print(f"[Export] Could not open folder: {e}")
+                
+        except Exception as e:
+            print(f"✗ Export images error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _export_npz_fit(self, fit_result: dict, output_dir: str, ptu_path: str = None):
+        """Copy the existing NPZ fit file to export directory instead of recreating it."""
+        try:
+            from pathlib import Path
+            import shutil
+            
+            # Find the existing NPZ file that was saved after fitting
+            npz_source = None
+            
+            # If we have ptu_path, look for the NPZ next to it
+            if ptu_path:
+                base_path = Path(ptu_path)
+                if base_path.is_file():
+                    npz_source = base_path.parent / f"{base_path.stem}.roi_fit.npz"
+            
+            # If not found, try to infer from fit_result
+            if not npz_source or not npz_source.exists():
+                source = fit_result.get('source')
+                if isinstance(source, bytes):
+                    source = source.decode('utf-8')
+                if source:
+                    base_path = Path(source)
+                    if base_path.is_file():
+                        npz_source = base_path.parent / f"{base_path.stem}.roi_fit.npz"
+                    else:
+                        npz_source = base_path / "roi_fit.npz"
+            
+            # Copy the NPZ file to export directory
+            if npz_source and npz_source.exists():
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                npz_dest = output_path / "fit_result.npz"
+                shutil.copy2(npz_source, npz_dest)
+                print(f"✓ NPZ fit data copied to export: {npz_dest.name}")
+            else:
+                print(f"[Export] Could not find existing NPZ file to copy")
+        except Exception as e:
+            print(f"✗ NPZ export error: {e}")
+            import traceback
+            traceback.print_exc()
+            import traceback
+            traceback.print_exc()
 
     # -------------------------------------------------------------------------
     # TAB 1 – Single-FOV FLIM fit
@@ -2212,9 +3470,18 @@ class _UIBuilder:
     def _on_fov_ptu_changed(self, var, index, mode):
         """Auto-load FOV preview when PTU file is selected."""
         ptu_path = self.sv_ptu.get().strip()
+        
+        # Skip if PTU hasn't actually changed (prevents loop from trace callback)
+        if ptu_path == self._last_loaded_ptu:
+            return
+        
+        self._last_loaded_ptu = ptu_path
+        
         if ptu_path and hasattr(self, '_fov_preview'):
             # Defer loading to give the UI a chance to update
             self.root.after(100, lambda: self._fov_preview.load_fov(ptu_path))
+            # Auto-load session if it exists (restore form + results)
+            self.root.after(150, lambda: self._auto_load_session_for_ptu(ptu_path))
 
     # -------------------------------------------------------------------------
     # Run handlers
@@ -2629,6 +3896,25 @@ class _UIBuilder:
             except Exception as e:
                 import traceback
                 traceback.print_exc()
+        
+        # NPZ is saved automatically after fit completes (silently)
+        # but can also be explicitly saved to a different location via "Save NPZ" button
+        npz_file_path = None
+        if ptu_path or output_dir:
+            try:
+                self._save_roi_progress(ptu_path or output_dir, fit_result, rows or [])
+                # Figure out where the session file was saved
+                from pathlib import Path
+                base_path = Path(ptu_path) if ptu_path else Path(output_dir)
+                if base_path.is_file():
+                    npz_file_path = str(base_path.parent / f"{base_path.stem}.roi_session.npz")
+                else:
+                    npz_file_path = str(base_path / "roi_session.npz")
+            except Exception as e:
+                print(f"[Info] Could not save ROI progress: {e}")
+        
+        # Store fit result with NPZ path so quick save knows where it is
+        self._res.set_fit_result(fit_result or {}, output_dir, npz_path=npz_file_path)
 
     def _extract_summary_rows(self, global_summary: dict, global_popt=None) -> list:
         """Extract fit summary rows from global_summary dict.
