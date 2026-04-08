@@ -20,6 +20,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from flimkit.UI.progress_window import ProgressWindow
 from flimkit.UI.phasor_panel import PhasorViewPanel
+from flimkit.UI import flim_display
 
 # Modern theme support
 try:
@@ -495,13 +496,15 @@ class FOVPreviewPanel:
         self.frame.columnconfigure(0, weight=1)
         self.frame.rowconfigure(0, weight=1)
 
-        # Create figure with GridSpec layout: intensity & FLIM side-by-side | decay below
+        # Create figure with GridSpec layout: intensity & FLIM side-by-side | decay below + colorbar
         from matplotlib.gridspec import GridSpec
         self._fig = Figure(figsize=(10, 8), dpi=100, facecolor="#ffffff")
-        gs = GridSpec(2, 2, figure=self._fig, height_ratios=[1, 0.6], hspace=0.3, wspace=0.3)
+        # 2 rows, 3 cols: col 0 & 1 for images, col 2 for colorbar
+        gs = GridSpec(2, 3, figure=self._fig, height_ratios=[1, 0.6], width_ratios=[1, 1, 0.05], hspace=0.3, wspace=0.15)
         
         self._ax_img = self._fig.add_subplot(gs[0, 0])    # Intensity (top-left)
         self._ax_flim = self._fig.add_subplot(gs[0, 1])   # FLIM (top-right)
+        self._ax_cbar = self._fig.add_subplot(gs[0, 2])   # Colorbar (top-right, narrow)
         self._ax_decay = self._fig.add_subplot(gs[1, :])  # Decay (bottom, full width)
         
         self._canvas_mpl = FigureCanvasTkAgg(self._fig, master=self.frame)
@@ -512,11 +515,45 @@ class FOVPreviewPanel:
         ttk.Label(self.frame, textvariable=self._status, foreground="grey", font=("Courier", 8)).grid(
             row=1, column=0, sticky="w", padx=4, pady=(2, 4))
 
+        # ── FLIM Color Scale Controls (Phase 2.2) ──
+        ctrl_frame = ttk.LabelFrame(self.frame, text="FLIM Color Scale", padding=4)
+        ctrl_frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
+        ctrl_frame.columnconfigure(1, weight=1)
+        ctrl_frame.grid_remove()  # Hide initially for faster startup
+        self._ctrl_frame = ctrl_frame
+        
+        # Row 0: Min/Max lifetime
+        ttk.Label(ctrl_frame, text="τ range (ns):").grid(row=0, column=0, sticky="w")
+        ttk.Label(ctrl_frame, text="Min:").grid(row=0, column=1, sticky="w", padx=(10, 2))
+        self._sv_tau_min = tk.StringVar()
+        ttk.Entry(ctrl_frame, textvariable=self._sv_tau_min, width=6).grid(row=0, column=2, sticky="w", padx=2)
+        ttk.Label(ctrl_frame, text="Max:").grid(row=0, column=3, sticky="w", padx=(10, 2))
+        self._sv_tau_max = tk.StringVar()
+        ttk.Entry(ctrl_frame, textvariable=self._sv_tau_max, width=6).grid(row=0, column=4, sticky="w", padx=2)
+        ttk.Button(ctrl_frame, text="Auto", width=6, command=self._auto_detect_scale).grid(row=0, column=5, sticky="w", padx=2)
+        
+        # Row 1: Gamma & Colormap
+        ttk.Label(ctrl_frame, text="Γ:").grid(row=1, column=0, sticky="w")
+        self._sv_gamma = tk.StringVar(value="1.0")
+        ttk.Entry(ctrl_frame, textvariable=self._sv_gamma, width=6).grid(row=1, column=2, sticky="w", padx=2)
+        
+        ttk.Label(ctrl_frame, text="Colormap:").grid(row=1, column=3, sticky="w", padx=(10, 2))
+        self._sv_cmap = tk.StringVar(value="viridis")
+        self._cmap_combo = ttk.Combobox(ctrl_frame, textvariable=self._sv_cmap, 
+                                 state="readonly", width=10)
+        self._cmap_combo.grid(row=1, column=4, sticky="w", padx=2)
+        
+        # Defer populating colormap options
+        self._cmap_combo['values'] = list(flim_display.COLORMAPS.keys())
+        
+        ttk.Button(ctrl_frame, text="Update", width=8, command=self._update_flim_display).grid(row=1, column=5, sticky="w", padx=2)
+
         self._ptu_path = None
         
         # ── FLIM image display state (Phase 1) ──
         self._lifetime_map = None  # Cached intensity-weighted lifetime map
         self._intensity_map = None  # Cached intensity (photon count) map
+        self._flim_cbar = None  # Track colorbar for cleanup
         self._flim_color_scale = {  # Color scale parameters
             'vmin': None,   # Auto-detect
             'vmax': None,   # Auto-detect
@@ -630,7 +667,7 @@ class FOVPreviewPanel:
                 print(f"  - No intensity data available, using placeholder")
             
             # ── Compute FLIM lifetime map (Phase 1) ──
-            from flimkit.utils.flim_display import compute_intensity_weighted_lifetime
+            from flimkit.UI.flim_display import compute_intensity_weighted_lifetime
             
             pixel_maps = fit_result.get('pixel_maps')  # For single-FOV fits
             if pixel_maps is None and canvas is not None:
@@ -687,10 +724,8 @@ class FOVPreviewPanel:
             # Update FLIM lifetime image (Phase 2.1)
             self._ax_flim.clear()
             if self._lifetime_map is not None and np.any(~np.isnan(self._lifetime_map)):
-                from flimkit.utils.flim_display import apply_color_scale, get_colormap
-                
                 # Apply color scaling
-                scaled = apply_color_scale(
+                scaled = flim_display.apply_color_scale(
                     self._lifetime_map,
                     vmin=self._flim_color_scale['vmin'],
                     vmax=self._flim_color_scale['vmax'],
@@ -698,7 +733,7 @@ class FOVPreviewPanel:
                 )
                 
                 # Get colormap and set NaN to black
-                cmap = get_colormap(self._flim_color_scale['cmap'])
+                cmap = flim_display.get_colormap(self._flim_color_scale['cmap'])
                 cmap.set_bad(color='black')
                 
                 im = self._ax_flim.imshow(scaled, cmap=cmap, origin="upper", vmin=0, vmax=1)
@@ -713,9 +748,13 @@ class FOVPreviewPanel:
                     data_min = np.min(valid_data)
                     data_max = np.max(valid_data)
                     
-                    # Create colorbar with correct lifetime scale (not 0-1)
-                    cbar = self._fig.colorbar(im, ax=self._ax_flim, fraction=0.030, pad=0.02)
+                    # Clear colorbar axes
+                    self._ax_cbar.clear()
+                    
+                    # Create colorbar using dedicated axes
+                    cbar = self._fig.colorbar(im, cax=self._ax_cbar)
                     cbar.set_label(f"τ (ns)", fontsize=8)
+                    self._flim_cbar = cbar
                     
                     # Manually set colorbar tick labels to lifetime values
                     n_ticks = 5
@@ -723,6 +762,8 @@ class FOVPreviewPanel:
                     tick_values = data_min + tick_positions * (data_max - data_min)
                     cbar.set_ticks(tick_positions)
                     cbar.set_ticklabels([f"{v:.2f}" for v in tick_values], fontsize=7)
+                else:
+                    self._ax_cbar.clear()
             else:
                 self._ax_flim.text(0.5, 0.6, "No FLIM data", ha='center', va='center',
                                   transform=self._ax_flim.transAxes, fontsize=9, color='#888')
@@ -774,13 +815,16 @@ class FOVPreviewPanel:
             self._ax_decay.grid(True, alpha=0.3)
             self._ax_decay.tick_params(labelsize=8)
 
+            # Show control frame now that we have FLIM data
+            self._ctrl_frame.grid()
+            
             self._canvas_mpl.draw_idle()
 
             # Update status with fit summary
             status = f"✓ Fit complete"
-            chi2 = global_summary.get('reduced_chi2')
-            if chi2 is not None:
-                status += f" | χ²_r={chi2:.3f}"
+            chi2_tail = global_summary.get('reduced_chi2_tail')
+            if chi2_tail is not None:
+                status += f" | χ²_r(tail)={chi2_tail:.3f}"
             if nexp > 0:
                 taus = [global_summary.get(f'taus_ns', [])[i] if i < len(global_summary.get('taus_ns', [])) else None 
                         for i in range(nexp)]
@@ -858,12 +902,102 @@ class FOVPreviewPanel:
         self._ax_img.clear()
         self._ax_flim.clear()
         self._ax_decay.clear()
+        self._ax_cbar.clear()
+        self._flim_cbar = None
         self._ax_img.set_title("No FOV loaded")
         self._ax_flim.set_title("FLIM Lifetime")
         self._ax_decay.text(0.5, 0.5, "Load a PTU file →", 
                            ha="center", va="center", transform=self._ax_decay.transAxes,
                            fontsize=10, color="#888")
+        self._ctrl_frame.grid_remove()  # Hide controls when clearing
         self._canvas_mpl.draw_idle()
+
+    def _auto_detect_scale(self):
+        import numpy as np
+        
+        if self._lifetime_map is None:
+            return
+        valid_data = self._lifetime_map[~np.isnan(self._lifetime_map)]
+        if valid_data.size > 0:
+            vmin = np.percentile(valid_data, 2)
+            vmax = np.percentile(valid_data, 98)
+            self._sv_tau_min.set(f"{vmin:.2f}")
+            self._sv_tau_max.set(f"{vmax:.2f}")
+            self._update_flim_display()
+
+    def _update_flim_display(self):
+        import numpy as np
+        
+        if self._lifetime_map is None or not np.any(~np.isnan(self._lifetime_map)):
+            return
+        
+        try:
+            # Parse user inputs
+            try:
+                vmin = float(self._sv_tau_min.get()) if self._sv_tau_min.get() else None
+            except ValueError:
+                vmin = None
+            try:
+                vmax = float(self._sv_tau_max.get()) if self._sv_tau_max.get() else None
+            except ValueError:
+                vmax = None
+            try:
+                gamma = float(self._sv_gamma.get())
+                if gamma <= 0:
+                    gamma = 1.0
+            except ValueError:
+                gamma = 1.0
+            
+            cmap_name = self._sv_cmap.get()
+            
+            # Update color scale cache
+            self._flim_color_scale['vmin'] = vmin
+            self._flim_color_scale['vmax'] = vmax
+            self._flim_color_scale['gamma'] = gamma
+            self._flim_color_scale['cmap'] = cmap_name
+            
+            # Recompute scaled image
+            scaled = flim_display.apply_color_scale(
+                self._lifetime_map, vmin=vmin, vmax=vmax, gamma=gamma
+            )
+            
+            # Redraw FLIM axes
+            self._ax_flim.clear()
+            # Clear colorbar axes
+            self._ax_cbar.clear()
+            self._flim_cbar = None
+            cmap = flim_display.get_colormap(cmap_name)
+            cmap.set_bad(color='black')
+            
+            im = self._ax_flim.imshow(scaled, cmap=cmap, origin="upper", vmin=0, vmax=1)
+            self._ax_flim.set_title("FLIM Lifetime (ns)", fontsize=10, fontweight="bold")
+            self._ax_flim.set_xlabel("X (pixels)")
+            self._ax_flim.set_ylabel("Y (pixels)")
+            self._ax_flim.tick_params(labelsize=8)
+            
+            # Update colorbar
+            valid_data = self._lifetime_map[~np.isnan(self._lifetime_map)]
+            if valid_data.size > 0:
+                data_min = vmin if vmin is not None else np.min(valid_data)
+                data_max = vmax if vmax is not None else np.max(valid_data)
+                
+                # Clear and reuse dedicated colorbar axes
+                self._ax_cbar.clear()
+                cbar = self._fig.colorbar(im, cax=self._ax_cbar)
+                cbar.set_label("τ (ns)", fontsize=8)
+                self._flim_cbar = cbar
+                
+                n_ticks = 5
+                tick_positions = np.linspace(0, 1, n_ticks)
+                tick_values = data_min + tick_positions * (data_max - data_min)
+                cbar.set_ticks(tick_positions)
+                cbar.set_ticklabels([f"{v:.2f}" for v in tick_values], fontsize=7)
+            else:
+                self._ax_cbar.clear()
+            
+            self._canvas_mpl.draw_idle()
+        except Exception as e:
+            print(f"Error updating FLIM display: {e}")
 
     def grid(self, **kw):
         self.frame.grid(**kw)
@@ -2480,13 +2614,13 @@ class _UIBuilder:
         if irf_fwhm is not None:
             rows.append(("IRF FWHM (eff.)", f"{irf_fwhm:.4f}", "ns"))
 
-        chi2_r = global_summary.get('reduced_chi2')
-        if chi2_r is not None:
-            rows.append(("χ²_r (Neyman)", f"{chi2_r:.4f}", ""))
+        chi2_r_tail = global_summary.get('reduced_chi2_tail')
+        if chi2_r_tail is not None:
+            rows.append(("χ²_r(tail) Neyman", f"{chi2_r_tail:.4f}", ""))
 
-        chi2_p = global_summary.get('reduced_chi2_pearson')
-        if chi2_p is not None:
-            rows.append(("χ²_r (Pearson)", f"{chi2_p:.4f}", ""))
+        chi2_p_tail = global_summary.get('reduced_chi2_tail_pearson')
+        if chi2_p_tail is not None:
+            rows.append(("χ²_r(tail) Pearson", f"{chi2_p_tail:.4f}", ""))
 
         return rows
 
