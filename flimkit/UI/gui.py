@@ -564,7 +564,7 @@ class FOVPreviewPanel:
         ttk.Label(self.frame, textvariable=self._status, foreground="grey", font=("Courier", 8)).grid(
             row=1, column=0, sticky="w", padx=4, pady=(2, 4))
 
-        #  FLIM Color Scale Controls (Phase 2.2) 
+        #  FLIM Color Scale Controls 
         ctrl_frame = ttk.LabelFrame(self.frame, text="FLIM Color Scale", padding=4)
         ctrl_frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
         ctrl_frame.columnconfigure(1, weight=1)
@@ -599,7 +599,7 @@ class FOVPreviewPanel:
 
         self._ptu_path = None
         
-        #  FLIM image display state (Phase 1) 
+        #  FLIM image display state
         self._lifetime_map = None  # Cached intensity-weighted lifetime map
         self._intensity_map = None  # Cached intensity (photon count) map
         self._flim_cbar = None  # Track colorbar for cleanup
@@ -611,11 +611,11 @@ class FOVPreviewPanel:
         }
         self._n_exp = 1  # Number of exponential components in last fit
         
-        #  Region management (Phase 3.1) 
+        #  Region management
         self._roi_manager = RoiManager()  # Manages all drawn regions
         self._roi_patches = {}  # Map region_id -> matplotlib patch for rendering
         
-        #  Drawing state (Phase 3.3) 
+        #  Drawing state
         self._drawing_mode = tk.StringVar(value="select")  # Linked to RoiAnalysisPanel mode
         self._is_drawing = False  # Currently drawing
         self._draw_coords = []  # Coordinates being collected
@@ -673,6 +673,8 @@ class FOVPreviewPanel:
             self._ax_decay.grid(True, alpha=0.3)
             self._ax_decay.tick_params(labelsize=8)
 
+            # FIX 1: preserve drawn regions after PTU reload
+            self._redraw_region_overlays()
             self._canvas_mpl.draw_idle()
 
             n_photons = int(decay.sum())
@@ -730,7 +732,7 @@ class FOVPreviewPanel:
                 intensity = np.ones((512, 512), dtype=np.float32)  # Placeholder
                 print(f"  - No intensity data available, using placeholder")
             
-            #  Compute FLIM lifetime map (Phase 1) 
+            #  Compute FLIM lifetime map
             from flimkit.UI.flim_display import compute_intensity_weighted_lifetime
             
             pixel_maps = fit_result.get('pixel_maps')  # For single-FOV fits
@@ -756,7 +758,7 @@ class FOVPreviewPanel:
                     traceback.print_exc()
                     lifetime_map = None
             
-            # Cache for interactive updates (Phase 2+)
+            # Cache for interactive updates
             self._lifetime_map = lifetime_map
             self._intensity_map = intensity
             self._n_exp = nexp
@@ -798,7 +800,7 @@ class FOVPreviewPanel:
             self._ax_img.set_ylabel("Y (pixels)")
             self._ax_img.tick_params(labelsize=8)
 
-            # Update FLIM lifetime image (Phase 2.1)
+            # Update FLIM lifetime image
             self._ax_flim.clear()
             if self._lifetime_map is not None and np.any(~np.isnan(self._lifetime_map)):
                 # Apply color scaling
@@ -848,7 +850,7 @@ class FOVPreviewPanel:
                                   transform=self._ax_flim.transAxes, fontsize=8, color='#666', style='italic')
                 self._ax_flim.set_title("FLIM Lifetime", fontsize=10, fontweight="bold")
             
-            # Redraw region overlays on FLIM image (Phase 3.1)
+            # Redraw region overlays on FLIM image
             self._redraw_region_overlays()
 
             # Plot decay with fit and IRF
@@ -1118,7 +1120,7 @@ class FOVPreviewPanel:
             print(f"[Color Scale] Could not save update: {e}")
 
     def _save_regions_update(self):
-        """Save updated regions to existing session file (quick update)."""
+        """Save updated regions to session file (create if doesn't exist)."""
         try:
             if not self._ptu_path:
                 return
@@ -1126,22 +1128,38 @@ class FOVPreviewPanel:
             from pathlib import Path
             import json
             import numpy as np
+            from datetime import datetime
             
             ptu_path = Path(self._ptu_path)
             session_file = ptu_path.parent / f"{ptu_path.stem}.roi_session.npz"
             
-            if not session_file.exists():
-                return  # No session to update
+            if session_file.exists():
+                # Load existing session
+                existing_data = np.load(session_file, allow_pickle=True)
+                session_data = {key: existing_data[key].item() if existing_data[key].ndim == 0 else existing_data[key] 
+                               for key in existing_data.files}
+            else:
+                # Create minimal session file with FOV preview data (regions drawn before fit)
+                session_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "source": str(self._ptu_path),
+                    "form_state_json": json.dumps({}, default=str),
+                }
+                
+                # Save FOV preview data if available
+                if self._lifetime_map is not None:
+                    session_data["fov_lifetime_map"] = self._lifetime_map
+                if self._intensity_map is not None:
+                    session_data["fov_intensity_map"] = self._intensity_map
+                session_data["fov_color_scale"] = json.dumps(self._flim_color_scale)
+                session_data["fov_n_exp"] = self._n_exp
+                if self._ptu_path:
+                    session_data["fov_ptu_path"] = self._ptu_path
             
-            # Load existing session
-            existing_data = np.load(session_file, allow_pickle=True)
-            session_data = {key: existing_data[key].item() if existing_data[key].ndim == 0 else existing_data[key] 
-                           for key in existing_data.files}
-            
-            # Update only regions (don't touch fit data or color scale)
+            # Update regions (always overwrite)
             session_data["fov_regions"] = self._roi_manager.to_json()
             
-            # Save back to same file
+            # Save to file
             np.savez_compressed(session_file, **session_data)
             print(f"[ROI Manager] ✓ Saved {len(self._roi_manager.regions)} region(s) to {session_file.name}")
             
@@ -1194,7 +1212,7 @@ class FOVPreviewPanel:
         self._canvas_mpl.draw_idle()
     
     def _setup_drawing_events(self):
-        """Connect matplotlib event handlers to FLIM axes for drawing (Phase 3.3)."""
+        """Connect matplotlib event handlers to FLIM axes for drawin."""
         self._canvas_mpl.mpl_connect('button_press_event', self._on_draw_press)
         self._canvas_mpl.mpl_connect('motion_notify_event', self._on_draw_motion)
         self._canvas_mpl.mpl_connect('button_release_event', self._on_draw_release)
@@ -1759,7 +1777,7 @@ class _UIBuilder:
         form_wrapper.columnconfigure(0, weight=1)
         form_wrapper.rowconfigure(0, weight=1)
 
-        #  Analysis Notebook: Fit Settings | Fit Results | ROI Analysis (Phase 3) 
+        #  Analysis Notebook: Fit Settings | ROI Analysis 
         # Only shown for FOV and Stitch modes
         self._analysis_tabs = ttk.Notebook(form_wrapper)
         self._analysis_tabs.grid(row=0, column=0, sticky="nsew")
@@ -1833,7 +1851,7 @@ class _UIBuilder:
         self._fov_preview = FOVPreviewPanel(preview_frame)
         self._fov_preview.grid(row=0, column=0, sticky="nsew")
         
-        # Connect ROI Analysis panel to FOV preview (Phase 3.2, 3.3)
+        # Connect ROI Analysis panel to FOV preview 
         self._roi_analysis_panel.fov_preview = self._fov_preview
         self._fov_preview._roi_analysis_panel = self._roi_analysis_panel
 
@@ -2214,7 +2232,7 @@ class _UIBuilder:
             session_data["fov_color_scale"] = json.dumps(self._fov_preview._flim_color_scale)
             session_data["fov_n_exp"] = self._fov_preview._n_exp
             
-            # Save regions (Phase 3.1)
+            # Save regions
             session_data["fov_regions"] = self._fov_preview._roi_manager.to_json()
             
             # Write single comprehensive session NPZ file
@@ -2319,6 +2337,23 @@ class _UIBuilder:
                     if rows:
                         self._res.populate_summary(rows)
                     
+                    # BUG 1 FIX: restore drawn regions unconditionally.
+                    # fov_regions is saved even when no fit has been run yet,
+                    # so we must not gate it on the map keys.
+                    if "fov_regions" in session_data:
+                        try:
+                            import json as _json_roi
+                            regions_json = session_data["fov_regions"]
+                            if isinstance(regions_json, bytes):
+                                regions_json = regions_json.decode("utf-8")
+                            self._fov_preview._load_regions_from_json(regions_json)
+                            
+                            # Refresh the RoiAnalysisPanel tree list to show restored regions
+                            if self._roi_analysis_panel is not None:
+                                self._roi_analysis_panel._refresh_region_list()
+                        except Exception as _e:
+                            print(f"[Auto-Load] Could not restore regions: {_e}")
+
                     # Restore FOV preview
                     if "fov_intensity_map" in session_data and "fov_lifetime_map" in session_data:
                         intensity = session_data["fov_intensity_map"]
@@ -2339,22 +2374,21 @@ class _UIBuilder:
                                 self._fov_preview._flim_color_scale = json.loads(cs)
                             except:
                                 pass
-                        
-                        # Restore regions (Phase 3.1)
-                        if "fov_regions" in session_data:
-                            try:
-                                import json
-                                regions_json = session_data["fov_regions"]
-                                if isinstance(regions_json, bytes):
-                                    regions_json = regions_json.decode('utf-8')
-                                self._fov_preview._load_regions_from_json(regions_json)
-                            except Exception as e:
-                                print(f"Could not restore regions: {e}")
-                        
+
                         if "fov_n_exp" in session_data:
                             n_exp = session_data["fov_n_exp"]
                             if isinstance(n_exp, (np.integer, int)):
                                 self._fov_preview._n_exp = int(n_exp)
+
+                        # BUG 2 FIX: render the FLIM image now that maps, colour
+                        # scale, n_exp, and regions are all restored.
+                        # _update_flim_display calls _redraw_region_overlays() at
+                        # its end, so patches appear on top of the rendered image.
+                        try:
+                            self._fov_preview._update_flim_display()
+                        except Exception as _e:
+                            print(f"[Auto-Load] Could not render FLIM display: {_e}")
+
                         try:
                             # Redraw the FOV preview decay with fit overlay
                             ax_decay = self._fov_preview._ax_decay
@@ -2542,50 +2576,72 @@ class _UIBuilder:
                 rows.append((str(param), str(val), str(unit)))
             
             # Display in results panel
-            if rows:
-                self._res.populate_summary(rows)
+            try:
+                if rows:
+                    self._res.populate_summary(rows)
+            except Exception as populate_err:
+                import traceback
+                traceback.print_exc()
             
             # Restore FOV preview state if available
-            if "fov_ptu_path" in fit_result:
-                ptu_path = fit_result["fov_ptu_path"]
-                # Handle various types: bytes, ndarray, str
-                if isinstance(ptu_path, bytes):
-                    ptu_path = ptu_path.decode('utf-8')
-                elif isinstance(ptu_path, np.ndarray):
-                    # Convert 0-d array to scalar
-                    ptu_path = ptu_path.item() if ptu_path.ndim == 0 else str(ptu_path[0])
+            try:
+                if "fov_ptu_path" in fit_result:
+                    ptu_path = fit_result["fov_ptu_path"]
+                    # Handle various types: bytes, ndarray, str
                     if isinstance(ptu_path, bytes):
                         ptu_path = ptu_path.decode('utf-8')
-                self._fov_preview._ptu_path = str(ptu_path) if ptu_path else None
+                    elif isinstance(ptu_path, np.ndarray):
+                        # Convert 0-d array to scalar
+                        ptu_path = ptu_path.item() if ptu_path.ndim == 0 else str(ptu_path[0])
+                        if isinstance(ptu_path, bytes):
+                            ptu_path = ptu_path.decode('utf-8')
+                    self._fov_preview._ptu_path = str(ptu_path) if ptu_path else None
+                
+                if "fov_lifetime_map" in fit_result:
+                    lifetime = fit_result["fov_lifetime_map"]
+                    if isinstance(lifetime, np.ndarray):
+                        self._fov_preview._lifetime_map = lifetime
+                
+                if "fov_intensity_map" in fit_result:
+                    intensity = fit_result["fov_intensity_map"]
+                    if isinstance(intensity, np.ndarray):
+                        self._fov_preview._intensity_map = intensity
+                
+                if "fov_color_scale" in fit_result:
+                    try:
+                        cs = fit_result["fov_color_scale"]
+                        if isinstance(cs, bytes):
+                            cs = cs.decode('utf-8')
+                        self._fov_preview._flim_color_scale = json.loads(cs)
+                    except:
+                        pass
+            except Exception as fov_err:
+                import traceback
+                traceback.print_exc()
             
-            if "fov_lifetime_map" in fit_result:
-                lifetime = fit_result["fov_lifetime_map"]
-                if isinstance(lifetime, np.ndarray):
-                    self._fov_preview._lifetime_map = lifetime
+            import sys
+
+            sys.stdout.flush()
             
-            if "fov_intensity_map" in fit_result:
-                intensity = fit_result["fov_intensity_map"]
-                if isinstance(intensity, np.ndarray):
-                    self._fov_preview._intensity_map = intensity
-            
-            if "fov_color_scale" in fit_result:
-                try:
-                    cs = fit_result["fov_color_scale"]
-                    if isinstance(cs, bytes):
-                        cs = cs.decode('utf-8')
-                    self._fov_preview._flim_color_scale = json.loads(cs)
-                except:
-                    pass
-            
-            # Restore regions (Phase 3.1)
             if "fov_regions" in fit_result:
                 try:
                     regions_json = fit_result["fov_regions"]
+                    
+                    # Handle numpy array (0-d array containing string)
+                    if isinstance(regions_json, np.ndarray):
+                        regions_json = regions_json.item() if regions_json.ndim == 0 else regions_json[0]
+                    
                     if isinstance(regions_json, bytes):
                         regions_json = regions_json.decode('utf-8')
+                    
                     self._fov_preview._load_regions_from_json(regions_json)
+                    
+                    # Refresh the RoiAnalysisPanel tree list to show restored regions
+                    if self._roi_analysis_panel is not None:
+                        self._roi_analysis_panel._refresh_region_list()
                 except Exception as e:
-                    print(f"Could not restore regions: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             if "fov_n_exp" in fit_result:
                 n_exp = fit_result["fov_n_exp"]
@@ -2670,7 +2726,7 @@ class _UIBuilder:
                     ax_decay.grid(True, alpha=0.3)
                     ax_decay.tick_params(labelsize=8)
 
-                    # Redraw region overlays (Phase 3.1)
+                    # Redraw region overlays
                     self._fov_preview._redraw_region_overlays()
                     
                     self._fov_preview._ctrl_frame.grid()
@@ -2690,9 +2746,16 @@ class _UIBuilder:
                     form_state = json.loads(fs)
                     # Pre-arm the guard so sv_ptu.set() inside _restore_form_state
                     # doesn't re-trigger load_fov and wipe the FLIM we just drew.
-                    ptu_in_session = form_state.get("ptu_file", "")
-                    if ptu_in_session:
-                        self._last_loaded_ptu = ptu_in_session
+                    # FIX 2: always arm the guard so sv_ptu.set() inside
+                    # _restore_form_state does not re-trigger load_fov.
+                    ptu_in_session = form_state.get("ptu_file", "").strip()
+                    # If session has no ptu path, keep the current sv_ptu value
+                    # so the trace guard still returns early.
+                    self._last_loaded_ptu = (
+                        ptu_in_session
+                        if ptu_in_session
+                        else (self.sv_ptu.get().strip() if hasattr(self, "sv_ptu") else "")
+                    )
                     self._restore_form_state(form_state)
                 except Exception as e:
                     print(f"[Load] Could not restore form state: {e}")
@@ -2966,7 +3029,7 @@ class _UIBuilder:
                         im = ax.imshow(lifetime, cmap='viridis', origin='upper', aspect='auto')
                         ax.axis('off')
                         
-                        # Add ROI annotations if requested (Phase 4)
+                        # Add ROI annotations if requested
                         if with_annotations and self._fov_preview._roi_manager.get_all_regions():
                             from flimkit.UI.roi_tools import get_rectangle_patch, get_ellipse_patch, get_polygon_patch
                             for region in self._fov_preview._roi_manager.get_all_regions():
@@ -3960,7 +4023,7 @@ class _UIBuilder:
                 # Display fit results (decay + model) in FOV preview
                 try:
                     self._fov_preview.display_fit_results(None, fit_result)
-                    # Refresh ROI Analysis panel (Phase 3.2)
+                    # Refresh ROI Analysis panel
                     if hasattr(self, '_roi_analysis_panel'):
                         self._roi_analysis_panel._refresh_region_list()
                 except Exception as e:
@@ -4214,7 +4277,7 @@ class _UIBuilder:
         if fit_result is not None:
             try:
                 self._fov_preview.display_fit_results(ptu_path, fit_result)
-                # Refresh ROI Analysis panel (Phase 3.2)
+                # Refresh ROI Analysis panel 
                 if hasattr(self, '_roi_analysis_panel'):
                     self._roi_analysis_panel._refresh_region_list()
             except Exception as e:

@@ -382,7 +382,7 @@ class RoiAnalysisPanel:
         self._delete_selected_region()
     
     def _on_region_selection_change(self, event):
-        """Handle region selection change — highlight on FLIM image (Phase 4)."""
+        """Handle region selection change — highlight on FLIM image"""
         selected = self._tree.selection()
         if selected:
             item = selected[0]
@@ -436,7 +436,7 @@ class RoiAnalysisPanel:
             self._status.set(f"Renamed to '{new_name}'")
     
     def _export_selected_region(self):
-        """Export selected region as TIFF (placeholder for Phase 5.2)."""
+        """Export selected region as TIFF (placeholder)."""
         import tkinter as tk
         from tkinter import messagebox
         
@@ -448,7 +448,7 @@ class RoiAnalysisPanel:
         item = selected[0]
         region_name = self._tree.item(item, "values")[0]  # First value is now name
         
-        messagebox.showinfo("Export", f"Export '{region_name}' as TIFF\n(Phase 5.2 — not yet implemented)")
+        messagebox.showinfo("Export", f"Export '{region_name}' as TIFF\n(not yet implemented)")
     
     def _refresh_region_list(self):
         """Update region list display from RoiManager."""
@@ -495,7 +495,7 @@ class RoiAnalysisPanel:
             self._tree.tag_configure(f"color_{region_id}", foreground=color)
     
     def add_region_from_drawing(self, tool_type: str, coords: List[List[float]]):
-        """Call this when a user finishes drawing a region (Phase 3.2 integration)."""
+        """Call this when a user finishes drawing a region"""
         if not self.fov_preview:
             return
         
