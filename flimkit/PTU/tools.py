@@ -251,7 +251,7 @@ def signal_from_PTUFile(
     Uses flimkit's PTUFile / PTUArray5D for decoding instead of ptufile.
 
     Parameters
-    ----------
+    
     filename : str or Path
         Path to a PicoQuant PTU file.
     dtype : dtype_like, optional, default: uint16
@@ -275,7 +275,7 @@ def signal_from_PTUFile(
         If True, reduced axes are kept as length-1 dimensions.
 
     Returns
-    -------
+    -
     xarray.DataArray
         TCSPC histogram with axes ``'TYXCH'``.
 
@@ -303,14 +303,14 @@ def signal_from_PTUFile(
         # stack to (C, H), then expand to (T=1, Y=1, X=1, C, H)
         data = np.stack(hists, axis=0)[np.newaxis, np.newaxis, np.newaxis, :, :]
 
-    # ---- dtype ----
+    #dtype 
     if dtype is None:
         dtype = np.uint16
     data = data.astype(dtype)
 
     n_bins_full = data.shape[-1]  # H axis length before any trimming
 
-    # ---- dtime selection (H axis = -1) ----
+    #dtime selection (H axis = -1) 
     if dtime is not None:
         if dtime < 0:
             data = data.sum(axis=-1, keepdims=keepdims)
@@ -318,7 +318,7 @@ def signal_from_PTUFile(
             data = data[..., :dtime]
         # dtime == 0 → keep all bins (no-op)
 
-    # ---- channel selection (C axis = 3) ----
+    #channel selection (C axis = 3) 
     if channel is not None:
         if channel < 0:
             data = data.sum(axis=3, keepdims=keepdims)
@@ -329,7 +329,7 @@ def signal_from_PTUFile(
                 data = data[:, :, :, channel]
             # after removing C, H was axis 4 → now axis 3
 
-    # ---- frame selection (T axis = 0) ----
+    #frame selection (T axis = 0) 
     if frame is not None:
         if frame < 0:
             data = data.sum(axis=0, keepdims=keepdims)
@@ -339,7 +339,7 @@ def signal_from_PTUFile(
             else:
                 data = data[frame]
 
-    # ---- Build dimension labels ----
+    #Build dimension labels 
     all_dims = ['T', 'Y', 'X', 'C', 'H']
     # Figure out which dims survived
     removed = []
@@ -351,14 +351,14 @@ def signal_from_PTUFile(
         removed.append('T')
     dims = [d for d in all_dims if d not in removed]
 
-    # ---- Build coordinates ----
+    #Build coordinates 
     coords = {}
     h_bins = dtime if (dtime is not None and dtime > 0) else n_bins_full
     time_ns = ptu.time_ns[:h_bins]
     if 'H' in dims:
         coords['H'] = ('H', time_ns)
 
-    # ---- Frequency in MHz ----
+    #Frequency in MHz 
     frequency_mhz = ptu.sync_rate * 1e-6
 
     da = DataArray(

@@ -22,6 +22,7 @@ from matplotlib.figure import Figure
 from flimkit.UI.progress_window import ProgressWindow
 from flimkit.UI.phasor_panel import PhasorViewPanel
 from flimkit.UI import flim_display
+from flimkit.UI.roi_tools import RoiManager, RoiAnalysisPanel
 
 # Modern theme support
 try:
@@ -30,20 +31,14 @@ try:
 except ImportError:
     HAS_TKMT = False
 
-# Drag and drop support (optional – may conflict with theming)
 try:
     from tkinterdnd2 import DND_FILES, DND_TEXT
     HAS_DND = True
 except ImportError:
     HAS_DND = False
 
-# GUI mode flag for tqdm (disables progress bars in GUI, keeps them in CLI)
 GUI_MODE = False
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Lazy config loader – deferred so flimkit.__init__ circular imports don't fire
-# at module load time.  Call _C()['key'] anywhere you need a config value.
-# ─────────────────────────────────────────────────────────────────────────────
 
 _cfg: dict = {}
 
@@ -78,9 +73,62 @@ def _C() -> dict:
     return _cfg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper to parse fit summary from captured log (placeholder)
-# ─────────────────────────────────────────────────────────────────────────────
+
+def _reconstruct_dict_from_session(session_data: dict, key: str) -> dict:
+    """
+    Inverse of the hoisting done in _save_roi_progress.
+    Reconstructs a dict from JSON + hoisted numpy arrays stored separately.
+    
+    Args:
+        session_data: The session/fit result dict containing "key_json" and "key_arr_*" entries
+        key: Base key name (e.g. "global_summary" or "pixel_maps")
+    
+    Returns:
+        Reconstructed dict with arrays reattached
+    """
+    import json
+    result = {}
+    json_str = session_data.get(f"{key}_json")
+    if json_str:
+        if isinstance(json_str, (bytes, np.ndarray)):
+            json_str = json_str.item() if hasattr(json_str, 'item') else json_str.decode()
+        try:
+            result = json.loads(json_str)
+        except:
+            pass
+    
+    prefix = f"{key}_arr_"
+    for skey, sval in session_data.items():
+        if skey.startswith(prefix) and isinstance(sval, np.ndarray):
+            result[skey[len(prefix):]] = sval
+    
+    return result
+
+
+def _safe_array_from_json(value) -> np.ndarray:
+    """
+    Safely convert a value that may be a string representation of an array
+    back to a real numpy array. Handles numpy scalar wrappers.
+    """
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, (bytes, np.ndarray)):
+        if hasattr(value, 'item'):
+            value = value.item()
+        else:
+            value = value.decode() if isinstance(value, bytes) else str(value)
+    if isinstance(value, str):
+        try:
+            import re
+            # Try to parse numpy array string format: [1.0 2.0 3.0] with optional formatting
+            value = re.sub(r'\s+', ' ', value.strip())
+            value = value.replace('e+', 'e+').replace('e-', 'e-')
+            return np.fromstring(value.strip('[]'), sep=' ')
+        except:
+            pass
+    return np.asarray(value)
+
+
 def _parse_summary(captured_log: str) -> list:
     """
     Parse the captured stdout/stderr for a summary table.
@@ -102,10 +150,6 @@ def _parse_summary(captured_log: str) -> list:
                     rows.append((param, rest, ""))
     return rows
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Stdout capture (handles progress bars with \r)
-# ─────────────────────────────────────────────────────────────────────────────
 
 class _Redirect:
     """Redirect stdout/stderr to ScrolledText; batches updates for performance (thread-safe)."""
@@ -202,9 +246,6 @@ class _FileRedirect:
             self._file = None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Progress Window Manager – safely create progress windows from worker threads
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ProgressWindowManager:
     """Manages nested progress windows for sub-operations, callable from worker threads."""
@@ -329,10 +370,6 @@ class _FileTailer:
         """Stop tailing the file."""
         self._running = False
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Layout helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 PAD = dict(padx=8, pady=4)
 
@@ -500,10 +537,6 @@ class IRFWidget:
             return dict(irf=None, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True, machine_irf=None)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FOV Preview panel  –  Intensity image & decay curve (right-side viewer)
-# ─────────────────────────────────────────────────────────────────────────────
-
 class FOVPreviewPanel:
     """Real-time preview of FOV intensity image and decay curve."""
 
@@ -531,7 +564,7 @@ class FOVPreviewPanel:
         ttk.Label(self.frame, textvariable=self._status, foreground="grey", font=("Courier", 8)).grid(
             row=1, column=0, sticky="w", padx=4, pady=(2, 4))
 
-        # ── FLIM Color Scale Controls (Phase 2.2) ──
+        #  FLIM Color Scale Controls (Phase 2.2) 
         ctrl_frame = ttk.LabelFrame(self.frame, text="FLIM Color Scale", padding=4)
         ctrl_frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
         ctrl_frame.columnconfigure(1, weight=1)
@@ -566,7 +599,7 @@ class FOVPreviewPanel:
 
         self._ptu_path = None
         
-        # ── FLIM image display state (Phase 1) ──
+        #  FLIM image display state (Phase 1) 
         self._lifetime_map = None  # Cached intensity-weighted lifetime map
         self._intensity_map = None  # Cached intensity (photon count) map
         self._flim_cbar = None  # Track colorbar for cleanup
@@ -577,6 +610,21 @@ class FOVPreviewPanel:
             'cmap': 'viridis',
         }
         self._n_exp = 1  # Number of exponential components in last fit
+        
+        #  Region management (Phase 3.1) 
+        self._roi_manager = RoiManager()  # Manages all drawn regions
+        self._roi_patches = {}  # Map region_id -> matplotlib patch for rendering
+        
+        #  Drawing state (Phase 3.3) 
+        self._drawing_mode = tk.StringVar(value="select")  # Linked to RoiAnalysisPanel mode
+        self._is_drawing = False  # Currently drawing
+        self._draw_coords = []  # Coordinates being collected
+        self._temp_line = None  # Temporary line for visual feedback
+        self._mouse_press_event = None  # Track last press event
+        self._roi_analysis_panel = None  # Will be set by FLIMKitApp
+        
+        # Connect matplotlib event handlers to FLIM axes
+        self._setup_drawing_events()
 
     def load_fov(self, ptu_path: Optional[str]):
         """Load and display intensity image + decay curve from PTU file."""
@@ -682,7 +730,7 @@ class FOVPreviewPanel:
                 intensity = np.ones((512, 512), dtype=np.float32)  # Placeholder
                 print(f"  - No intensity data available, using placeholder")
             
-            # ── Compute FLIM lifetime map (Phase 1) ──
+            #  Compute FLIM lifetime map (Phase 1) 
             from flimkit.UI.flim_display import compute_intensity_weighted_lifetime
             
             pixel_maps = fit_result.get('pixel_maps')  # For single-FOV fits
@@ -713,7 +761,7 @@ class FOVPreviewPanel:
             self._intensity_map = intensity
             self._n_exp = nexp
             
-            # ── Store images in fit_result for export and reloading ──
+            #  Store images in fit_result for export and reloading 
             # Add intensity if not already there
             if 'intensity' not in fit_result and intensity is not None:
                 fit_result['intensity'] = intensity
@@ -799,6 +847,9 @@ class FOVPreviewPanel:
                 self._ax_flim.text(0.5, 0.35, "(enable per-pixel fitting)", ha='center', va='center',
                                   transform=self._ax_flim.transAxes, fontsize=8, color='#666', style='italic')
                 self._ax_flim.set_title("FLIM Lifetime", fontsize=10, fontweight="bold")
+            
+            # Redraw region overlays on FLIM image (Phase 3.1)
+            self._redraw_region_overlays()
 
             # Plot decay with fit and IRF
             self._ax_decay.clear()
@@ -1027,6 +1078,9 @@ class FOVPreviewPanel:
             else:
                 self._ax_cbar.clear()
             
+            # Redraw region overlays after color scale update
+            self._redraw_region_overlays()
+            
             self._canvas_mpl.draw_idle()
         except Exception as e:
             print(f"Error updating FLIM display: {e}")
@@ -1063,13 +1117,202 @@ class FOVPreviewPanel:
         except Exception as e:
             print(f"[Color Scale] Could not save update: {e}")
 
+    def _save_regions_update(self):
+        """Save updated regions to existing session file (quick update)."""
+        try:
+            if not self._ptu_path:
+                return
+            
+            from pathlib import Path
+            import json
+            import numpy as np
+            
+            ptu_path = Path(self._ptu_path)
+            session_file = ptu_path.parent / f"{ptu_path.stem}.roi_session.npz"
+            
+            if not session_file.exists():
+                return  # No session to update
+            
+            # Load existing session
+            existing_data = np.load(session_file, allow_pickle=True)
+            session_data = {key: existing_data[key].item() if existing_data[key].ndim == 0 else existing_data[key] 
+                           for key in existing_data.files}
+            
+            # Update only regions (don't touch fit data or color scale)
+            session_data["fov_regions"] = self._roi_manager.to_json()
+            
+            # Save back to same file
+            np.savez_compressed(session_file, **session_data)
+            print(f"[ROI Manager] ✓ Saved {len(self._roi_manager.regions)} region(s) to {session_file.name}")
+            
+        except Exception as e:
+            print(f"[ROI Manager] Could not save regions: {e}")
+    
+    def _load_regions_from_json(self, json_str: str):
+        """Load regions from JSON string (called during session restore)."""
+        try:
+            self._roi_manager = RoiManager.from_json(json_str)
+            print(f"[ROI Manager] ✓ Loaded {len(self._roi_manager.regions)} region(s)")
+            self._redraw_region_overlays()
+        except Exception as e:
+            print(f"[ROI Manager] Could not load regions: {e}")
+    
+    def _redraw_region_overlays(self):
+        """Redraw all region patches on the FLIM image axes."""
+        import matplotlib.patches as mpatches
+        from flimkit.UI.roi_tools import get_rectangle_patch, get_ellipse_patch, get_polygon_patch
+        
+        # Clear old patches
+        for patch in self._roi_patches.values():
+            if patch in self._ax_flim.patches:
+                patch.remove()
+        self._roi_patches = {}
+        
+        # Draw all regions
+        for region in self._roi_manager.get_all_regions():
+            region_id = region['id']
+            tool_type = region['tool']
+            coords = region['coords']
+            color = self._roi_manager.get_color(region_id)
+            linewidth = 2.5 if region_id == self._roi_manager.get_selected_id() else 1.5
+            
+            try:
+                if tool_type == 'rect':
+                    patch = get_rectangle_patch(coords, edgecolor=color, linewidth=linewidth)
+                elif tool_type == 'ellipse':
+                    patch = get_ellipse_patch(coords, edgecolor=color, linewidth=linewidth)
+                elif tool_type in ('polygon', 'freehand'):
+                    patch = get_polygon_patch(coords, edgecolor=color, linewidth=linewidth)
+                else:
+                    continue
+                
+                self._ax_flim.add_patch(patch)
+                self._roi_patches[region_id] = patch
+            except Exception as e:
+                print(f"[ROI] Could not draw region {region_id}: {e}")
+        
+        self._canvas_mpl.draw_idle()
+    
+    def _setup_drawing_events(self):
+        """Connect matplotlib event handlers to FLIM axes for drawing (Phase 3.3)."""
+        self._canvas_mpl.mpl_connect('button_press_event', self._on_draw_press)
+        self._canvas_mpl.mpl_connect('motion_notify_event', self._on_draw_motion)
+        self._canvas_mpl.mpl_connect('button_release_event', self._on_draw_release)
+    
+    def _on_draw_press(self, event):
+        """Handle mouse press on FLIM image."""
+        if not event.inaxes or event.inaxes != self._ax_flim:
+            return
+        
+        mode = self._drawing_mode.get()
+        if mode == "select":
+            return  # No drawing in select mode
+        
+        self._is_drawing = True
+        self._draw_coords = [[event.xdata, event.ydata]]
+        self._mouse_press_event = event
+        print(f"[Drawing] Started {mode} at ({event.xdata:.1f}, {event.ydata:.1f})")
+    
+    def _on_draw_motion(self, event):
+        """Handle mouse motion during drawing."""
+        if not self._is_drawing or not event.inaxes or event.inaxes != self._ax_flim:
+            return
+        
+        mode = self._drawing_mode.get()
+        
+        # For rectangle/ellipse: show preview bbox
+        if mode in ("rect", "ellipse") and len(self._draw_coords) > 0:
+            if self._temp_line is not None:
+                try:
+                    self._temp_line.remove()
+                except:
+                    pass
+                self._temp_line = None
+            
+            # Draw preview rectangle
+            x0, y0 = self._draw_coords[0]
+            x1, y1 = event.xdata, event.ydata
+            
+            from matplotlib.patches import Rectangle
+            preview = Rectangle((min(x0, x1), min(y0, y1)), 
+                               abs(x1 - x0), abs(y1 - y0),
+                               edgecolor='cyan', facecolor='none', 
+                               linewidth=1, linestyle='--', alpha=0.5)
+            self._ax_flim.add_patch(preview)
+            self._temp_line = preview
+            self._canvas_mpl.draw_idle()
+        
+        # For polygon/freehand: collect intermediate points
+        elif mode in ("polygon", "freehand"):
+            self._draw_coords.append([event.xdata, event.ydata])
+    
+    def _on_draw_release(self, event):
+        """Handle mouse release to complete drawing."""
+        if not self._is_drawing or not event.inaxes or event.inaxes != self._ax_flim:
+            return
+        
+        mode = self._drawing_mode.get()
+        
+        # Complete rectangle/ellipse with two points
+        if mode in ("rect", "ellipse"):
+            if len(self._draw_coords) > 0:
+                self._draw_coords.append([event.xdata, event.ydata])
+                self._finalize_drawing(mode)
+        
+        # For polygon: right-click or double-click to finish; single click adds point
+        elif mode == "polygon":
+            # Single click adds to polygon; need explicit finish (e.g., Escape key)
+            # For now, any release adds a point
+            if len(self._draw_coords) >= 3 and event.button == 3:  # Right-click to finish
+                self._finalize_drawing(mode)
+            else:
+                # Add first point on press already; continue collecting
+                pass
+        
+        elif mode == "freehand":
+            # Release finishes the freehand shape
+            if len(self._draw_coords) >= 3:
+                self._finalize_drawing(mode)
+        
+        # Clear temporary drawing aid
+        if self._temp_line is not None:
+            try:
+                self._temp_line.remove()
+            except:
+                pass
+            self._temp_line = None
+        
+        self._is_drawing = False
+    
+    def _finalize_drawing(self, tool_type: str):
+        """Complete drawing and add region to RoiManager."""
+        if len(self._draw_coords) < 2:
+            print(f"[Drawing] Cancelled {tool_type} (insufficient points)")
+            self._draw_coords = []
+            return
+        
+        try:
+            # Add region to manager
+            region_id = self._roi_manager.add_region(
+                f"{tool_type}-{len(self._roi_manager.regions) + 1}",
+                tool_type,
+                self._draw_coords
+            )
+            self._redraw_region_overlays()
+            self._save_regions_update()
+            print(f"[Drawing] Added {tool_type} region {region_id}")
+            
+            # Notify RoiAnalysisPanel to refresh list
+            if self._roi_analysis_panel:
+                self._roi_analysis_panel._refresh_region_list()
+        except Exception as e:
+            print(f"[Drawing] Error finalizing: {e}")
+        finally:
+            self._draw_coords = []
+
     def grid(self, **kw):
         self.frame.grid(**kw)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Results panel  –  Progress  |  Fit Summary  |  Images
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ResultsPanel:
 
@@ -1345,10 +1588,6 @@ class ResultsPanel:
         self.frame.grid(**kw)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Base class for the GUI (shared layout)
-# ─────────────────────────────────────────────────────────────────────────────
-
 class _UIBuilder:
     """Common UI building methods (used by both themed and fallback versions)."""
 
@@ -1468,9 +1707,9 @@ class _UIBuilder:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        # ─────────────────────────────────────────────────────────────────
+        
         # LEFT PANEL: Tab buttons (vertical) + Content area (vertical paned)
-        # ─────────────────────────────────────────────────────────────────
+        
         left_frame = ttk.Frame(main_paned)
         main_paned.add(left_frame, weight=3)  # 3:2 weight ratio
         left_frame.columnconfigure(0, weight=0)  # Tab buttons (narrow)
@@ -1520,7 +1759,7 @@ class _UIBuilder:
         form_wrapper.columnconfigure(0, weight=1)
         form_wrapper.rowconfigure(0, weight=1)
 
-        # ── Analysis Notebook: Fit Settings | Fit Results | ROI Analysis (Phase 3) ──
+        #  Analysis Notebook: Fit Settings | Fit Results | ROI Analysis (Phase 3) 
         # Only shown for FOV and Stitch modes
         self._analysis_tabs = ttk.Notebook(form_wrapper)
         self._analysis_tabs.grid(row=0, column=0, sticky="nsew")
@@ -1538,9 +1777,8 @@ class _UIBuilder:
         self._analysis_tabs.add(roi_frame, text="  ROI Analysis  ")
         roi_frame.columnconfigure(0, weight=1)
         roi_frame.rowconfigure(0, weight=1)
-        roi_label = ttk.Label(roi_frame, text="ROI drawing tools and region statistics (Phase 3)", 
-                              foreground="grey", font=("Courier", 9))
-        roi_label.pack(pady=20)
+        self._roi_analysis_panel = RoiAnalysisPanel(roi_frame)
+        self._roi_analysis_panel.grid(row=0, column=0, sticky="nsew")
         self._roi_analysis_frame = roi_frame
 
         self._form_content_frame = form_wrapper
@@ -1584,9 +1822,9 @@ class _UIBuilder:
         self._build_machine_irf_tab()
         self._build_phasor_tab()
 
-        # ─────────────────────────────────────────────────────────────────
+        
         # RIGHT PANEL: FOV Preview
-        # ─────────────────────────────────────────────────────────────────
+        
         preview_frame = ttk.LabelFrame(main_paned, text="  FOV Preview  ", padding=4)
         main_paned.add(preview_frame, weight=2)
         preview_frame.columnconfigure(0, weight=1)
@@ -1594,6 +1832,10 @@ class _UIBuilder:
 
         self._fov_preview = FOVPreviewPanel(preview_frame)
         self._fov_preview.grid(row=0, column=0, sticky="nsew")
+        
+        # Connect ROI Analysis panel to FOV preview (Phase 3.2, 3.3)
+        self._roi_analysis_panel.fov_preview = self._fov_preview
+        self._fov_preview._roi_analysis_panel = self._roi_analysis_panel
 
         # Phasor panel shares the same right-panel cell; hidden until needed.
         self._phasor_panel = PhasorViewPanel(preview_frame, max_cursors=6)
@@ -1915,12 +2157,23 @@ class _UIBuilder:
                     session_data[key] = val
                     print(f"  ✓ Saved array: {key} {val.shape}")
                 elif isinstance(val, dict):
-                    # Save complex types as JSON
+                    # Hoist any numpy arrays out of the dict before JSON-ing it,
+                    # otherwise default=str silently corrupts them (e.g. global_summary['model']).
                     try:
-                        session_data[f"{key}_json"] = json.dumps(val, default=str)
-                        print(f"  ✓ Saved dict: {key}")
-                    except:
-                        pass
+                        hoisted = {}
+                        json_safe = {}
+                        for k2, v2 in val.items():
+                            if isinstance(v2, np.ndarray):
+                                arr_key = f"{key}_arr_{k2}"
+                                hoisted[arr_key] = v2
+                                print(f"  ✓ Hoisted array from {key}: {k2} {v2.shape}")
+                            else:
+                                json_safe[k2] = v2
+                        session_data[f"{key}_json"] = json.dumps(json_safe, default=str)
+                        session_data.update(hoisted)
+                        print(f"  ✓ Saved dict: {key} ({len(hoisted)} arrays hoisted)")
+                    except Exception as e:
+                        print(f"  ✗ Could not save dict {key}: {e}")
                 elif isinstance(val, (list, tuple)):
                     # Save lists/tuples as arrays if they're numeric
                     try:
@@ -1960,6 +2213,9 @@ class _UIBuilder:
                 session_data["fov_intensity_map"] = self._fov_preview._intensity_map
             session_data["fov_color_scale"] = json.dumps(self._fov_preview._flim_color_scale)
             session_data["fov_n_exp"] = self._fov_preview._n_exp
+            
+            # Save regions (Phase 3.1)
+            session_data["fov_regions"] = self._fov_preview._roi_manager.to_json()
             
             # Write single comprehensive session NPZ file
             np.savez_compressed(session_file, **session_data)
@@ -2084,6 +2340,17 @@ class _UIBuilder:
                             except:
                                 pass
                         
+                        # Restore regions (Phase 3.1)
+                        if "fov_regions" in session_data:
+                            try:
+                                import json
+                                regions_json = session_data["fov_regions"]
+                                if isinstance(regions_json, bytes):
+                                    regions_json = regions_json.decode('utf-8')
+                                self._fov_preview._load_regions_from_json(regions_json)
+                            except Exception as e:
+                                print(f"Could not restore regions: {e}")
+                        
                         if "fov_n_exp" in session_data:
                             n_exp = session_data["fov_n_exp"]
                             if isinstance(n_exp, (np.integer, int)):
@@ -2103,14 +2370,12 @@ class _UIBuilder:
                                         irf_scaled = (irf / irf.max()) * decay.max() * 0.2
                                         ax_decay.semilogy(time_ns[:len(irf)], np.maximum(irf_scaled, 1e-2),
                                                         color="orange", linewidth=2.0, label="IRF", alpha=0.8)
-                                    gs = {}
-                                    if "global_summary_json" in session_data:
-                                        try:
-                                            gsj = session_data["global_summary_json"]
-                                            if isinstance(gsj, bytes): gsj = gsj.decode()
-                                            gs = json.loads(gsj) if isinstance(gsj, str) else {}
-                                        except: pass
+                                    # Reconstruct global_summary with hoisted arrays
+                                    gs = _reconstruct_dict_from_session(session_data, "global_summary")
                                     model = gs.get('model')
+                                    # Safely convert string model back to array if needed
+                                    if model is not None and isinstance(model, str):
+                                        model = _safe_array_from_json(model)
                                     if model is not None and len(model) > 0:
                                         ax_decay.semilogy(time_ns, model, color="red", linewidth=2.0,
                                                         label="Fitted", alpha=0.8)
@@ -2312,6 +2577,16 @@ class _UIBuilder:
                 except:
                     pass
             
+            # Restore regions (Phase 3.1)
+            if "fov_regions" in fit_result:
+                try:
+                    regions_json = fit_result["fov_regions"]
+                    if isinstance(regions_json, bytes):
+                        regions_json = regions_json.decode('utf-8')
+                    self._fov_preview._load_regions_from_json(regions_json)
+                except Exception as e:
+                    print(f"Could not restore regions: {e}")
+            
             if "fov_n_exp" in fit_result:
                 n_exp = fit_result["fov_n_exp"]
                 if isinstance(n_exp, (np.integer, int)):
@@ -2379,14 +2654,12 @@ class _UIBuilder:
                             irf_scaled = (irf / irf.max()) * decay.max() * 0.2
                             ax_decay.semilogy(time_ns[:len(irf)], np.maximum(irf_scaled, 1e-2),
                                             color="orange", linewidth=2.0, label="IRF", alpha=0.8)
-                        # Reconstruct global_summary for model
-                        gs = {}
-                        gs_json = fit_result.get("global_summary_json")
-                        if gs_json:
-                            if isinstance(gs_json, bytes): gs_json = gs_json.decode()
-                            try: gs = json.loads(gs_json)
-                            except: pass
+                        # Reconstruct global_summary with hoisted arrays
+                        gs = _reconstruct_dict_from_session(fit_result, "global_summary")
                         model = gs.get('model')
+                        # Safely convert string model back to array if needed
+                        if model is not None and isinstance(model, str):
+                            model = _safe_array_from_json(model)
                         if model is not None and len(model) > 0:
                             ax_decay.semilogy(time_ns, model, color="red", linewidth=2.0,
                                             label="Fitted", alpha=0.8)
@@ -2397,6 +2670,9 @@ class _UIBuilder:
                     ax_decay.grid(True, alpha=0.3)
                     ax_decay.tick_params(labelsize=8)
 
+                    # Redraw region overlays (Phase 3.1)
+                    self._fov_preview._redraw_region_overlays()
+                    
                     self._fov_preview._ctrl_frame.grid()
                     self._fov_preview._canvas_mpl.draw_idle()
                     print(f"[Load] Restored FOV preview from cached data")
@@ -2411,7 +2687,13 @@ class _UIBuilder:
                     fs = fit_result["form_state_json"]
                     if isinstance(fs, np.ndarray): fs = fs.item()
                     if isinstance(fs, bytes): fs = fs.decode()
-                    self._restore_form_state(json.loads(fs))
+                    form_state = json.loads(fs)
+                    # Pre-arm the guard so sv_ptu.set() inside _restore_form_state
+                    # doesn't re-trigger load_fov and wipe the FLIM we just drew.
+                    ptu_in_session = form_state.get("ptu_file", "")
+                    if ptu_in_session:
+                        self._last_loaded_ptu = ptu_in_session
+                    self._restore_form_state(form_state)
                 except Exception as e:
                     print(f"[Load] Could not restore form state: {e}")
 
@@ -2475,16 +2757,29 @@ class _UIBuilder:
             # Title
             ttk.Label(dlg, text="Export Results", font=("TkDefaultFont", 11, "bold")).pack(pady=10)
             
-            # Image selection section
+            # Image selection section (multi-column layout)
             img_frame = ttk.LabelFrame(dlg, text="Images to Export", padding=10)
             img_frame.pack(fill="both", expand=True, padx=20, pady=5)
-            for key in sorted(available_images.keys()):
-                ttk.Checkbutton(img_frame, text=key.replace('_', ' ').title(), 
-                               variable=image_vars[key]).pack(anchor="w", pady=3)
             
-            # Select all / None buttons
+            # Organize images into 3 columns
+            sorted_images = sorted(available_images.keys())
+            n_cols = 3
+            n_rows = (len(sorted_images) + n_cols - 1) // n_cols
+            
+            # Configure columns to have equal weight
+            for col in range(n_cols):
+                img_frame.columnconfigure(col, weight=1)
+            
+            # Add checkboxes in grid layout
+            for idx, key in enumerate(sorted_images):
+                row = idx % n_rows
+                col = idx // n_rows
+                ttk.Checkbutton(img_frame, text=key.replace('_', ' ').title(), 
+                               variable=image_vars[key]).grid(row=row, column=col, sticky="w", padx=5, pady=2)
+            
+            # Select all / None buttons (below the grid)
             sel_btn_frame = ttk.Frame(img_frame)
-            sel_btn_frame.pack(fill="x", pady=(10, 0))
+            sel_btn_frame.grid(row=n_rows, column=0, columnspan=n_cols, sticky="w", pady=(10, 0))
             def select_all():
                 for v in image_vars.values():
                     v.set(True)
@@ -2670,6 +2965,27 @@ class _UIBuilder:
                         
                         im = ax.imshow(lifetime, cmap='viridis', origin='upper', aspect='auto')
                         ax.axis('off')
+                        
+                        # Add ROI annotations if requested (Phase 4)
+                        if with_annotations and self._fov_preview._roi_manager.get_all_regions():
+                            from flimkit.UI.roi_tools import get_rectangle_patch, get_ellipse_patch, get_polygon_patch
+                            for region in self._fov_preview._roi_manager.get_all_regions():
+                                region_id = region['id']
+                                tool_type = region['tool']
+                                coords = region['coords']
+                                color = self._fov_preview._roi_manager.get_color(region_id)
+                                try:
+                                    if tool_type == 'rect':
+                                        patch = get_rectangle_patch(coords, edgecolor=color, linewidth=2)
+                                    elif tool_type == 'ellipse':
+                                        patch = get_ellipse_patch(coords, edgecolor=color, linewidth=2)
+                                    elif tool_type in ('polygon', 'freehand'):
+                                        patch = get_polygon_patch(coords, edgecolor=color, linewidth=2)
+                                    else:
+                                        continue
+                                    ax.add_patch(patch)
+                                except Exception as e:
+                                    print(f"[Export] Could not add ROI {region_id}: {e}")
                         
                         output_file = output_path / "lifetime.png"
                         fig.savefig(output_file, dpi=100, bbox_inches='tight', pad_inches=0, facecolor='black')
@@ -3379,7 +3695,7 @@ class _UIBuilder:
         # Get outer and inner frames from tuple
         outer, inner = self._form_inner_frames["phasor"]
         inner.columnconfigure(0, weight=1)
-        # ── Controls strip (fixed height, top) ───────────────────────────────
+        #  Controls strip (fixed height, top) ─
         ctrl = ttk.Frame(inner, padding=(6, 4))
         ctrl.grid(row=0, column=0, sticky="ew")
         ctrl.columnconfigure(0, weight=1)
@@ -3644,6 +3960,9 @@ class _UIBuilder:
                 # Display fit results (decay + model) in FOV preview
                 try:
                     self._fov_preview.display_fit_results(None, fit_result)
+                    # Refresh ROI Analysis panel (Phase 3.2)
+                    if hasattr(self, '_roi_analysis_panel'):
+                        self._roi_analysis_panel._refresh_region_list()
                 except Exception as e:
                     import traceback
                     print(f"[Warning] Could not display fit results:")
@@ -3895,6 +4214,9 @@ class _UIBuilder:
         if fit_result is not None:
             try:
                 self._fov_preview.display_fit_results(ptu_path, fit_result)
+                # Refresh ROI Analysis panel (Phase 3.2)
+                if hasattr(self, '_roi_analysis_panel'):
+                    self._roi_analysis_panel._refresh_region_list()
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -3930,7 +4252,7 @@ class _UIBuilder:
 
         rows = []
 
-        # ── Schema A: fit_summed / fit_per_pixel (single-FOV fit) ─────────────
+        #  Schema A: fit_summed / fit_per_pixel (single-FOV fit) ─
         taus  = global_summary.get('taus_ns', [])
         amps  = global_summary.get('amps',    [])
         fracs = global_summary.get('fractions', [])
@@ -3956,7 +4278,7 @@ class _UIBuilder:
             if v is not None:
                 rows.append((label, f"{v:.4f}", "ns"))
 
-        # ── Schema B: derive_global_tau (stitch / tile-fit pipeline) ──────────
+        #  Schema B: derive_global_tau (stitch / tile-fit pipeline) 
         tau_global = global_summary.get('tau_mean_amp_global_ns')
         if tau_global is not None:
             rows.append(("τ_mean amp-wtd (global)", f"{tau_global:.4f}", "ns"))
@@ -3985,7 +4307,7 @@ class _UIBuilder:
                 rows.append((f"f{k} mean (amp frac)", f"{a_k:.4f}", ""))
             k += 1
 
-        # ── Shared fields (present in both schemas) ────────────────────────────
+        #  Shared fields (present in both schemas) 
         bg_fit = global_summary.get('bg_fit')
         if bg_fit is not None:
             rows.append(("Background (fitted)", f"{bg_fit:.2f}", "cts/bin"))

@@ -30,7 +30,7 @@ def get_flim_histogram_from_ptufile(
     Load raw FLIM histogram (uint32 counts) using custom PTUFile if it returns
     valid data; otherwise fall back to ptufile loader.
     """
-    # ---------- Attempt with custom PTUFile ----------
+    # Attempt with custom PTUFile
 
     from .reader import PTUFile
     ptu = PTUFile(str(ptu_path), verbose=False)

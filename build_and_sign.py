@@ -158,11 +158,6 @@ def build_app():
 
     system = platform.system()
     icon_path = prepare_icon("flimkit/UI/icon.png")
-
-    # Pre-clean the old .app bundle with rm -rf before PyInstaller runs.
-    # Python's shutil.rmtree (used internally by PyInstaller) raises
-    # [Errno 66] Directory not empty on macOS .app bundles that contain
-    # framework symlinks or files with extended attributes.
     if system == "Darwin":
         old_app = Path(f"dist/{APP_NAME}.app")
         if old_app.exists():
@@ -176,11 +171,6 @@ def build_app():
         "--noconfirm",   # skip the interactive "will be REMOVED" prompt
         "--name", APP_NAME,
         "--windowed",
-        # NOTE: --onefile is intentionally NOT used on macOS.
-        # --onefile uses a two-stage launcher on macOS (outer process extracts
-        # to /tmp/_MEIxxxxxx then spawns a child), which causes two dock icons
-        # with only one window. --onedir produces a proper .app bundle with a
-        # single process. Windows/Linux use --onefile for a portable binary.
         "--copy-metadata", "readchar",
         "--copy-metadata", "inquirer",
         "--copy-metadata", "blessed",

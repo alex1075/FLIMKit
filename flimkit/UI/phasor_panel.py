@@ -19,7 +19,7 @@ from phasorpy.lifetime import phasor_to_apparent_lifetime, phasor_semicircle_int
 from phasorpy.component import phasor_component_fraction
 from phasorpy.plot import PhasorPlot
 
-# ── colour palette (up to 6 cursors) ──────────────────────────────────────────
+
 _COLORS = ['#d62728', '#1f77b4', '#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
 
 
@@ -46,7 +46,7 @@ class PhasorViewPanel:
     def __init__(self, parent, max_cursors: int = 6):
         self.max_cursors = max_cursors
 
-        # ── data (populated by set_data) ───────────────────────────────────
+
         self._real:  Optional[np.ndarray] = None
         self._imag:  Optional[np.ndarray] = None
         self._mean:  Optional[np.ndarray] = None
@@ -54,15 +54,15 @@ class PhasorViewPanel:
         self._freq:  float = 80.0                  # MHz
         self._valid: Optional[np.ndarray] = None   # boolean (min-photons)
 
-        # ── cursor state ───────────────────────────────────────────────────
+
         self._cursors: list = []                    # {center_g, center_s, color}
         self._cursor_artists: list = []
 
-        # ── ellipse parameters ─────────────────────────────────────────────
+
         self._radius = tk.DoubleVar(value=0.05)
         self._ratio  = tk.DoubleVar(value=0.60)    # radius_minor = ratio × radius
 
-        # ── outer frame ────────────────────────────────────────────────────
+        #  outer frame 
         self.frame = ttk.Frame(parent)
         self.frame.columnconfigure(0, weight=1)
         self.frame.rowconfigure(1, weight=1)        # row 1 = figure, expands
@@ -76,9 +76,6 @@ class PhasorViewPanel:
                   foreground="grey", font=("Courier", 8)).grid(
             row=2, column=0, sticky="w", padx=4, pady=(0, 2))
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Build helpers
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _build_controls(self):
         ctrl = ttk.Frame(self.frame)
@@ -153,10 +150,6 @@ class PhasorViewPanel:
             "Phasor plot  —  load a file to begin",
             fontsize=9, color="#999999")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Public API
-    # ─────────────────────────────────────────────────────────────────────────
-
     def set_data(self,
                  real_cal: np.ndarray,
                  imag_cal: np.ndarray,
@@ -225,10 +218,6 @@ class PhasorViewPanel:
                      for c in self._cursors],
             params=dict(radius=r, radius_minor=rm, angle_mode='semicircle'),
         )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Drawing
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _redraw_phasor(self):
         """Re-draw the phasor histogram background (no cursors)."""
@@ -323,10 +312,6 @@ class PhasorViewPanel:
         self._ax_img.set_ylabel("Y (px)", fontsize=8)
         self._ax_img.tick_params(labelsize=7)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Analysis
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _analyse(self):
         """Compute elliptic masks, update image overlay, print per-cursor stats."""
         if self._real is None or not self._cursors:
@@ -353,7 +338,7 @@ class PhasorViewPanel:
 
         self._redraw_image(masks)
 
-        # ── Per-cursor τ_φ stats ──────────────────────────────────────────
+        #Per-cursor τ_φ stats 
         print(f"\n{'─' * 50}")
         for ci in range(n):
             m    = masks[ci]
@@ -370,7 +355,7 @@ class PhasorViewPanel:
                   f"{n_px} px  |  τ_φ = {lo:.2f}–{hi:.2f} ns  "
                   f"(median {med:.2f} ns)")
 
-        # ── Two-component decomposition C1 ↔ C2 ──────────────────────────
+        # Two-component decomposition C1 ↔ C2
         if n >= 2:
             g0 = self._cursors[0]['center_g']
             s0 = self._cursors[0]['center_s']
@@ -397,10 +382,6 @@ class PhasorViewPanel:
 
         print(f"{'─' * 50}")
         self._canvas.draw_idle()
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Event handlers
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _on_click(self, event):
         if self._real is None:

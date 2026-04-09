@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 import tifffile
 
 
-# ── Canvas assembly ────────────────────────────────────────────────────────────
+# Canvas assembly
 
 def assemble_tile_maps(
     tile_results: List[Dict[str, Any]],
@@ -41,7 +41,7 @@ def assemble_tile_maps(
     keys_amp    = [f'a{k}'   for k in range(1, n_exp + 1)]
     keys_all    = keys_scalar + keys_tau + keys_amp
 
-    # ── Build nearest-centre ownership map ────────────────────────────────────
+    # Build nearest-centre ownership map
     # For every canvas pixel, record the index of the tile whose centre is
     # closest.  Ties broken by later tiles (last write wins, doesn't matter).
     # Use squared Euclidean distance — no sqrt needed for comparison.
@@ -72,7 +72,7 @@ def assemble_tile_maps(
         min_dist2[y0:y1, x0:x1] = np.where(closer, dist2, region)
         owner[y0:y1, x0:x1]     = np.where(closer, ti, owner[y0:y1, x0:x1])
 
-    # ── Place tile data using ownership map ───────────────────────────────────
+    # Place tile data using ownership map
     canvas = {k: np.full((H, W), np.nan, dtype=np.float32) for k in keys_all}
     intensity_canvas = np.zeros((H, W), dtype=np.float32)
     coverage         = np.zeros((H, W), dtype=np.uint16)
@@ -184,7 +184,7 @@ def derive_global_tau(
     return summary
 
 
-# ── Save assembled outputs ─────────────────────────────────────────────────────
+# Save assembled outputs
 
 def save_assembled_maps(
     canvas: Dict[str, np.ndarray],
@@ -205,7 +205,7 @@ def save_assembled_maps(
     for key, arr in canvas.items():
         np.save(str(output_dir / f"{roi_name}_{key}.npy"), arr)
 
-    # ── Intensity TIFF (uint16) ────────────────────────────────────────────────
+    # Intensity TIFF (uint16)
     # Use percentile-based clipping so a handful of very bright pixels (cell
     # clusters, tile-overlap edges) do not compress the bulk of tissue to
     # near-zero.  Display range overrides take priority when provided.
@@ -227,7 +227,7 @@ def save_assembled_maps(
     tifffile.imwrite(str(output_dir / f"{roi_name}_intensity.tif"), intensity_scaled)
     print(f"  intensity display range: {i_min:.1f} – {i_max:.1f} counts")
 
-    # ── tau_mean_amp TIFF (uint16) ─────────────────────────────────────────────
+    #  tau_mean_amp TIFF (uint16) 
     # 0     → tau_min (or 0 if auto)
     # 65535 → tau_max (or nanmax if auto)
     # 0     → unfitted pixels (NaN → 0 before cast)
@@ -250,7 +250,7 @@ def save_assembled_maps(
     print(f"  tau_mean_amp display range: {t_min:.3f} – {t_max:.3f} ns  "
           f"→  0 – 65535")
 
-    # ── Global summary text ────────────────────────────────────────────────────
+    # Global summary text 
     summary_path = output_dir / f"{roi_name}_global_summary.txt"
     with open(summary_path, 'w') as f:
         f.write("=" * 60 + "\n")
@@ -275,7 +275,7 @@ def save_assembled_maps(
                         f"a{k} = {a_k:.3f} (mean amplitude fraction)\n")
         f.write("\n" + "=" * 60 + "\n")
 
-    # ── Component RGB TIFF ────────────────────────────────────────────────────
+    # Component RGB TIFF
     try:
         from ..utils.lifetime_image import make_component_rgb_tiff
         make_component_rgb_tiff(canvas, output_dir, roi_name, n_exp, verbose=True)

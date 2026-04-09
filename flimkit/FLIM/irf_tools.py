@@ -15,7 +15,7 @@ from ..configs import MACHINE_IRF_DIR as _DEFAULT_MACHINE_IRF_DIR
 try:
     matplotlib.use('Agg', force=True)
 except Exception:
-    pass  # If backend switching fails, continue anyway
+    pass  
 
 
 def _leading_edge_crossing(arr: np.ndarray, frac: float = 0.5) -> int:
@@ -412,12 +412,12 @@ def reconstruct_irf_from_decay(decay: np.ndarray,
     peak_val  = decay[peak_idx]
     threshold = max(noise_floor, noise_frac * peak_val)
 
-    # ── Rising edge start: walk backward from peak ─────────────────────────
+    # Rising edge start: walk backward from peak 
     start_idx = peak_idx
     while start_idx > 0 and decay[start_idx - 1] > threshold:
         start_idx -= 1
 
-    # ── Post-peak cut ──────────────────────────────────────────────────────
+    # Post-peak cut 
     # In Leica exports the IRF has explicit zeros after the cut; in raw PTU
     # data the fluorescence tail never reaches zero.  Use a bounded search:
     # include up to max_bap bins, but stop early if the *bin-to-bin drop
@@ -437,7 +437,7 @@ def reconstruct_irf_from_decay(decay: np.ndarray,
         cut_idx = next_idx
         prev_val = next_val
 
-    # ── Place IRF counts on the full grid with −1 bin shift ────────────────
+    # Place IRF counts on the full grid with −1 bin shift
     # The −1 bin shift maps the convention that the IRF peak sits 0.5 bins
     # before the decay peak.
     irf_full = np.zeros(n_bins, dtype=float)
@@ -607,7 +607,7 @@ def compare_irfs(irf_estimated:  np.ndarray,
     """
     t_ns = np.arange(n_bins, dtype=float) * tcspc_res * 1e9
 
-    # ── Embed xlsx IRF onto the PTU time axis ─────────────────────────────────
+    # Embed xlsx IRF onto the PTU time axis
     irf_xlsx_embedded = None
     if xlsx is not None and xlsx.get('irf_t') is not None and xlsx.get('irf_c') is not None:
         irf_raw = np.zeros(n_bins)
@@ -623,16 +623,16 @@ def compare_irfs(irf_estimated:  np.ndarray,
         print("  IRF comparison skipped — no xlsx IRF available.")
         return None
 
-    # ── Normalise both to unit area ───────────────────────────────────────────
+    # Normalise both to unit area
     est = irf_estimated / irf_estimated.sum()
     ref = irf_xlsx_embedded / irf_xlsx_embedded.sum()
 
-    # ── Peak positions ────────────────────────────────────────────────────────
+    # Peak position
     peak_est_bin = int(np.argmax(est))
     peak_ref_bin = int(np.argmax(ref))
     shift_bins   = peak_est_bin - peak_ref_bin   # +ve: est is right of ref
 
-    # ── Peak-aligned estimated IRF ────────────────────────────────────────────
+    # Peak-aligned estimated IRF
     # shift_bins = est_peak - ref_peak.
     # To move est RIGHT by abs(shift_bins), query at x + shift_bins:
     #   np.interp(x + shift_bins, x, est)  moves est towards ref
@@ -643,7 +643,7 @@ def compare_irfs(irf_estimated:  np.ndarray,
     if s > 0:
         est_aligned /= s
 
-    # ── Metric helper ─────────────────────────────────────────────────────────
+    # Metric helper
     def _metrics(a, b, label):
         support = (a > 1e-8) | (b > 1e-8)
         a_s, b_s = a[support], b[support]
@@ -675,7 +675,7 @@ def compare_irfs(irf_estimated:  np.ndarray,
         aligned            = m_aligned,
     )
 
-    # ── Print ─────────────────────────────────────────────────────────────────
+    # Print
     print(f"\n  IRF Comparison  ({strategy.split('peak_bin')[0].strip()}  vs  xlsx)")
     print(f"  {'Metric':<28} {'Estimated':>12} {'xlsx':>12}")
     print(f"  {'─'*54}")
@@ -706,7 +706,7 @@ def compare_irfs(irf_estimated:  np.ndarray,
         print(f"  ⚠ Peak misaligned by {shift_bins:+d} bins ({shift_bins*tcspc_res*1e12:+.0f} ps) "
               f"— IRF peak bin estimate may be off.")
 
-    # ── Plot ──────────────────────────────────────────────────────────────────
+    # Plot
     plt.rcParams.update({"figure.dpi": 130, "font.size": 10,
                           "axes.spines.top": False, "axes.spines.right": False})
 

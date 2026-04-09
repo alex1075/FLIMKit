@@ -43,9 +43,9 @@ except (ImportError, AttributeError):
     GUI_MODE = False
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # Tile stitching (intensity + FLIM cube)
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def stitch_flim_tiles(
     xlif_path: Path,
@@ -156,7 +156,7 @@ def stitch_flim_tiles(
         canvas_width  = max(t['pixel_x'] for t in tile_positions) + tile_x
         canvas_height = max(t['pixel_y'] for t in tile_positions) + tile_y
 
-    # ── Registration note for stitch_flim_tiles ───────────────────────────
+    # Registration note for stitch_flim_tiles:
     # If tile_positions are pre-supplied (from a prior fit_flim_tiles call
     # that already ran _register_tile_columns), they are used directly.
     # For standalone stitch_only runs, intensity maps are extracted from PTU files
@@ -251,7 +251,7 @@ def stitch_flim_tiles(
             tiles_skipped += 1
             continue
 
-    # ── Optional registration using intensity maps ─────────────────────────
+    #  Optional registration using intensity maps
     if register_tiles and tiles_processed > 1 and tile_results:
         if verbose:
             print(f"\nRunning tile registration (phase correlation)...")
@@ -362,10 +362,8 @@ def stitch_flim_tiles(
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Load helpers
-# ══════════════════════════════════════════════════════════════════════════════
 
+# Load helpers
 def load_stitched_flim(
     output_dir: Path,
     mode: str = 'r',
@@ -434,10 +432,8 @@ def load_flim_for_fitting(
     return stack, tcspc_res, n_bins
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Per-tile fitting pipeline — pooled machine IRF
-# ══════════════════════════════════════════════════════════════════════════════
 
+# Per-tile fitting pipeline — pooled machine IRF
 def _peek_tile_width(ptu_dir, tile_positions, rotate_tiles) -> int:
     """Load the first available tile just to get its pixel width."""
     for t in tile_positions:
@@ -603,7 +599,7 @@ def _register_tile_columns(
     if not tile_results:
         return tile_results
 
-    # ── geometry from original XLIF positions ─────────────────────────────────
+    #  geometry from original XLIF positions ─
     orig_col_xs = sorted(set(int(round(tr['pixel_x']/10)*10) for tr in tile_results))
     orig_row_ys = sorted(set(int(round(tr['pixel_y']/10)*10) for tr in tile_results))
     tile_w = max(tr['tile_w'] for tr in tile_results)
@@ -655,7 +651,7 @@ def _register_tile_columns(
         return (float(np.average(vals[keep], weights=wts[keep])),
                 int((~keep).sum()), len(vals))
 
-    # ── Pass A: column Y drift ─────────────────────────────────────────────────
+    #  Pass A: column Y drift ─
     if verbose:
         print('  Pass A: column Y drift')
     col_shift = {}
@@ -696,7 +692,7 @@ def _register_tile_columns(
         if corr:
             tile_results[i]['pixel_y'] = max(0, tr['pixel_y'] + corr)
 
-    # ── Pass B: row Y residual ─────────────────────────────────────────────────
+    #  Pass B: row Y residual ─
     if verbose:
         print('  Pass B: row Y residual')
     row_shift_y = {}
@@ -739,7 +735,7 @@ def _register_tile_columns(
         if corr:
             tile_results[i]['pixel_y'] = max(0, tr['pixel_y'] + corr)
 
-    # ── Pass C: row X residual ─────────────────────────────────────────────────
+    #  Pass C: row X residual ─
     if verbose:
         print('  Pass C: row X residual')
     row_shift_x = {}
@@ -860,7 +856,7 @@ def fit_flim_tiles(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Resolve parameters from args ──────────────────────────────────────
+    #  Resolve parameters from args 
     n_exp_      = getattr(args, 'nexp',          _cfg_nexp)
     tau_min_ns  = getattr(args, 'tau_min',       Tau_min)
     tau_max_ns  = getattr(args, 'tau_max',       Tau_max)
@@ -880,7 +876,7 @@ def fit_flim_tiles(
 
     machine_irf, pi_machine = _load_machine_irf(mach_path)
 
-    # ── Parse tile positions ───────────────────────────────────────────────
+    #  Parse tile positions ─
     tile_positions = parse_xlif_tile_positions(xlif_path, ptu_basename)
     pixel_size_m, _ = get_pixel_size_from_xlif(xlif_path)
     # When binning > 1, each output pixel represents binning × binning raw pixels.
@@ -903,9 +899,9 @@ def fit_flim_tiles(
 
     total_steps = 2 * len(tile_positions)
 
-    # ══════════════════════════════════════════════════════════════════════
+    
     # PASS 1 — pool summed decays, fit consensus τ
-    # ══════════════════════════════════════════════════════════════════════
+    
     if verbose:
         print("Pass 1: accumulating pooled decay (summed_decay only)...")
 
@@ -994,9 +990,9 @@ def fit_flim_tiles(
     popt_for_px = global_popt.copy()
     popt_for_px[2 * n_exp_] = 0.0
 
-    # ══════════════════════════════════════════════════════════════════════
+    
     # PASS 2 — per-pixel fit, one tile at a time
-    # ══════════════════════════════════════════════════════════════════════
+    
 
     tile_results  = []
     tiles_skipped = 0
@@ -1087,7 +1083,7 @@ def fit_flim_tiles(
         print(f"\n  {len(tile_results)}/{len(tile_meta)} tiles fitted "
               f"({tiles_skipped} errors)")
 
-    # ── Optional Y registration using computed intensity maps ────────────
+    #  Optional Y registration using computed intensity maps 
     # Uses already-computed pixel_maps['intensity'] — no extra PTU reads.
     # Corrects pixel_y in tile_results before assembly.
     if register_tiles and len(tile_results) > 1:

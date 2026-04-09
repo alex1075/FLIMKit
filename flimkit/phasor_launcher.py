@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 
 
-# ─────────────────────────────────────────────────────────────
+
 # Helpers: yes/no, path prompts, file-dialog save
-# ─────────────────────────────────────────────────────────────
+
 def _yes_no(question: str) -> bool:
     """Ask a yes/no question via inquirer and return True for Yes."""
     import inquirer
@@ -70,9 +70,9 @@ def _pick_save_file(title: str, default_name: str) -> str | None:
         return path or default_name
 
 
-# ─────────────────────────────────────────────────────────────
+
 # Save / Load
-# ─────────────────────────────────────────────────────────────
+
 def save_session(path: str, *,
                  real_cal: np.ndarray,
                  imag_cal: np.ndarray,
@@ -167,9 +167,9 @@ def load_session(path: str) -> dict:
     )
 
 
-# ─────────────────────────────────────────────────────────────
+
 # Pipeline: PTU → phasor → (optional) calibration
-# ─────────────────────────────────────────────────────────────
+
 def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
     """Load a PTU file, compute phasors, optionally calibrate with IRF.
 
@@ -218,9 +218,9 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
     )
 
 
-# ─────────────────────────────────────────────────────────────
+
 # Main launcher
-# ─────────────────────────────────────────────────────────────
+
 def launch_phasor(ptu_path: str | None = None,
                   irf_path: str | None = None,
                   machine_irf_path: str | None = None,
@@ -256,7 +256,7 @@ def launch_phasor(ptu_path: str | None = None,
     src_ptu = ptu_path
     src_irf = irf_path
 
-    # ── Decide whether to load a session or process a PTU ────
+
     if session_path is None and ptu_path is None:
         # Interactive inquirer flow
         import inquirer
@@ -280,7 +280,7 @@ def launch_phasor(ptu_path: str | None = None,
                 print("No file specified — aborting.")
                 return {}
 
-    # ── Load saved session ───────────────────────────────────
+
     if session_path:
         print(f"Loading session: {session_path}")
         sess = load_session(session_path)
@@ -298,7 +298,6 @@ def launch_phasor(ptu_path: str | None = None,
         print(f"  frequency = {data['frequency']:.2f} MHz, "
               f"{len(sess['cursors'])} cursor(s) restored")
     else:
-        # ── Prompt for optional IRF ──────────────────────────
         if irf_path is None and machine_irf_path is None:
             choices = [
                 'XLSX IRF (Leica analytical model)',
@@ -318,8 +317,6 @@ def launch_phasor(ptu_path: str | None = None,
         # if no XLSX IRF is supplied
         effective_irf = irf_path or machine_irf_path
         data = _process_ptu(ptu_path, effective_irf)
-
-    # ── Build a save callback ────────────────────────────────
     _data = data          # capture for closure
 
     def _save_callback(state, params):
@@ -340,7 +337,6 @@ def launch_phasor(ptu_path: str | None = None,
                 display_image=_data.get('display_image'),
             )
 
-    # ── Launch the interactive tool ──────────────────────────
     state = phasor_cursor_tool(
         data['real_cal'],
         data['imag_cal'],
@@ -355,16 +351,11 @@ def launch_phasor(ptu_path: str | None = None,
     return state
 
 
-# ─────────────────────────────────────────────────────────────
-# Inquirer-driven interactive session (called from phasor_cli.py
-# or ``main.py`` menu)
-# ─────────────────────────────────────────────────────────────
 def phasor_inquire() -> dict:
     """Full guided prompt → launch_phasor().  No arguments required."""
     print("\n--- Interactive Phasor Analysis ---")
     return launch_phasor()   # all prompts happen inside
 
 
-# ── Allow ``python -m flimkit.phasor_launcher`` ───────────────
 if __name__ == '__main__':
     phasor_inquire()

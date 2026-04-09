@@ -1335,7 +1335,7 @@ def _run_tile_fit(args, progress_callback=None, cancel_event=None, progress_wind
         tau_display_max = getattr(args, 'tau_display_max', None),
     )
 
-    # ── Intensity-weighted lifetime colour image ───────────────────────────
+    # Intensity-weighted lifetime colour image
     print(f"\n{'='*60}")
     print(f"  STEP 5: LIFETIME IMAGE")
     print(f"{'='*60}")

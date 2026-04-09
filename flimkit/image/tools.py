@@ -80,24 +80,7 @@ def make_cell_mask(intensity_image, save_mask=False, path=None, name=None):
     return mask_uint8 > 0  # boolean mask
 
 
-# ── Intensity-threshold tools ──────────────────────────────────────────────
-
-
 def apply_intensity_threshold(intensity_image, threshold):
-    """Return a boolean mask where True = pixel intensity >= threshold.
-
-    Parameters
-    ----------
-    intensity_image : np.ndarray
-        2-D array of total photon counts per pixel (Y, X).
-    threshold : int or float
-        Minimum total-photon count to keep a pixel.
-
-    Returns
-    -------
-    mask : np.ndarray (bool)
-        Same shape as *intensity_image*; True where intensity >= *threshold*.
-    """
     return intensity_image >= threshold
 
 
@@ -178,27 +161,19 @@ def pick_intensity_threshold(intensity_image, initial=None):
             f"{n_above:,}/{n_total:,} pixels kept ({100 * n_above / n_total:.1f} %)"
         )
         fig.canvas.draw_idle()
-
     slider.on_changed(_update)
-
     # Accept button
     ax_btn = plt.axes([0.40, 0.02, 0.20, 0.04])
     btn = Button(ax_btn, "Accept", hovercolor="lightgreen")
-
     def _accept(event):
         plt.close(fig)
-
     btn.on_clicked(_accept)
-
     # Also close on Enter key
     def _on_key(event):
         if event.key in ("enter", "return"):
             plt.close(fig)
-
     fig.canvas.mpl_connect("key_press_event", _on_key)
-
     plt.show()   # blocks until window is closed
-
     chosen = state["threshold"]
     print(f"  Intensity threshold selected: {chosen} photons")
     return chosen

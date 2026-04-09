@@ -34,10 +34,6 @@ def _ellipse_angle_rad(cg: float, cs: float, mode: str) -> float:
         return np.arctan2(cs, cg - 0.5) + np.pi / 2.0
     return np.arctan2(cs, cg)
 
-
-# ─────────────────────────────────────────────────────────────
-# Public API
-# ─────────────────────────────────────────────────────────────
 def phasor_cursor_tool(
     real_cal: np.ndarray,
     imag_cal: np.ndarray,
@@ -103,7 +99,7 @@ def phasor_cursor_tool(
     """
     notebook = _in_notebook()
 
-    # ── Prepare data ─────────────────────────────────────────
+    # Prepare data
     rc = np.asarray(real_cal).squeeze().astype(float)
     ic = np.asarray(imag_cal).squeeze().astype(float)
     mn = np.asarray(mean).squeeze().astype(float)
@@ -114,7 +110,7 @@ def phasor_cursor_tool(
     g_all = rc[valid]
     s_all = ic[valid]
 
-    # ── Mutable state returned to caller ─────────────────────
+    # Mutable state returned to caller
     state: dict = {
         'cursors': [],
         'masks': None,
@@ -123,13 +119,13 @@ def phasor_cursor_tool(
     }
     cursor_artists: list = []
 
-    # ── Parameter store (values read by helpers) ─────────────
+    # Parameter store (values read by helpers)
     params = dict(radius=0.05, radius_minor=0.03, angle_mode='semicircle')
     if initial_params:
         params.update({k: v for k, v in initial_params.items()
                        if k in params})
 
-    # ── Output helper (notebook vs stdout) ───────────────────
+    # Output helper (notebook vs stdout)
     if notebook:
         import ipywidgets as widgets
         from IPython.display import display, clear_output
@@ -148,7 +144,6 @@ def phasor_cursor_tool(
         def _end_output():
             pass
 
-    # ── Drawing helpers ──────────────────────────────────────
     def _redraw():
         ax = state['ax']
         for art in cursor_artists:
@@ -201,7 +196,6 @@ def phasor_cursor_tool(
 
         ax.figure.canvas.draw_idle()
 
-    # ── Analysis ─────────────────────────────────────────────
     def _analyse():
         cursors = state['cursors']
         if not cursors:
@@ -363,7 +357,7 @@ def phasor_cursor_tool(
         plt.show()
         _end_output()
 
-    # ── Event handlers ───────────────────────────────────────
+    # Event handlers
     def _on_click(event):
         if event.inaxes != state['ax'] or event.button != 1:
             return
@@ -406,9 +400,7 @@ def phasor_cursor_tool(
         if state['cursors']:
             _analyse()
 
-    # ══════════════════════════════════════════════════════════
     # Build the phasor plot
-    # ══════════════════════════════════════════════════════════
     if notebook:
         fig, ax = plt.subplots(figsize=figsize)
     else:
@@ -432,7 +424,7 @@ def phasor_cursor_tool(
 
     fig.canvas.mpl_connect('button_press_event', _on_click)
 
-    # ── Restore initial cursors if provided ──────────────────
+    # Restore initial cursors if provided
     if initial_cursors:
         for cur in initial_cursors:
             state['cursors'].append(dict(
@@ -443,12 +435,10 @@ def phasor_cursor_tool(
         _redraw()
         _analyse()
 
-    # ── Save helper ──────────────────────────────────────────
     def _on_save(_ignored=None):
         if on_save is not None:
             on_save(state, params)
 
-    # ── Export figure as image ───────────────────────────────
     def _on_export(_ignored=None):
         try:
             import tkinter as tk
@@ -470,7 +460,7 @@ def phasor_cursor_tool(
             state['fig'].savefig(path, dpi=300, bbox_inches='tight')
             print(f"✅  Figure exported → {path}")
 
-    # ── Peak detection on the live phasor ────────────────────
+    # Peak detection on the live phasor
     _peak_artists: list = []          # track markers for toggle/clear
 
     def _on_peaks(_ignored=None):
@@ -495,7 +485,7 @@ def phasor_cursor_tool(
         state['ax'].figure.canvas.draw_idle()
         _end_output()
 
-    # ── Wire up controls ─────────────────────────────────────
+    # Wire up controls
     if notebook:
         import ipywidgets as widgets  # noqa: F811
         from IPython.display import display  # noqa: F811

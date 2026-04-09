@@ -11,7 +11,7 @@ from typing import Tuple, List, Dict, Any, Optional
 import xml.etree.ElementTree as ET
 
 
-# ─── Ground-truth constants (also used by MockPTUFile._generate_synthetic_data) ─
+# Ground-truth constants (also used by MockPTUFile._generate_synthetic_data)
 MOCK_TAU1_NS       = 0.5     # Short component lifetime (ns)
 MOCK_TAU2_NS       = 3.0     # Long component lifetime (ns)
 MOCK_AMP1          = 0.6     # Amplitude fraction of τ₁
@@ -52,7 +52,7 @@ class MockPTUFile:
             self.n_bins = kwargs.get('n_bins', 256)
             self.tcspc_res = kwargs.get('tcspc_res', 97e-12)
             self.frequency = kwargs.get('frequency', 19.5e6)
-            self.mean_photons = kwargs.get('mean_photons', 500)   # <-- new
+            self.mean_photons = kwargs.get('mean_photons', 500)
             self.sync_rate = self.frequency              # alias used by decode
             self.time_ns = np.arange(self.n_bins) * self.tcspc_res * 1e9
             self.photon_channel = 1

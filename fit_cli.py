@@ -97,7 +97,7 @@ def single_FOV_flim_fit_cli():
     print(f"  flim_fit_v13  |  {args.nexp}-exp  |  {args.mode}  |  optimizer={args.optimizer}")
     print(f"{'='*60}")
 
-    # ── Load PTU ──────────────────────────────────────────────────────────────
+    #  Load PTU
     print(f"\n[1] PTU: {args.ptu}")
     ptu = PTUFile(args.ptu, verbose=True)
 
@@ -106,7 +106,7 @@ def single_FOV_flim_fit_cli():
     print(f"  IRF FWHM: {fwhm_ns*1000:.2f} ps "
           f"({'from --irf-fwhm' if args.irf_fwhm is not None else 'default: 1 bin'})")
 
-    # ── Intensity threshold (optional) ────────────────────────────────────────
+    #  Intensity threshold (optional) 
     intensity_mask = None
     _int_thr = getattr(args, 'intensity_threshold', None)
     if _int_thr is not None:
@@ -122,7 +122,7 @@ def single_FOV_flim_fit_cli():
         print(f"    Threshold: {_int_thr} photons  →  "
               f"{n_kept:,}/{n_total:,} pixels kept ({100*n_kept/n_total:.1f}%)")
 
-    # ── Summed decay ──────────────────────────────────────────────────────────
+    #  Summed decay 
     print(f"\n[2] Building summed decay (channel={args.channel or 'auto'})")
     if intensity_mask is not None:
         stack_tmp = ptu.pixel_stack(channel=args.channel, binning=1)
@@ -142,7 +142,7 @@ def single_FOV_flim_fit_cli():
     print(f"    IRF peak (steepest rise): bin {irf_peak_bin} "
           f"({irf_peak_bin * ptu.tcspc_res * 1e9:.3f} ns)")
 
-    # ── Load xlsx (optional) ──────────────────────────────────────────────────
+    #  Load xlsx (optional) 
     xlsx = None
     if args.xlsx is not None and Path(args.xlsx).exists():
         print(f"\n[3] XLSX: {args.xlsx}")
@@ -152,7 +152,7 @@ def single_FOV_flim_fit_cli():
     else:
         print(f"\n[3] No XLSX provided or file not found")
 
-    # ── Build IRF — sets has_tail, fit_sigma, fit_bg per path ────────────────
+    #  Build IRF — sets has_tail, fit_sigma, fit_bg per path 
     print(f"\n[4] Building IRF")
 
     if args.irf is not None:
@@ -246,14 +246,14 @@ def single_FOV_flim_fit_cli():
 
     print(f"  Flags: has_tail={has_tail}  fit_sigma={fit_sigma}  fit_bg={fit_bg}")
 
-    # ── IRF comparison (always run if xlsx present, regardless of IRF path) ──
+    #  IRF comparison (always run if xlsx present, regardless of IRF path) 
     if not args.no_plots and xlsx is not None:
         matplotlib.use("Agg")
         print(f"\n[4b] IRF comparison")
         compare_irfs(irf_prompt, xlsx, ptu.tcspc_res, ptu.n_bins,
                      strategy, args.out)
 
-    # ── Summed fit ────────────────────────────────────────────────────────────
+    #  Summed fit 
     global_popt    = None
     global_summary = None
 
@@ -283,7 +283,7 @@ def single_FOV_flim_fit_cli():
                         args.nexp, strategy, args.out,
                         irf_prompt=irf_prompt)
 
-    # ── Per-pixel fit ─────────────────────────────────────────────────────────
+    #  Per-pixel fit ─
     if args.mode in ("perPixel", "both"):
         if global_popt is None:
             print(f"\n[5] Running summed fit first (τ needed for per-pixel)")
@@ -415,7 +415,7 @@ def single_FOV_flim_fit_cli():
     print(f"  flim_fit_v13  |  {args.nexp}-exp  |  {args.mode}  |  optimizer={args.optimizer}")
     print(f"{'='*60}")
 
-    # ── Load PTU ──────────────────────────────────────────────────────────────
+    #  Load PTU 
     print(f"\n[1] PTU: {args.ptu}")
     ptu = PTUFile(args.ptu, verbose=True)
 
@@ -424,7 +424,7 @@ def single_FOV_flim_fit_cli():
     print(f"  IRF FWHM: {fwhm_ns*1000:.2f} ps "
           f"({'from --irf-fwhm' if args.irf_fwhm is not None else 'default: 1 bin'})")
 
-    # ── Intensity threshold (optional) ────────────────────────────────────────
+    #  Intensity threshold (optional) 
     intensity_mask = None
     _int_thr = getattr(args, 'intensity_threshold', None)
     if _int_thr is not None:
@@ -440,7 +440,7 @@ def single_FOV_flim_fit_cli():
         print(f"    Threshold: {_int_thr} photons  →  "
               f"{n_kept:,}/{n_total:,} pixels kept ({100*n_kept/n_total:.1f}%)")
 
-    # ── Summed decay ──────────────────────────────────────────────────────────
+    #  Summed decay 
     print(f"\n[2] Building summed decay (channel={args.channel or 'auto'})")
     if intensity_mask is not None:
         stack_tmp = ptu.pixel_stack(channel=args.channel, binning=1)
@@ -460,7 +460,7 @@ def single_FOV_flim_fit_cli():
     print(f"    IRF peak (steepest rise): bin {irf_peak_bin} "
           f"({irf_peak_bin * ptu.tcspc_res * 1e9:.3f} ns)")
 
-    # ── Load xlsx (optional) ──────────────────────────────────────────────────
+    #  Load xlsx (optional) 
     xlsx = None
     if args.xlsx is not None and Path(args.xlsx).exists():
         print(f"\n[3] XLSX: {args.xlsx}")
@@ -470,7 +470,7 @@ def single_FOV_flim_fit_cli():
     else:
         print(f"\n[3] No XLSX provided or file not found")
 
-    # ── Build IRF — sets has_tail, fit_sigma, fit_bg per path ────────────────
+    #  Build IRF — sets has_tail, fit_sigma, fit_bg per path 
     print(f"\n[4] Building IRF")
 
     if args.irf is not None:
@@ -564,14 +564,14 @@ def single_FOV_flim_fit_cli():
 
     print(f"  Flags: has_tail={has_tail}  fit_sigma={fit_sigma}  fit_bg={fit_bg}")
 
-    # ── IRF comparison (always run if xlsx present, regardless of IRF path) ──
+    #  IRF comparison (always run if xlsx present, regardless of IRF path) 
     if not args.no_plots and xlsx is not None:
         matplotlib.use("Agg")
         print(f"\n[4b] IRF comparison")
         compare_irfs(irf_prompt, xlsx, ptu.tcspc_res, ptu.n_bins,
                      strategy, args.out)
 
-    # ── Summed fit ────────────────────────────────────────────────────────────
+    #  Summed fit 
     global_popt    = None
     global_summary = None
 
@@ -601,7 +601,7 @@ def single_FOV_flim_fit_cli():
                         args.nexp, strategy, args.out,
                         irf_prompt=irf_prompt)
 
-    # ── Per-pixel fit ─────────────────────────────────────────────────────────
+    #  Per-pixel fit ─
     if args.mode in ("perPixel", "both"):
         if global_popt is None:
             print(f"\n[5] Running summed fit first (τ needed for per-pixel)")

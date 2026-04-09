@@ -1,15 +1,3 @@
-"""Ground-Truth Recovery Tests
-
-Generate synthetic data with KNOWN parameters and verify the analysis
-pipeline recovers those parameters within tight tolerances.
-
-Covers:
-  1. Single-exponential fitting  (known τ)
-  2. Bi-exponential fitting      (known τ₁, τ₂, amplitudes)
-  3. Stitch → fit round-trip     (known τ after stitching)
-  4. Phasor peak recovery        (known G, S from analytical formula)
-"""
-
 import pytest
 import numpy as np
 import tempfile
@@ -37,19 +25,15 @@ from mock_data import (
     MOCK_IRF_FWHM_BINS,
 )
 
-
-# ─────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────
+# Helper
 def _irf(n_bins, tcspc_res, fwhm_ns, center_bin):
     """Build the same Gaussian IRF the fitter will use."""
     from flimkit.FLIM.irf_tools import gaussian_irf_from_fwhm
     return gaussian_irf_from_fwhm(n_bins, tcspc_res, fwhm_ns, center_bin)
 
 
-# ─────────────────────────────────────────────────────────────
+
 # 1.  Single-exponential fitting
-# ─────────────────────────────────────────────────────────────
 class TestSingleExpRecovery:
     """Fit a synthetic single-exp decay and check τ matches the input."""
 
@@ -97,9 +81,8 @@ class TestSingleExpRecovery:
         )
 
 
-# ─────────────────────────────────────────────────────────────
-# 2.  Bi-exponential fitting
-# ─────────────────────────────────────────────────────────────
+
+# 2.  Bi-exponential fittin
 class TestBiExpRecovery:
     """Fit the mock bi-exponential and verify both τ values."""
 
@@ -215,9 +198,8 @@ class TestBiExpRecovery:
         )
 
 
-# ─────────────────────────────────────────────────────────────
+
 # 3.  Stitch → fit  (end-to-end with ground truth)
-# ─────────────────────────────────────────────────────────────
 class TestStitchAndFitRecovery:
     """Stitch mock tiles, sum the decay, fit, and check τ."""
 
@@ -274,9 +256,8 @@ class TestStitchAndFitRecovery:
             )
 
 
-# ─────────────────────────────────────────────────────────────
+
 # 4.  Phasor ground-truth recovery (tighter than before)
-# ─────────────────────────────────────────────────────────────
 class TestPhasorGroundTruth:
     """Synthetic single-exp phasor → the peak must land on the semicircle
     at the analytically known (G, S) and the phase lifetime must match."""

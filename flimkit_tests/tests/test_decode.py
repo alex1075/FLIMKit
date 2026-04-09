@@ -1,8 +1,3 @@
-"""Unit Tests for PTU Decode Module
-
-Tests FLIM histogram extraction and time axis creation.
-"""
-
 import pytest
 import numpy as np
 from pathlib import Path

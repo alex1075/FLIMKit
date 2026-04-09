@@ -174,12 +174,12 @@ class PTUFile:
         records = self._load_records()
         ch, dtime, nsync = self._decode_picoharp_t3(records)
 
-        # ── Overflow correction ──────────────────────────────────────
+        #  Overflow correction 
         T3WRAPAROUND = 65536
         overflow_mask = (ch == 0xF) & (dtime == 0)
         overflow_cumsum = np.cumsum(overflow_mask.astype(np.int64)) * T3WRAPAROUND
         nsync_corrected = nsync.astype(np.int64) + overflow_cumsum
-        # ─────────────────────────────────────────────────────────────
+        # ─
 
         special  = ch == 0xF
         ph_mask  = (~special) & (ch == ch_use)
@@ -258,12 +258,12 @@ class PTUFile:
         records  = self._load_records()
         ch, dtime, nsync = self._decode_picoharp_t3(records)
 
-        # ── Overflow correction ──────────────────────────────────────
+        #  Overflow correction 
         T3WRAPAROUND = 65536
         overflow_mask = (ch == 0xF) & (dtime == 0)
         overflow_cumsum = np.cumsum(overflow_mask.astype(np.int64)) * T3WRAPAROUND
         nsync_corrected = nsync.astype(np.int64) + overflow_cumsum
-        # ─────────────────────────────────────────────────────────────
+        # ─
 
         special  = ch == 0xF
         ph_mask  = (~special) & (ch == ch_use)
@@ -368,7 +368,7 @@ class PTUFile:
         syncs_per_line  = syncs_per_pixel * n_x
         T3WRAPAROUND    = 65536
 
-        # ---- Tag encoding helpers -------------------------------------------
+        # Tag encoding helpers
         TYPE_INT   = 0x10000008
         TYPE_FLOAT = 0x20000008
         TYPE_STR   = 0x4001FFFF
@@ -390,7 +390,7 @@ class PTUFile:
             else:
                 return head + struct.pack("<q", int(value))
 
-        # ---- Encode TTTR records --------------------------------------------
+        # Encode TTTR records 
         records     = []
         nsync_floor = 0   # running overflow baseline
 
@@ -430,7 +430,7 @@ class PTUFile:
         records_arr = np.array(records, dtype=np.uint32)
         n_records   = len(records_arr)
 
-        # ---- Build header ---------------------------------------------------
+        # Build header 
         tags  = b""
         tags += _tag("Measurement_Mode",             TYPE_INT,   3)
         tags += _tag("TTResultFormat_TTTRRecType",   TYPE_INT,   0x00010303)
@@ -603,10 +603,7 @@ class PTUArray5D:
         """Laser repetition frequency in Hz."""
         return 1.0 / (self.n_bins * self.tcspc_res)
     
-# ══════════════════════════════════════════════════════════════════════════════
 # UTILITY FUNCTIONS - Compatible with custom PTUFile
-# ══════════════════════════════════════════════════════════════════════════════
-
 def read_ptu(path: str, binning: int = 1, channel: Optional[int] = None,
              verbose: bool = False) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
@@ -894,7 +891,7 @@ def get_flim_histogram_from_ptufile(
     Load raw FLIM histogram (uint32 counts) using custom PTUFile if it returns
     valid data; otherwise fall back to ptufile loader.
     """
-    # ---------- Attempt with custom PTUFile ----------
+    # Attempt with custom PTUFile
     try:
         from .reader import PTUFile
         ptu = PTUFile(str(ptu_path), verbose=False)
@@ -922,7 +919,7 @@ def get_flim_histogram_from_ptufile(
         }
         return stack, metadata
     except Exception as e:
-        # ---------- Fallback to ptufile ----------
+        # Fallback to ptufile 
         # print(f"Custom PTUFile failed for {ptu_path.name}: {e}. Falling back to ptufile.")
         from .decode import get_raw_flim_histogram   # avoid circular import
         stack, meta = get_raw_flim_histogram(ptu_path, rotate_cw=rotate_cw)

@@ -49,7 +49,7 @@ class _DECostLogTau(_DECost):
         return super().__call__(params_lin)
 
 
-# --------------- Poisson MLE (deviance) cost functions ---------------
+# Poisson MLE (deviance) cost functions
 
 class _DECostPoisson:
     """Poisson deviance cost for DE: C = 2·Σ[m - n + n·ln(n/m)].
@@ -118,11 +118,10 @@ def reconvolution_model(params, tcspc_res, n_bins, irf_prompt,
     taus  = np.clip(params[:n_exp], 1e-14, None)
     amps  = params[n_exp:2*n_exp]
 
-    # ---- Enforce τ₁ > τ₂ > τ₃ by sorting descending ----
-    order = np.argsort(-taus)                # descending order indices
+    # Enforce τ₁ > τ₂ > τ₃ by sorting descending 
+    order = np.argsort(-taus)               
     taus = taus[order]
     amps = amps[order]
-    # ----------------------------------------------------
 
     idx   = 2 * n_exp
     shift = params[idx]; idx += 1

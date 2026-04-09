@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# ── matplotlib font-cache fast-path (must come before ANY matplotlib import) ──
 import os, sys
 if getattr(sys, 'frozen', False):
     # Running as a PyInstaller bundle — point at the bundled mpl-cache/
@@ -9,7 +8,6 @@ else:
     _mpl_cache = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mpl-cache')
 os.makedirs(_mpl_cache, exist_ok=True)
 os.environ.setdefault('MPLCONFIGDIR', _mpl_cache)
-# ─────────────────────────────────────────────────────────────────────────────
 import argparse
 from pathlib import Path
 

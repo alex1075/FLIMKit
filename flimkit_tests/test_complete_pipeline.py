@@ -629,7 +629,7 @@ class TestPerTileFitPipeline:
     TILE_H  = 64       # small tiles for speed
     TILE_W  = 64
 
-    # ── helpers ────────────────────────────────────────────────────────────────
+    #  helpers 
 
     def _pixel_maps(self, h=None, w=None, n_exp=1):
         """Build a minimal pixel_maps dict that assemble_tile_maps accepts."""
@@ -747,7 +747,7 @@ class TestPerTileFitPipeline:
             tau_display_min=None, tau_display_max=None,
         )
 
-    # ── 1. component tests ─────────────────────────────────────────────────────
+    #  1. component tests
 
     def test_assemble_tile_maps_basic(self):
         """assemble_tile_maps places tiles correctly on the canvas."""
@@ -821,7 +821,7 @@ class TestPerTileFitPipeline:
             assert (out / 'R_2_tau_mean_amp.npy').exists(),  "tau .npy missing"
             assert (out / 'R_2_global_summary.txt').exists(),"global summary missing"
 
-    # ── 2. integration test with patched fit_flim_tiles ────────────────────────
+    #  2. integration test with patched fit_flim_tiles 
 
     def test_run_tile_fit_end_to_end(self):
         """_run_tile_fit completes and writes output files when fit_flim_tiles is patched."""
@@ -913,7 +913,7 @@ class TestPerTileFitPipeline:
             assert 'tau1_mean_ns' in global_summary, "tau1_mean_ns missing"
             assert 'tau2_mean_ns' in global_summary, "tau2_mean_ns missing"
 
-    # ── 3. machine-IRF variant ─────────────────────────────────────────────────
+    #  3. machine-IRF variant
 
     def test_run_tile_fit_with_machine_irf(self):
         """estimate_irf='machine_irf' path does not crash and produces valid output."""

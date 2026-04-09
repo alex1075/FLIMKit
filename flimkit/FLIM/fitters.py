@@ -34,7 +34,7 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
     tau_min  = tau_min_ns * 1e-9
     tau_max  = tau_max_ns * 1e-9
 
-    # ---- Optionally normalise (legacy chi2 path only) ----
+    # Optionally normalise (legacy chi2 path only) 
     if cost_function == "chi2":
         scale = decay.max()
         if scale <= 0:
@@ -73,7 +73,7 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
                              bg_init=bg_init, bg_upper=bg_upper)
     bounds  = list(zip(lo, hi))
 
-    # ---- Define residual / cost functions ----
+    # Define residual / cost functions
     if cost_function == "chi2":
         weights = np.sqrt(np.maximum(decay_work[fit_start:fit_end], 1e-8))
 
@@ -183,7 +183,7 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
     else:
         raise ValueError(f"Unknown optimizer: {optimizer!r}")
 
-    # ---- Rescale amplitudes and background back to original units ----
+    # Rescale amplitudes and background back to original units
     # (only needed for chi2 path which normalises; poisson works on raw counts)
     popt_original = popt_work.copy()
     if cost_function == "chi2":
@@ -208,7 +208,6 @@ def _make_summary(popt, decay, tcspc_res, n_bins, irf_prompt,
 
     taus  = popt[:n_exp]
     amps  = popt[n_exp:2*n_exp]
-    # Enforce τ₁ > τ₂ > τ₃ order (descending taus)
     order = np.argsort(-taus)
     taus = taus[order]
     amps = amps[order]
