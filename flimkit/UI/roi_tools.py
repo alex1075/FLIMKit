@@ -275,32 +275,33 @@ class RoiAnalysisPanel:
         #  Drawing Mode Toolbar 
         toolbar = ttk.LabelFrame(self.frame, text="Drawing Mode", padding=4)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        toolbar.columnconfigure(5, weight=1)  # Spacer
         
-        self._btn_select = ttk.Button(toolbar, text="◯ Select", width=10,
+        # Configure columns for 3 buttons per row
+        for i in range(3):
+            toolbar.columnconfigure(i, weight=1)
+        
+        self._btn_select = ttk.Button(toolbar, text="◯ Select", width=12,
                                       command=lambda: self._set_mode("select"))
-        self._btn_select.grid(row=0, column=0, sticky="ew", padx=2)
+        self._btn_select.grid(row=0, column=0, sticky="ew", padx=2, pady=2)
         
-        self._btn_rect = ttk.Button(toolbar, text="▭ Rectangle", width=10,
+        self._btn_rect = ttk.Button(toolbar, text="▭ Rectangle", width=12,
                                     command=lambda: self._set_mode("rect"))
-        self._btn_rect.grid(row=0, column=1, sticky="ew", padx=2)
+        self._btn_rect.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
         
-        self._btn_ellipse = ttk.Button(toolbar, text="○ Ellipse", width=10,
+        self._btn_ellipse = ttk.Button(toolbar, text="○ Ellipse", width=12,
                                        command=lambda: self._set_mode("ellipse"))
-        self._btn_ellipse.grid(row=0, column=2, sticky="ew", padx=2)
+        self._btn_ellipse.grid(row=0, column=2, sticky="ew", padx=2, pady=2)
         
-        self._btn_polygon = ttk.Button(toolbar, text="◇ Polygon", width=10,
+        self._btn_polygon = ttk.Button(toolbar, text="◇ Polygon", width=12,
                                        command=lambda: self._set_mode("polygon"))
-        self._btn_polygon.grid(row=0, column=3, sticky="ew", padx=2)
+        self._btn_polygon.grid(row=1, column=0, sticky="ew", padx=2, pady=2)
         
-        self._btn_freehand = ttk.Button(toolbar, text="✏ Freehand", width=10,
+        self._btn_freehand = ttk.Button(toolbar, text="✏ Freehand", width=12,
                                         command=lambda: self._set_mode("freehand"))
-        self._btn_freehand.grid(row=0, column=4, sticky="ew", padx=2)
+        self._btn_freehand.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
         
-        # Column 5 is spacer (configured with weight=1 above)
-        
-        ttk.Button(toolbar, text="Clear All", width=8,
-                   command=self._clear_all_regions).grid(row=0, column=6, sticky="ew", padx=2)
+        ttk.Button(toolbar, text="Clear All", width=12,
+                   command=self._clear_all_regions).grid(row=1, column=2, sticky="ew", padx=2, pady=2)
         
         #  Region List 
         list_frame = ttk.LabelFrame(self.frame, text="Regions", padding=4)
@@ -309,23 +310,25 @@ class RoiAnalysisPanel:
         list_frame.rowconfigure(0, weight=1)
         
         # Treeview for regions
-        cols = ("Name", "Type", "τ_med (ns)", "Count", "Color")
+        cols = ("Name", "Type", "τ_med (ns)", "τ_sd (ns)", "Photons", "σ_photons")
         self._tree = ttk.Treeview(list_frame, columns=cols, height=6, show="tree headings")
         self._tree.grid(row=0, column=0, sticky="nsew")
         
         self._tree.column("#0", width=0, stretch=False)
         self._tree.column("Name", anchor="w", width=100)
-        self._tree.column("Type", anchor="center", width=70)
-        self._tree.column("τ_med (ns)", anchor="center", width=80)
-        self._tree.column("Count", anchor="center", width=60)
-        self._tree.column("Color", anchor="center", width=50)
+        self._tree.column("Type", anchor="center", width=60)
+        self._tree.column("τ_med (ns)", anchor="center", width=75)
+        self._tree.column("τ_sd (ns)", anchor="center", width=75)
+        self._tree.column("Photons", anchor="center", width=65)
+        self._tree.column("σ_photons", anchor="center", width=75)
         
         self._tree.heading("#0", text="", anchor="w")
         self._tree.heading("Name", text="Name", anchor="w")
         self._tree.heading("Type", text="Type", anchor="center")
         self._tree.heading("τ_med (ns)", text="τ_med (ns)", anchor="center")
-        self._tree.heading("Count", text="Photons", anchor="center")
-        self._tree.heading("Color", text="Color", anchor="center")
+        self._tree.heading("τ_sd (ns)", text="τ_sd (ns)", anchor="center")
+        self._tree.heading("Photons", text="Photons", anchor="center")
+        self._tree.heading("σ_photons", text="σ_photons", anchor="center")
         
         self._tree.bind("<Double-1>", self._on_region_double_click)
         self._tree.bind("<Delete>", self._on_delete_key)
@@ -339,14 +342,23 @@ class RoiAnalysisPanel:
         #  Region Actions 
         actions_frame = ttk.Frame(self.frame)
         actions_frame.grid(row=2, column=0, sticky="ew", pady=4)
-        actions_frame.columnconfigure(2, weight=1)
         
-        ttk.Button(actions_frame, text="Delete Selected", width=15,
-                   command=self._delete_selected_region).pack(side="left", padx=2)
-        ttk.Button(actions_frame, text="Rename...", width=15,
-                   command=self._rename_selected_region).pack(side="left", padx=2)
-        ttk.Button(actions_frame, text="Export Region", width=15,
-                   command=self._export_selected_region).pack(side="left", padx=2)
+        # Configure columns for 3 buttons per row
+        for i in range(3):
+            actions_frame.columnconfigure(i, weight=1)
+        
+        ttk.Button(actions_frame, text="Delete Selected", width=16,
+                   command=self._delete_selected_region).grid(row=0, column=0, sticky="ew", padx=2, pady=2)
+        ttk.Button(actions_frame, text="Rename...", width=16,
+                   command=self._rename_selected_region).grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Button(actions_frame, text="Import from GeoJSON", width=18,
+                   command=self._import_rois_geojson).grid(row=0, column=2, sticky="ew", padx=2, pady=2)
+        ttk.Button(actions_frame, text="Export as CSV", width=16,
+                   command=self._export_all_rois_csv).grid(row=1, column=0, sticky="ew", padx=2, pady=2)
+        ttk.Button(actions_frame, text="Export as GeoJSON", width=18,
+                   command=self._export_selected_region).grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Button(actions_frame, text="Export All as GeoJSON", width=20,
+                   command=self._export_all_rois_geojson).grid(row=1, column=2, sticky="ew", padx=2, pady=2)
         
         # Status label
         self._status = tk.StringVar(value="Ready — Select drawing mode or click regions to add")
@@ -436,9 +448,10 @@ class RoiAnalysisPanel:
             self._status.set(f"Renamed to '{new_name}'")
     
     def _export_selected_region(self):
-        """Export selected region as TIFF (placeholder)."""
-        import tkinter as tk
-        from tkinter import messagebox
+        """Export selected region as GeoJSON."""
+        import json
+        from pathlib import Path
+        from tkinter import filedialog, messagebox
         
         selected = self._tree.selection()
         if not selected:
@@ -446,9 +459,364 @@ class RoiAnalysisPanel:
             return
         
         item = selected[0]
-        region_name = self._tree.item(item, "values")[0]  # First value is now name
+        region_id = int(item)
         
-        messagebox.showinfo("Export", f"Export '{region_name}' as TIFF\n(not yet implemented)")
+        # Find the region
+        if not self.fov_preview or not self.fov_preview._roi_manager:
+            return
+        
+        regions = self.fov_preview._roi_manager.get_all_regions()
+        region = next((r for r in regions if r.get("id") == region_id), None)
+        if not region:
+            messagebox.showerror("Error", "Region not found")
+            return
+        
+        geojson_file = filedialog.asksaveasfilename(
+            title="Export Region as GeoJSON",
+            defaultextension=".geojson",
+            filetypes=[("GeoJSON files", "*.geojson"), ("JSON files", "*.json"), ("All files", "*.*")])
+        if not geojson_file:
+            return
+        
+        try:
+            name = region.get("name", "")
+            tool = region.get("tool", "")
+            coords = region.get("coords", [])
+            stats = region.get("statistics", {})
+            
+            # Convert coordinates to GeoJSON geometry based on tool type
+            if tool == "ellipse" and len(coords) >= 2:
+                # For ellipse, create a polygon from the two corner points
+                x1, y1 = coords[0]
+                x2, y2 = coords[1]
+                # Approximate ellipse as polygon
+                geometry = {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]
+                    ]]
+                }
+            elif tool == "rect" and len(coords) >= 2:
+                # Rectangle from corner points
+                x1, y1 = coords[0]
+                x2, y2 = coords[1]
+                geometry = {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]
+                    ]]
+                }
+            elif tool == "freehand" and len(coords) > 0:
+                # Freehand as LineString or Polygon
+                coords_2d = [[c[0], c[1]] for c in coords]
+                if len(coords) > 2:
+                    # Close the polygon if it's a closed shape
+                    if coords[0] == coords[-1]:
+                        geometry = {"type": "Polygon", "coordinates": [coords_2d]}
+                    else:
+                        geometry = {"type": "LineString", "coordinates": coords_2d}
+                else:
+                    geometry = {"type": "LineString", "coordinates": coords_2d}
+            elif tool == "point" and len(coords) == 1:
+                geometry = {"type": "Point", "coordinates": coords[0]}
+            else:
+                # Fallback: if many points, make LineString
+                coords_2d = [[c[0], c[1]] for c in coords]
+                geometry = {"type": "LineString", "coordinates": coords_2d}
+            
+            # Build GeoJSON Feature
+            feature = {
+                "type": "Feature",
+                "properties": {
+                    "id": region.get("id"),
+                    "name": name,
+                    "tool_type": tool,
+                    "tau_median": stats.get("tau_median", None),
+                    "tau_stdev": stats.get("tau_stdev", None),
+                    "photon_count": stats.get("photon_count", None),
+                    "photon_stdev": stats.get("photon_stdev", None)
+                },
+                "geometry": geometry
+            }
+            
+            # Write GeoJSON
+            with open(geojson_file, 'w', encoding='utf-8') as f:
+                json.dump(feature, f, indent=2)
+            
+            messagebox.showinfo("Export Success", f"Region exported to:\n{Path(geojson_file).name}")
+            print(f"[Export] Region GeoJSON: {geojson_file}")
+        
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Export Error", f"Failed to export: {e}")
+            traceback.print_exc()
+    
+    def _export_all_rois_csv(self):
+        """Export all regions to CSV with per-region statistics."""
+        import csv
+        from pathlib import Path
+        from tkinter import filedialog, messagebox
+        
+        if not self.fov_preview or not self.fov_preview._roi_manager.regions:
+            messagebox.showwarning("No Data", "No regions to export.")
+            return
+        
+        csv_file = filedialog.asksaveasfilename(
+            title="Export ROI Data",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        if not csv_file:
+            return
+        
+        try:
+            regions = self.fov_preview._roi_manager.get_all_regions()
+            rows = []
+            
+            for region in regions:
+                region_id = region.get("id", "")
+                name = region.get("name", "")
+                tool = region.get("tool", "")
+                
+                # Get statistics from manager if available
+                stats = region.get("statistics", {})
+                tau_median = stats.get("tau_median", "N/A")
+                tau_stdev = stats.get("tau_stdev", "N/A")
+                photon_count = stats.get("photon_count", "N/A")
+                photon_stdev = stats.get("photon_stdev", "N/A")
+                
+                rows.append([region_id, name, tool, tau_median, tau_stdev, photon_count, photon_stdev])
+            
+            if not rows:
+                messagebox.showwarning("No Data", "No regions to export.")
+                return
+            
+            # Write CSV
+            with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["ID", "Name", "Type", "Tau_median", "Tau_stdev", "Photon_count", "Photon_stdev"])
+                writer.writerows(rows)
+            
+            messagebox.showinfo("Export Success", f"ROI data exported to:\n{Path(csv_file).name}")
+            print(f"[Export] ROI CSV: {csv_file}")
+        
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Export Error", f"Failed to export: {e}")
+            traceback.print_exc()
+    
+    def _export_all_rois_geojson(self):
+        """Export all regions to GeoJSON FeatureCollection."""
+        import json
+        from pathlib import Path
+        from tkinter import filedialog, messagebox
+        
+        if not self.fov_preview or not self.fov_preview._roi_manager.regions:
+            messagebox.showwarning("No Data", "No regions to export.")
+            return
+        
+        geojson_file = filedialog.asksaveasfilename(
+            title="Export ROI Data as GeoJSON",
+            defaultextension=".geojson",
+            filetypes=[("GeoJSON files", "*.geojson"), ("JSON files", "*.json"), ("All files", "*.*")])
+        if not geojson_file:
+            return
+        
+        try:
+            regions = self.fov_preview._roi_manager.get_all_regions()
+            features = []
+            
+            for region in regions:
+                region_id = region.get("id", "")
+                name = region.get("name", "")
+                tool = region.get("tool", "")
+                coords = region.get("coords", [])
+                stats = region.get("statistics", {})
+                
+                # Convert coordinates to GeoJSON geometry based on tool type
+                if tool == "ellipse" and len(coords) >= 2:
+                    x1, y1 = coords[0]
+                    x2, y2 = coords[1]
+                    geometry = {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]
+                        ]]
+                    }
+                elif tool == "rect" and len(coords) >= 2:
+                    x1, y1 = coords[0]
+                    x2, y2 = coords[1]
+                    geometry = {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]
+                        ]]
+                    }
+                elif tool == "freehand" and len(coords) > 0:
+                    coords_2d = [[c[0], c[1]] for c in coords]
+                    if len(coords) > 2:
+                        if coords[0] == coords[-1]:
+                            geometry = {"type": "Polygon", "coordinates": [coords_2d]}
+                        else:
+                            geometry = {"type": "LineString", "coordinates": coords_2d}
+                    else:
+                        geometry = {"type": "LineString", "coordinates": coords_2d}
+                elif tool == "point" and len(coords) == 1:
+                    geometry = {"type": "Point", "coordinates": coords[0]}
+                else:
+                    coords_2d = [[c[0], c[1]] for c in coords]
+                    geometry = {"type": "LineString", "coordinates": coords_2d}
+                
+                # Build feature
+                feature = {
+                    "type": "Feature",
+                    "properties": {
+                        "id": region_id,
+                        "name": name,
+                        "tool_type": tool,
+                        "tau_median": stats.get("tau_median"),
+                        "tau_stdev": stats.get("tau_stdev"),
+                        "photon_count": stats.get("photon_count"),
+                        "photon_stdev": stats.get("photon_stdev")
+                    },
+                    "geometry": geometry
+                }
+                features.append(feature)
+            
+            if not features:
+                messagebox.showwarning("No Data", "No regions to export.")
+                return
+            
+            # Build FeatureCollection
+            feature_collection = {
+                "type": "FeatureCollection",
+                "features": features
+            }
+            
+            # Write GeoJSON
+            with open(geojson_file, 'w', encoding='utf-8') as f:
+                json.dump(feature_collection, f, indent=2)
+            
+            messagebox.showinfo("Export Success", f"ROI data exported to:\n{Path(geojson_file).name}\n({len(features)} regions)")
+            print(f"[Export] ROI GeoJSON: {geojson_file}")
+        
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Export Error", f"Failed to export: {e}")
+            traceback.print_exc()
+    
+    def _import_rois_geojson(self):
+        """Import regions from GeoJSON file."""
+        import json
+        from tkinter import filedialog, messagebox
+        
+        if not self.fov_preview or not self.fov_preview._roi_manager:
+            messagebox.showwarning("Not Ready", "FOV preview not initialized")
+            return
+        
+        geojson_file = filedialog.askopenfilename(
+            title="Import ROI Data from GeoJSON",
+            filetypes=[("GeoJSON files", "*.geojson"), ("JSON files", "*.json"), ("All files", "*.*")])
+        if not geojson_file:
+            return
+        
+        try:
+            with open(geojson_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Handle both single Feature and FeatureCollection
+            features = []
+            if data.get("type") == "FeatureCollection":
+                features = data.get("features", [])
+            elif data.get("type") == "Feature":
+                features = [data]
+            else:
+                messagebox.showerror("Invalid GeoJSON", "File must contain Feature or FeatureCollection")
+                return
+            
+            if not features:
+                messagebox.showwarning("No Data", "No features found in GeoJSON file")
+                return
+            
+            imported_count = 0
+            for feature in features:
+                try:
+                    props = feature.get("properties", {})
+                    geom = feature.get("geometry", {})
+                    
+                    name = props.get("name", "imported-region")
+                    tool_type = props.get("tool_type", "freehand")  # Default to freehand
+                    geom_type = geom.get("type", "")
+                    coords_raw = geom.get("coordinates", [])
+                    
+                    # Fallback: guess tool_type from geometry if not in properties
+                    if tool_type == "freehand" and geom_type in ["Polygon", "LineString"]:
+                        tool_type = "freehand" if geom_type == "LineString" else "freehand"
+                    elif geom_type == "Point":
+                        tool_type = "point"
+                    
+                    # Convert geometry coordinates to region coordinates
+                    coords = []
+                    if geom_type == "Point":
+                        coords = [coords_raw]
+                    elif geom_type == "LineString":
+                        coords = coords_raw
+                    elif geom_type == "Polygon":
+                        # For polygons, use first ring (outer boundary)
+                        if coords_raw and len(coords_raw[0]) > 0:
+                            coords = coords_raw[0][:-1]  # Remove closing duplicate
+                    elif geom_type == "MultiPoint":
+                        coords = coords_raw
+                    else:
+                        print(f"[Import] Unsupported geometry type: {geom_type}")
+                        continue
+                    
+                    if not coords:
+                        print(f"[Import] Skipping {name}: no valid coordinates")
+                        continue
+                    
+                    # Add region to manager
+                    region_id = self.fov_preview._roi_manager.add_region(name, tool_type, coords)
+                    
+                    # Restore statistics if available
+                    regions = self.fov_preview._roi_manager.get_all_regions()
+                    region = next((r for r in regions if r.get("id") == region_id), None)
+                    if region:
+                        tau_med = props.get("tau_median")
+                        tau_std = props.get("tau_stdev")
+                        photon_cnt = props.get("photon_count")
+                        photon_std = props.get("photon_stdev")
+                        
+                        if tau_med is not None or tau_std is not None or photon_cnt is not None or photon_std is not None:
+                            region["statistics"] = {
+                                "tau_median": tau_med,
+                                "tau_stdev": tau_std,
+                                "photon_count": photon_cnt,
+                                "photon_stdev": photon_std
+                            }
+                    
+                    imported_count += 1
+                    print(f"[Import] Imported region: {name} ({tool_type})")
+                
+                except Exception as e:
+                    print(f"[Import] Error importing feature: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            if imported_count > 0:
+                self.fov_preview._redraw_region_overlays()
+                self.fov_preview._save_regions_update()
+                self._refresh_region_list()
+                messagebox.showinfo("Import Success", f"Imported {imported_count} region(s) from {json.loads(open(geojson_file).read()).get('type', 'GeoJSON file')}")
+            else:
+                messagebox.showwarning("Import Failed", "No regions could be imported")
+        
+        except json.JSONDecodeError as e:
+            messagebox.showerror("JSON Error", f"Invalid JSON file: {e}")
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Import Error", f"Failed to import: {e}")
+            traceback.print_exc()
     
     def _refresh_region_list(self):
         """Update region list display from RoiManager."""
@@ -470,7 +838,9 @@ class RoiAnalysisPanel:
             
             # Compute statistics if lifetime map available
             tau_med = "—"
+            tau_stdev = "—"
             photon_count = "—"
+            photon_stdev = "—"
             
             if self.fov_preview._lifetime_map is not None:
                 try:
@@ -482,13 +852,28 @@ class RoiAnalysisPanel:
                         valid = lifetime_in_region[~np.isnan(lifetime_in_region)]
                         
                         if valid.size > 0:
-                            tau_med = f"{np.median(valid):.2f}"
-                            photon_count = str(valid.size)
+                            tau_med_val = float(np.median(valid))
+                            tau_stdev_val = float(np.std(valid))
+                            photon_count_val = int(valid.size)
+                            photon_stdev_val = float(np.sqrt(photon_count_val))  # Poisson stdev
+                            
+                            tau_med = f"{tau_med_val:.2f}"
+                            tau_stdev = f"{tau_stdev_val:.2f}"
+                            photon_count = str(photon_count_val)
+                            photon_stdev = f"{photon_stdev_val:.2f}"
+                            
+                            # Store statistics back in region data
+                            region["statistics"] = {
+                                "tau_median": tau_med_val,
+                                "tau_stdev": tau_stdev_val,
+                                "photon_count": photon_count_val,
+                                "photon_stdev": photon_stdev_val
+                            }
                 except Exception as e:
                     print(f"[ROI] Could not compute stats: {e}")
             
             # Add row with region_id as item ID (iid), not in values
-            values = (name, tool_type, tau_med, photon_count, color)
+            values = (name, tool_type, tau_med, tau_stdev, photon_count, photon_stdev)
             self._tree.insert("", "end", iid=str(region_id), values=values, tags=(f"color_{region_id}",))
             
             # Color the row by region

@@ -1416,6 +1416,8 @@ class ResultsPanel:
         # Enable buttons if there are images to export
         has_images = any(isinstance(v, np.ndarray) for v in (fit_result or {}).values())
         self._export_btn.configure(state="normal" if has_images else "disabled")
+        # Enable CSV export button
+        self._export_summed_csv_btn.configure(state="normal")
         # Always enable save NPZ button when fit result is available
         self._save_npz_btn.configure(state="normal")
     
@@ -1438,6 +1440,46 @@ class ResultsPanel:
                 self._save_npz_callback(self._output_dir)
         except Exception as e:
             print(f"[Save NPZ Error] {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _export_summed_csv(self):
+        """Export summed fit data (summary table) to CSV."""
+        try:
+            import csv
+            from pathlib import Path
+            
+            csv_file = filedialog.asksaveasfilename(
+                title="Export Summed Fit Data",
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                initialdir=self._output_dir)
+            
+            if not csv_file:
+                return
+            
+            # Get all rows from summary table
+            rows = []
+            for item in self._tv.get_children():
+                values = self._tv.item(item)['values']
+                rows.append(values)  # (Parameter, Value, Unit)
+            
+            if not rows:
+                messagebox.showwarning("No Data", "No summary data to export.")
+                return
+            
+            # Write to CSV
+            with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Parameter", "Value", "Unit"])
+                writer.writerows(rows)
+            
+            messagebox.showinfo("Export Success", f"Summed fit data exported to:\n{Path(csv_file).name}")
+            self._status.set(f"Exported → {Path(csv_file).name}")
+            print(f"[Export] Summed fit CSV: {csv_file}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export CSV:\n{e}")
             import traceback
             traceback.print_exc()
     
@@ -1484,6 +1526,10 @@ class ResultsPanel:
         self._export_btn = ttk.Button(btn_bar, text="Export Images…", 
                                      command=self._on_export_clicked, state="disabled")
         self._export_btn.pack(side="left", padx=4)
+        
+        self._export_summed_csv_btn = ttk.Button(btn_bar, text="Export Summed Fit CSV…",
+                                                 command=self._export_summed_csv, state="disabled")
+        self._export_summed_csv_btn.pack(side="left", padx=4)
         
         self._save_npz_btn = ttk.Button(btn_bar, text="Save NPZ", 
                                        command=self._on_save_npz_clicked, state="disabled")
