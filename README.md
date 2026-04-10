@@ -61,13 +61,19 @@ The GUI provides five tabs:
 
 | Tab | Description |
 |---|---|
-| **Single FOV Fit** | Load one PTU file, select IRF method, run summed and/or per-pixel fitting |
-| **Tile Stitch / Fit** | Stitch multi-tile ROIs from XLIF metadata and run the full fitting pipeline |
-| **Batch ROI Fit** | Process a whole XLIF folder of ROIs sequentially, export CSV summary |
-| **Machine IRF Builder** | Build a machine IRF from paired PTU/XLSX files for reuse across sessions |
-| **Phasor Analysis** | Load a PTU file and analyse phasor coordinates interactively — embedded image and phasor plot update live as cursors are placed |
+| **Single FOV Fit** | Load one PTU file, select IRF method, run summed and/or per-pixel fitting. Export intensity and lifetime maps as PNG or OME-TIFF. |
+| **Tile Stitch / Fit** | Stitch multi-tile ROIs from XLIF metadata and run the full fitting pipeline. Export results as OME-TIFF and GeoJSON. |
+| **Batch ROI Fit** | Process a whole XLIF folder of ROIs sequentially, export CSV summary and GeoJSON ROI sets. |
+| **Machine IRF Builder** | Build a machine IRF from paired PTU/XLSX files for reuse across sessions. |
+| **Phasor Analysis** | Load a PTU file and analyse phasor coordinates interactively — embedded image and phasor plot update live as cursors are placed. |
 
 The right-hand panel shows an **FOV Preview** (intensity image + summed decay) for all fitting tabs, and switches automatically to the interactive **Phasor panel** when the Phasor Analysis tab is selected.
+
+**Export & Analysis Features:**
+- **OME-TIFF export** — Lossless export of intensity and lifetime maps preserving metadata, suitable for downstream analysis in Fiji/ImageJ
+- **PNG export** — High-resolution PNG images for intensity and lifetime visualization
+- **GeoJSON export** — ROI boundaries and measurements exportable in GeoJSON format, usable directly in **QuPath** for tissue image analysis and cell segmentation
+- **CSV export** — Fit summaries, per-pixel parameters, and ROI statistics
 
 ### Guided terminal UI
 

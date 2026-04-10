@@ -744,10 +744,6 @@ class FOVPreviewPanel:
                              if k not in ('intensity', 'coverage')}
             
             nexp = global_summary.get('n_exp', len(global_summary.get('taus_ns', [])))
-            if nexp == 0:
-                # derive_global_tau schema (tile_fit) stores tau1_mean_ns / tau2_mean_ns …
-                # rather than a taus_ns list.  Count how many tau{k}_mean_ns keys exist.
-                nexp = sum(1 for k in range(1, 4) if f'tau{k}_mean_ns' in global_summary)
             lifetime_map = None
             
             if pixel_maps and nexp > 0:
@@ -782,10 +778,9 @@ class FOVPreviewPanel:
             if pixel_maps:
                 fit_result['pixel_maps'] = pixel_maps
             
-            # Extract fit data (taus_ns present in fit_summed schema only;
-            # derive_global_tau / tile_fit uses tau1_mean_ns etc.).
-            # nexp resolved above — do NOT overwrite it here.
+            # Extract fit data
             taus_fit = global_summary.get('taus_ns', [])
+            nexp = len(taus_fit)
             print(f"  - nexp: {nexp}, taus_ns: {taus_fit}")
             print(f"  - global_summary keys: {list(global_summary.keys())}")
             
@@ -943,12 +938,8 @@ class FOVPreviewPanel:
             
             out_path = Path(output_dir)
             
-            # Find and load the stitched intensity TIFF file.
-            # Stitch-pipeline writes  *_stitched_intensity.tif
-            # Tile-fit pipeline writes *_intensity.tif (via save_assembled_maps)
+            # Find and load the stitched intensity TIFF file
             intensity_files = sorted(out_path.glob("*_stitched_intensity.tif"))
-            if not intensity_files:
-                intensity_files = sorted(out_path.glob("*_intensity.tif"))
             if not intensity_files:
                 self._clear()
                 self._status.set("No stitched image found")
@@ -4571,41 +4562,37 @@ Built with Python, Tkinter, NumPy, and SciPy.
                         rows = extracted_rows
                         print(f"[on_done] Extracted {len(extracted_rows)} summary rows from global_summary")
                 
-                # Display the assembled lifetime image from tile fit output directory.
-                # load_stitched_roi reads the TIFFs saved by save_assembled_maps /
-                # make_lifetime_image.  display_fit_results then overlays the pooled
-                # decay, IRF and fitted model on _ax_decay (which load_stitched_roi
-                # never touches).
+                # Display the assembled lifetime image from tile fit output directory
+                # This shows the stitched and registered lifetime map
                 try:
                     self._fov_preview.load_stitched_roi(a.output_dir)
                     print(f"[on_done] Loaded stitched ROI from {a.output_dir}")
                 except Exception as e:
                     print(f"[Warning] Could not load stitched image: {e}")
-
-                try:
-                    # ptu_path=None is fine: display_fit_results falls back to
-                    # canvas['intensity'] for the image and uses decay/time_ns from
-                    # the fit_result dict for the decay panel.
-                    self._fov_preview.display_fit_results(None, fit_result)
-                    print(f"[on_done] Displayed fit results (decay + FLIM) from fit_result")
-                except Exception as e:
-                    import traceback
-                    print(f"[Warning] Could not display fit results: {e}")
-                    traceback.print_exc()
                 
-                # Save tile fit results to NPZ via _save_roi_progress.
-                # That method (used by the FOV pipeline) iterates fit_result.items(),
-                # saves all numpy arrays directly, and hoists arrays out of nested
-                # dicts such as 'canvas'.  This correctly captures decay, irf_prompt,
-                # time_ns and every per-pixel canvas array (tau1, tau_mean_amp, etc.).
+                # Save tile fit results to NPZ for later reloading
                 try:
-                    self._save_roi_progress(str(a.output_dir), fit_result, rows or [])
-                    npz_path = Path(a.output_dir) / "roi_session.npz"
-                    self._res.set_fit_result(
-                        fit_result, str(a.output_dir),
-                        npz_path=str(npz_path) if npz_path.exists() else None,
-                    )
-                    print(f"[on_done] Saved tile fit session → {npz_path}")
+                    from pathlib import Path
+                    import numpy as np
+                    npz_path = Path(a.output_dir) / f"{Path(a.output_dir).name}.fit.npz"
+                    
+                    # Save fit result data
+                    save_dict = {
+                        'global_summary_str': str(global_summary),
+                        'output_dir': str(a.output_dir),
+                        'pipeline': 'tile_fit',
+                    }
+                    
+                    # Try to save numeric data if available
+                    if global_popt is not None:
+                        save_dict['global_popt'] = np.array(global_popt)
+                    if 'pixel_maps' in fit_result and fit_result['pixel_maps']:
+                        for key, val in fit_result['pixel_maps'].items():
+                            if isinstance(val, np.ndarray):
+                                save_dict[f'pixmap_{key}'] = val
+                    
+                    np.savez_compressed(str(npz_path), **save_dict)
+                    print(f"[on_done] Saved tile fit results to {npz_path}")
                 except Exception as e:
                     import traceback
                     print(f"[Warning] Could not save NPZ: {e}")

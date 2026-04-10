@@ -134,11 +134,11 @@ The GUI provides five tabs. The right-hand panel shows the **FOV Preview** (inte
 
 | Tab | Description |
 |---|---|
-| **Single FOV Fit** | Load a single PTU file, select IRF method, run summed and/or per-pixel reconvolution fitting. Output files are saved to the same directory as the PTU. |
-| **Tile Stitch / Fit** | Select an XLIF file and PTU directory to stitch a multi-tile ROI and run the full fitting pipeline. Three pipeline modes: stitch only, stitch + fit, or per-tile fit. |
-| **Batch ROI Fit** | Point at an XLIF folder to process all ROIs sequentially. Exports a CSV summary across all conditions. |
+| **Single FOV Fit** | Load a single PTU file, select IRF method, run summed and/or per-pixel reconvolution fitting. Export intensity and lifetime maps as PNG or OME-TIFF. Save fitting sessions as NPZ for later restoration. Output files are saved to the same directory as the PTU. |
+| **Tile Stitch / Fit** | Select an XLIF file and PTU directory to stitch a multi-tile ROI and run the full fitting pipeline. Export stitched images and results as OME-TIFF and GeoJSON. Save sessions as NPZ. Three pipeline modes: stitch only, stitch + fit, or per-tile fit. |
+| **Batch ROI Fit** | Point at an XLIF folder to process all ROIs sequentially. Export fit summaries as CSV and ROI geometries as GeoJSON for QuPath integration. |
 | **Machine IRF Builder** | Select a folder of matched PTU/XLSX pairs to build and save a machine IRF for reuse across sessions. |
-| **Phasor Analysis** | Load a PTU file (or resume a saved `.npz` session). An embedded phasor histogram and intensity image update live as elliptic cursors are placed. |
+| **Phasor Analysis** | Load a PTU file (or resume a saved `.npz` session). An embedded phasor histogram and intensity image update live as elliptic cursors are placed. Save sessions for later analysis. |
 
 #### Phasor panel controls
 
@@ -720,6 +720,49 @@ pytest tests/test_integration.py -v
 
 ## Outputs & File Formats
 
+### GUI Export Options
+
+The desktop GUI provides flexible export capabilities for downstream analysis:
+
+#### Image Export Formats
+
+| Format | Description | Use case |
+|---|---|---|
+| **OME-TIFF** | Lossless, metadata-preserving TIFF format | Fiji/ImageJ, downstream quantitative image analysis, archival |
+| **PNG** | High-resolution raster images | Quick visualization, presentations, web sharing |
+
+Intensity and lifetime maps can be exported during or after fitting. OME-TIFF images preserve 16-bit intensity and 32-bit float lifetime data with metadata embedded.
+
+#### ROI & Geometry Exports
+
+| Format | Description | Use case |
+|---|---|---|
+| **GeoJSON** | Standard geospatial format for ROI boundaries | **QuPath integration**, cross-software ROI transfer, archival |
+| **CSV** | Tabular fit results and ROI statistics | Excel, R/Python analysis, publication supplementary data |
+
+#### Session Saves
+
+FLIM fitting workflows can be saved as `.npz` (NumPy compressed archive) files, allowing you to:
+- Resume work without re-fitting
+- Restore cursor positions and analysis parameters in ROI tabs
+- Share reproducible analysis states
+
+Access via: **File → Save NPZ / Load NPZ / Save NPZ As**
+
+**QuPath Integration:**
+
+GeoJSON exports from FLIMKit are fully compatible with **QuPath** (Qupath >= 0.4.0). Exported ROIs can be imported directly into QuPath's annotation workflow for:
+- Spatial correlation of FLIM parameters with tissue morphology
+- Cell segmentation and measurement on intensity images
+- Multi-modal image analysis combining FLIM and brightfield/fluorescence data
+
+**Export workflow (FLIMKit → QuPath):**
+1. Run tile stitching or batch ROI fitting in FLIMKit
+2. Use File → Export → Export All ROIs as GeoJSON
+3. In QuPath: Automate → Show script editor → paste: `importPathObjects(path/to/export.geojson)`
+4. Adjust detection parameters and run segmentation
+5. Export results as CSV or annotations
+
 ### FLIM Fitting Outputs
 
 | File | Description |
@@ -745,6 +788,33 @@ For the tile stitch/fit pipeline, all files are prefixed with the ROI name deriv
 | `{ROI}_time_axis_ns.npy` | Time axis in nanoseconds |
 | `{ROI}_weight_map.npy` | Tile overlap count map |
 | `{ROI}_metadata.json` | Stitching metadata (tile count, canvas size, registration results) |
+
+### FLIM Fitting Session Files
+
+Fitting sessions are saved as `.npz` archives. Use **File → Save NPZ / Save NPZ As** to persist:
+
+#### Single FOV Fit Sessions
+
+| Key | Description |
+|---|---|
+| `ptu_file` | Path to the original PTU file |
+| `global_summary_json` | JSON string of global fit parameters (n_exp, tau values, amplitudes, chi2) |
+| `global_summary_arr_*` | NumPy arrays reattached (lifetime maps, amplitude maps, etc.) |
+| `pixel_maps_json` | Per-pixel fitting results as JSON |
+| `intensity_image` | 2D intensity map (uint16) |
+| `fitted_decay` | 1D fitted decay curve |
+| `irf_used` | IRF source metadata |
+
+**Restore a session:**
+1. File → Recent Files or File → Load NPZ
+2. Previous fit results, cursor positions, and parameters are restored
+
+#### Tile Stitch Session Workflows
+
+Similar structure to Single FOV, with additional keys:
+- `stitched_intensity` — multi-tile mosaic
+- `tile_metadata` — stitching registration parameters
+- `per_tile_results` — individual tile fit data
 
 ### Phasor Session Files
 

@@ -96,6 +96,17 @@ def make_lifetime_image(
         if verbose:
             print(f"  ✓ τ TIFF → {tiff_path}  "
                   f"(uint16, {tau_min_ns}–{tau_max_ns} ns → 0–65535)")
+        
+        # ── Also save full-range float32 TIFF (unscaled, preserves complete dynamic range) ───
+        tau_full = np.where(np.isfinite(tau_smooth), tau_smooth, np.nan).astype(np.float32)
+        tiff_full_path = output_dir / f"{roi_name}_tau_intensity_weighted_fullrange.tif"
+        _tifffile.imwrite(str(tiff_full_path), tau_full)
+        if verbose:
+            tau_vals = tau_map[valid]
+            tau_fmin = float(np.nanmin(tau_vals))
+            tau_fmax = float(np.nanmax(tau_vals))
+            print(f"  ✓ τ full-range TIFF → {tiff_full_path}  "
+                  f"(float32, {tau_fmin:.3f}–{tau_fmax:.3f} ns, unscaled)")
 
     # ── Colour mapping ─────────────────────────────────────────────────────
     tau_norm = np.clip(
