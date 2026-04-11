@@ -636,6 +636,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progres
                 tau_display_max=getattr(args, 'tau_display_max', None),
                 intensity_display_min=getattr(args, 'intensity_display_min', None),
                 intensity_display_max=getattr(args, 'intensity_display_max', None),
+                target_shape=(ny, nx),  # full stitched canvas size
             )
         
         if getattr(args, 'save_individual', False):
@@ -1298,11 +1299,43 @@ def _run_tile_fit(args, progress_callback=None, cancel_event=None, progress_wind
         n_exp          = args.nexp,
     )
 
+    # ── Upsample canvas to full tile resolution when binning > 1 ──────
+    # fit_flim_tiles computes the canvas at (H//binning, W//binning)
+    # using effective_pixel_size_m = pixel_size_m * binning.  Batch
+    # hardcodes binning=1 so its canvas is always full-res; single-ROI
+    # tile-fit uses args.binning (default 4) giving a 4x-shrunken canvas
+    # whose TIFFs appear as big blocky pixels next to full-res intensity.
+    # Nearest-neighbour upsample restores native resolution before saving.
+    _binning = getattr(args, 'binning', 1)
+    if _binning > 1:
+        try:
+            import cv2 as _cv2
+            _th = canvas_height * _binning
+            _tw = canvas_width  * _binning
+            def _up(arr):
+                if arr is None or not hasattr(arr, 'ndim'): return arr
+                return _cv2.resize(arr.astype('float32'), (_tw, _th),
+                                   interpolation=_cv2.INTER_NEAREST)
+            canvas = {k: _up(v) for k, v in canvas.items()}
+            canvas_height = _th
+            canvas_width  = _tw
+            print(f"  ↑ Canvas upsampled ×{_binning} → {_th}×{_tw} px (full tile resolution)")
+        except Exception as _upe:
+            print(f"  ⚠ Canvas upsample failed: {_upe} — TIFFs will be at binned resolution")
+
     print(f"\n{'='*60}")
     print(f"  STEP 3: GLOBAL TAU SUMMARY")
     print(f"{'='*60}")
 
+    # Preserve fields from the consensus (pooled) fit before derive_global_tau
+    # replaces global_summary.  'model' is needed by display_fit_results to draw
+    # the fitted curve on the decay panel; the chi2 values go into the fit summary.
+    _consensus_summary = global_summary  # from fit_flim_tiles
     global_summary = derive_global_tau(canvas, n_exp=args.nexp)
+    for _key in ('model', 'reduced_chi2', 'reduced_chi2_tail',
+                 'reduced_chi2_tail_pearson', 'reduced_chi2_pearson'):
+        if _key in _consensus_summary:
+            global_summary[_key] = _consensus_summary[_key]
 
     n_px     = global_summary.get('n_pixels_fitted', 0)
     tau_mean = global_summary.get('tau_mean_amp_global_ns', float('nan'))

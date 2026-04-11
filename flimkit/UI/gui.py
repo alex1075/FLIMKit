@@ -764,6 +764,30 @@ class FOVPreviewPanel:
                     traceback.print_exc()
                     lifetime_map = None
             
+            # Upsample lifetime map to full-res intensity shape if they differ
+            # (happens when per-pixel fitting used binning > 1)
+            if (lifetime_map is not None and intensity is not None
+                    and lifetime_map.shape != intensity.shape[:2]):
+                import cv2 as _cv2
+                th, tw = intensity.shape[:2]
+                lifetime_map = _cv2.resize(
+                    lifetime_map.astype(np.float32), (tw, th),
+                    interpolation=_cv2.INTER_NEAREST)
+                print(f"  - Upsampled lifetime_map to {th}×{tw} to match intensity")
+
+            # Upsample lifetime_map to full-res intensity shape when binning>1
+            if (lifetime_map is not None and intensity is not None
+                    and lifetime_map.shape != intensity.shape[:2]):
+                try:
+                    import cv2 as _cv2
+                    th, tw = intensity.shape[:2]
+                    lifetime_map = _cv2.resize(
+                        lifetime_map.astype(np.float32), (tw, th),
+                        interpolation=_cv2.INTER_NEAREST)
+                    print(f"  - Upsampled lifetime_map to {th}×{tw} px")
+                except Exception as _upe:
+                    print(f"  - Could not upsample lifetime_map: {_upe}")
+
             # Cache for interactive updates
             self._lifetime_map = lifetime_map
             self._intensity_map = intensity
@@ -2577,7 +2601,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
         try:
             state = {
                 # Current active form mode
-                "active_form": self.iv_form.get() if hasattr(self, 'iv_form') else 0,
+                "active_form": getattr(self, "_current_form", "fov"),
                 
                 # Input files (common to all)
                 "ptu_file": self.sv_ptu.get() if hasattr(self, 'sv_ptu') else "",
@@ -2610,6 +2634,25 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 "thr_fov_en":     self.bv_thr_fov.get() if hasattr(self, 'bv_thr_fov') else False,
                 "thr_fov_val":    self.sv_thr_fov.get() if hasattr(self, 'sv_thr_fov') else "5",
                 "cell_mask":      self.bv_cell.get() if hasattr(self, 'bv_cell') else False,
+
+                # ── Stitch / tile-fit specific ──────────────────────────────
+                "xlif_file":      self.sv_xlif.get()    if hasattr(self, 'sv_xlif')    else "",
+                "ptu_dir":        self.sv_ptu_dir.get() if hasattr(self, 'sv_ptu_dir') else "",
+                "out_st":         self.sv_out_st.get()  if hasattr(self, 'sv_out_st')  else "",
+                "pipeline":       self.sv_pipeline.get() if hasattr(self, 'sv_pipeline') else "stitch_only",
+                "bv_rotate":      self.bv_rotate.get()  if hasattr(self, 'bv_rotate')  else True,
+                "bv_perpix":      self.bv_perpix.get()  if hasattr(self, 'bv_perpix')  else False,
+                "tau_lo":         self.sv_tau_lo.get()  if hasattr(self, 'sv_tau_lo')  else "",
+                "tau_hi":         self.sv_tau_hi.get()  if hasattr(self, 'sv_tau_hi')  else "",
+                "int_lo":         self.sv_int_lo.get()  if hasattr(self, 'sv_int_lo')  else "",
+                "int_hi":         self.sv_int_hi.get()  if hasattr(self, 'sv_int_hi')  else "",
+                "thr_st_en":      self.bv_thr_st.get()  if hasattr(self, 'bv_thr_st')  else False,
+                "thr_st_val":     self.sv_thr_st.get()  if hasattr(self, 'sv_thr_st')  else "",
+                "bv_register":    self.bv_register.get() if hasattr(self, 'bv_register') else True,
+                "reg_max_shift":  self.sv_reg_max_shift.get() if hasattr(self, 'sv_reg_max_shift') else "120",
+                "irf_st_method":  self._irf_st.sv_method.get() if hasattr(self, '_irf_st') else "irf_xlsx",
+                "irf_st_path":    self._irf_st.sv_path.get()   if hasattr(self, '_irf_st') else "",
+                "tile_irf_dir":   self.sv_tile_irf_dir.get() if hasattr(self, 'sv_tile_irf_dir') else "",
             }
             print(f"[Session] Captured form state: active_form={state.get('active_form')}")
             return state
@@ -2661,10 +2704,85 @@ Built with Python, Tkinter, NumPy, and SciPy.
             if "threshold" in state and hasattr(self, 'sv_int_threshold'):
                 self.sv_int_threshold.set(state["threshold"])
             
-            # Restore active form mode (switch to the right tab)
-            if "active_form" in state and hasattr(self, 'iv_form'):
-                self.iv_form.set(state["active_form"])
-                self._switch_form([None, "fov", "stitch", "batch", "irf", "phasor"][state["active_form"]])
+            # ── Stitch-form fields ────────────────────────────────────────────
+            if "xlif_file" in state and hasattr(self, 'sv_xlif'):
+                self.sv_xlif.set(state["xlif_file"])
+            if "ptu_dir" in state and hasattr(self, 'sv_ptu_dir'):
+                self.sv_ptu_dir.set(state["ptu_dir"])
+            if "out_st" in state and hasattr(self, 'sv_out_st'):
+                self.sv_out_st.set(state["out_st"])
+            if "bv_rotate" in state and hasattr(self, 'bv_rotate'):
+                self.bv_rotate.set(state["bv_rotate"])
+            if "tau_lo" in state and hasattr(self, 'sv_tau_lo'):
+                self.sv_tau_lo.set(state["tau_lo"])
+            if "tau_hi" in state and hasattr(self, 'sv_tau_hi'):
+                self.sv_tau_hi.set(state["tau_hi"])
+            if "int_lo" in state and hasattr(self, 'sv_int_lo'):
+                self.sv_int_lo.set(state["int_lo"])
+            if "int_hi" in state and hasattr(self, 'sv_int_hi'):
+                self.sv_int_hi.set(state["int_hi"])
+            if "thr_st_en" in state and hasattr(self, 'bv_thr_st'):
+                self.bv_thr_st.set(state["thr_st_en"])
+            if "thr_st_val" in state and hasattr(self, 'sv_thr_st'):
+                self.sv_thr_st.set(state["thr_st_val"])
+            if "bv_register" in state and hasattr(self, 'bv_register'):
+                self.bv_register.set(state["bv_register"])
+            if "reg_max_shift" in state and hasattr(self, 'sv_reg_max_shift'):
+                self.sv_reg_max_shift.set(state["reg_max_shift"])
+            if "tile_irf_dir" in state and hasattr(self, 'sv_tile_irf_dir'):
+                self.sv_tile_irf_dir.set(state["tile_irf_dir"])
+            # Stitch IRF widget
+            if "irf_st_method" in state and hasattr(self, '_irf_st'):
+                self._irf_st.sv_method.set(state["irf_st_method"])
+                self._irf_st._update()   # refresh path/note visibility
+            if "irf_st_path" in state and hasattr(self, '_irf_st'):
+                self._irf_st.sv_path.set(state["irf_st_path"])
+
+            # Refresh IRF widget visibility after method restore
+            if hasattr(self, '_irf_fov'):
+                self._irf_fov._update()
+
+            # Pipeline + per-pixel – restore conditional frames
+            if "pipeline" in state and hasattr(self, 'sv_pipeline'):
+                self.sv_pipeline.set(state["pipeline"])
+                self._pipeline_changed()   # show/hide _fit_frame + tile_extras
+            if "bv_perpix" in state and hasattr(self, 'bv_perpix'):
+                self.bv_perpix.set(state["bv_perpix"])
+                self._perpix_toggled()     # show/hide _pxf
+
+            # ── Stitch-form fields ───────────────────────────────────────
+            if "xlif_file"     in state and hasattr(self, 'sv_xlif'):          self.sv_xlif.set(state["xlif_file"])
+            if "ptu_dir"       in state and hasattr(self, 'sv_ptu_dir'):        self.sv_ptu_dir.set(state["ptu_dir"])
+            if "out_st"        in state and hasattr(self, 'sv_out_st'):         self.sv_out_st.set(state["out_st"])
+            if "bv_rotate"     in state and hasattr(self, 'bv_rotate'):         self.bv_rotate.set(state["bv_rotate"])
+            if "tau_lo"        in state and hasattr(self, 'sv_tau_lo'):         self.sv_tau_lo.set(state["tau_lo"])
+            if "tau_hi"        in state and hasattr(self, 'sv_tau_hi'):         self.sv_tau_hi.set(state["tau_hi"])
+            if "int_lo"        in state and hasattr(self, 'sv_int_lo'):         self.sv_int_lo.set(state["int_lo"])
+            if "int_hi"        in state and hasattr(self, 'sv_int_hi'):         self.sv_int_hi.set(state["int_hi"])
+            if "thr_st_en"     in state and hasattr(self, 'bv_thr_st'):         self.bv_thr_st.set(state["thr_st_en"])
+            if "thr_st_val"    in state and hasattr(self, 'sv_thr_st'):         self.sv_thr_st.set(state["thr_st_val"])
+            if "bv_register"   in state and hasattr(self, 'bv_register'):       self.bv_register.set(state["bv_register"])
+            if "reg_max_shift" in state and hasattr(self, 'sv_reg_max_shift'): self.sv_reg_max_shift.set(state["reg_max_shift"])
+            if "tile_irf_dir"  in state and hasattr(self, 'sv_tile_irf_dir'): self.sv_tile_irf_dir.set(state["tile_irf_dir"])
+            if "irf_st_method" in state and hasattr(self, '_irf_st'):
+                self._irf_st.sv_method.set(state["irf_st_method"])
+                self._irf_st._update()   # refresh path/note visibility
+            if "irf_st_path"   in state and hasattr(self, '_irf_st'): self._irf_st.sv_path.set(state["irf_st_path"])
+            if hasattr(self, '_irf_fov'): self._irf_fov._update()
+            # Trigger pipeline/perpix commands so conditional frames appear
+            if "pipeline"  in state and hasattr(self, 'sv_pipeline'):
+                self.sv_pipeline.set(state["pipeline"]); self._pipeline_changed()
+            if "bv_perpix" in state and hasattr(self, 'bv_perpix'):
+                self.bv_perpix.set(state["bv_perpix"]); self._perpix_toggled()
+
+            # Restore active form mode
+            if "active_form" in state:
+                _form = state["active_form"]
+                # legacy NPZ stored an int index; convert to form-id string
+                if isinstance(_form, int):
+                    _form = [None, "fov", "stitch", "batch", "irf", "phasor"][_form] or "fov"
+                if _form in self._form_buttons:
+                    self._switch_form(_form)
             
             print(f"[Session] Restored form state")
         except Exception as e:
@@ -3294,9 +3412,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
             output_dir = str(Path(npz_path).parent)
             self._res.set_fit_result(fit_result, output_dir, npz_path=npz_path)
             
-            # Switch to Results panel
-            self._switch_form("results")
-            
+            # Stay on the current form (no "results" form exists)
             messagebox.showinfo("Success", f"Loaded fitted data from:\n{Path(npz_path).name}")
             
             
@@ -3847,13 +3963,13 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self.bv_save_ind = tk.BooleanVar(value=False)
 
         ttk.Checkbutton(self._pxf, text="Export τ-weighted map",
-                        variable=self.bv_save_tau_weighted).grid(row=0, column=0, sticky="w")
+                        variable=self.bv_save_tau_weighted).grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Checkbutton(self._pxf, text="Export intensity-weighted map",
-                        variable=self.bv_save_int_weighted).grid(row=0, column=1, sticky="w")
+                        variable=self.bv_save_int_weighted).grid(row=0, column=1, sticky="w", padx=(0, 8))
         ttk.Checkbutton(self._pxf, text="Export amplitude-weighted map",
-                        variable=self.bv_save_amp_weighted).grid(row=0, column=2, sticky="w")
+                        variable=self.bv_save_amp_weighted).grid(row=1, column=0, sticky="w", padx=(0, 8))
         ttk.Checkbutton(self._pxf, text="Save individual component maps (τ₁, τ₂, a₁, a₂)",
-                        variable=self.bv_save_ind).grid(row=0, column=3, sticky="w")
+                        variable=self.bv_save_ind).grid(row=1, column=1, sticky="w")
 
         self.sv_tau_lo = tk.StringVar()
         self.sv_tau_hi = tk.StringVar()
@@ -3861,25 +3977,25 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self.sv_int_hi = tk.StringVar()
 
         # Range controls for weighted maps
-        ttk.Label(self._pxf, text="Lifetime display (ns):").grid(row=1, column=0, sticky="w", pady=2)
-        ttk.Entry(self._pxf, textvariable=self.sv_tau_lo, width=7).grid(row=1, column=1, padx=4)
-        ttk.Label(self._pxf, text="to").grid(row=1, column=2)
-        ttk.Entry(self._pxf, textvariable=self.sv_tau_hi, width=7).grid(row=1, column=3, padx=4)
-        ttk.Label(self._pxf, text="(blank = auto)", foreground="grey").grid(row=1, column=4, padx=4)
-
-        ttk.Label(self._pxf, text="Intensity display:").grid(row=2, column=0, sticky="w", pady=2)
-        ttk.Entry(self._pxf, textvariable=self.sv_int_lo, width=7).grid(row=2, column=1, padx=4)
+        ttk.Label(self._pxf, text="Lifetime display (ns):").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_tau_lo, width=7).grid(row=2, column=1, padx=4)
         ttk.Label(self._pxf, text="to").grid(row=2, column=2)
-        ttk.Entry(self._pxf, textvariable=self.sv_int_hi, width=7).grid(row=2, column=3, padx=4)
+        ttk.Entry(self._pxf, textvariable=self.sv_tau_hi, width=7).grid(row=2, column=3, padx=4)
         ttk.Label(self._pxf, text="(blank = auto)", foreground="grey").grid(row=2, column=4, padx=4)
 
-        ttk.Label(self._pxf, text="Fit window (ns):").grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Label(self._pxf, text="Intensity display:").grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_int_lo, width=7).grid(row=3, column=1, padx=4)
+        ttk.Label(self._pxf, text="to").grid(row=3, column=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_int_hi, width=7).grid(row=3, column=3, padx=4)
+        ttk.Label(self._pxf, text="(blank = auto)", foreground="grey").grid(row=3, column=4, padx=4)
+
+        ttk.Label(self._pxf, text="Fit window (ns):").grid(row=4, column=0, sticky="w", pady=2)
         self.sv_tau_fit_lo = tk.StringVar(value=str(_C()["Tau_min"]))
         self.sv_tau_fit_hi = tk.StringVar(value=str(_C()["Tau_max"]))
-        ttk.Entry(self._pxf, textvariable=self.sv_tau_fit_lo, width=7).grid(row=3, column=1, padx=4)
-        ttk.Label(self._pxf, text="to").grid(row=3, column=2)
-        ttk.Entry(self._pxf, textvariable=self.sv_tau_fit_hi, width=7).grid(row=3, column=3, padx=4)
-        ttk.Label(self._pxf, text="ns  (fitting range)", foreground="grey").grid(row=3, column=4, padx=4)
+        ttk.Entry(self._pxf, textvariable=self.sv_tau_fit_lo, width=7).grid(row=4, column=1, padx=4)
+        ttk.Label(self._pxf, text="to").grid(row=4, column=2)
+        ttk.Entry(self._pxf, textvariable=self.sv_tau_fit_hi, width=7).grid(row=4, column=3, padx=4)
+        ttk.Label(self._pxf, text="ns  (fitting range)", foreground="grey").grid(row=4, column=4, padx=4)
 
         self._pxf.grid_remove()
 
@@ -3939,6 +4055,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
             self._fit_frame.grid()
             self._tile_extras_frame.grid()
             self._btn_st.configure(text="▶  Run Per-Tile Fit")
+        self._update_form_scrollbar("stitch")
         self.root.after_idle(self._fit_window_to_screen)
 
     def _perpix_toggled(self):
@@ -3946,33 +4063,48 @@ Built with Python, Tkinter, NumPy, and SciPy.
             self._pxf.grid()
         else:
             self._pxf.grid_remove()
-        # Update scrollbar for the FOV form when content changes
-        self._update_form_scrollbar("fov")
+        # Update scrollbar for the stitch form when content changes
+        self._update_form_scrollbar("stitch")
         self.root.after_idle(self._fit_window_to_screen)
     
     def _update_form_scrollbar(self, form_id: str):
-        """Force scrollbar to recalculate after content changes in form."""
+        """Force scrollregion and canvas-window height after content changes."""
         if form_id not in self._form_inner_frames:
             return
         try:
             outer, inner = self._form_inner_frames[form_id]
-            if hasattr(outer, '_canvas'):
-                canvas = outer._canvas
-                window_id = outer._window_id
-                # Schedule update after widget geometry settles
-                def _refresh():
-                    inner.update_idletasks()
-                    canvas.configure(scrollregion=canvas.bbox("all"))
-                    # Resize window in canvas if needed
-                    if window_id and canvas.winfo_width() > 1:
-                        canvas.itemconfigure(window_id, width=canvas.winfo_width())
-                self.root.after_idle(_refresh)
-        except Exception as e:
-            print(f"[Scrollbar] Could not update {form_id}: {e}")
+            if not hasattr(outer, '_canvas'):
+                return
+            canvas    = outer._canvas
+            window_id = outer._window_id
 
-    # -------------------------------------------------------------------------
-    # TAB 3 – Batch ROI Fit
-    # -------------------------------------------------------------------------
+            def _refresh():
+                # inner.update() (not update_idletasks) forces Tkinter to finish
+                # all geometry passes so winfo_reqheight() is accurate for any
+                # newly shown/hidden child widgets (e.g. _pxf, _fit_frame).
+                try:
+                    inner.update()
+                except Exception:
+                    pass
+                bbox = canvas.bbox("all")
+                if bbox:
+                    canvas.configure(scrollregion=bbox)
+                new_h    = inner.winfo_reqheight()
+                canvas_h = canvas.winfo_height()
+                target_h = max(new_h, canvas_h if canvas_h > 1 else 0)
+                if target_h > 0:
+                    canvas.itemconfigure(window_id, height=target_h)
+                cw = canvas.winfo_width()
+                if cw > 1:
+                    canvas.itemconfigure(window_id, width=cw)
+
+            # Two-pass: after_idle lets grid() commit, then 80 ms absorbs any
+            # deferred relayouts inside notebook tabs.
+            self.root.after_idle(lambda: self.root.after(80, _refresh))
+        except Exception as e:
+            print(f"[Scrollbar] {form_id}: {e}")
+
+
     def _build_batch_tab(self):
         outer, tab = self._form_inner_frames["batch"]
         tab.columnconfigure(0, weight=1)

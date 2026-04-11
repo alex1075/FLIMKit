@@ -751,7 +751,7 @@ Access via: **File → Save NPZ / Load NPZ / Save NPZ As**
 
 **QuPath Integration:**
 
-GeoJSON exports from FLIMKit are fully compatible with **QuPath** (Qupath >= 0.4.0). Exported ROIs can be imported directly into QuPath's annotation workflow for:
+GeoJSON exports from FLIMKit are fully compatible with **QuPath** (Qupath >= 0.6.0 - tested). Exported ROIs can be imported directly into QuPath's annotation workflow for:
 - Spatial correlation of FLIM parameters with tissue morphology
 - Cell segmentation and measurement on intensity images
 - Multi-modal image analysis combining FLIM and brightfield/fluorescence data

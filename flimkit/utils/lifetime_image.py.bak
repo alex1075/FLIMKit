@@ -85,12 +85,8 @@ def make_lifetime_image(
 
     # ── Save uint16 TIFF (τ scaled over tau_min–tau_max range) ───────────────
     if _has_tifffile:
-        # TIF uses unsmoothed tau_map (NaN->0 for unfitted pixels).
-        # tau_smooth is only for the PNG - it fills in nearby unfitted
-        # pixels via NaN-aware Gaussian, which looks fine in the PNG
-        # (multiplied to black by int_norm) but appears as blobs in TIF.
         tau_clipped = np.clip(
-            np.where(valid, tau_map, tau_min_ns),
+            np.where(np.isfinite(tau_smooth), tau_smooth, tau_min_ns),
             tau_min_ns, tau_max_ns)
         tau_u16 = ((tau_clipped - tau_min_ns) /
                    (tau_max_ns - tau_min_ns + 1e-12) * 65535
@@ -102,8 +98,7 @@ def make_lifetime_image(
                   f"(uint16, {tau_min_ns}–{tau_max_ns} ns → 0–65535)")
         
         # ── Also save full-range float32 TIFF (unscaled, preserves complete dynamic range) ───
-        # Full-range TIF: also use tau_map so unfitted pixels are NaN, not filled.
-        tau_full = np.where(valid, tau_map, np.nan).astype(np.float32)
+        tau_full = np.where(np.isfinite(tau_smooth), tau_smooth, np.nan).astype(np.float32)
         tiff_full_path = output_dir / f"{roi_name}_tau_intensity_weighted_fullrange.tif"
         _tifffile.imwrite(str(tiff_full_path), tau_full)
         if verbose:

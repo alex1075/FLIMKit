@@ -20,31 +20,38 @@ def compute_intensity_weighted_lifetime(
     n_exp: int = 2,
 ) -> np.ndarray:
     """τ_int = Σ(τᵢ × aᵢ) / total_intensity. Returns (Y,X) float32; unfitted=NaN."""
-    # If pre-computed tau_mean_int exists in pixel_maps, use it directly
+    # Pre-computed shortcuts (fastest paths)
     if 'tau_mean_int' in pixel_maps:
         return np.asarray(pixel_maps['tau_mean_int'], dtype=np.float32)
-    
-    shape = intensity.shape
-    tau_int_weighted = np.zeros(shape, dtype=np.float32)
+    if 'tau_mean_amp' in pixel_maps:
+        # Amplitude-weighted mean tau already computed per-pixel (tile_fit / assemble path)
+        arr = np.asarray(pixel_maps['tau_mean_amp'], dtype=np.float32)
+        arr = arr.copy()
+        arr[arr == 0] = np.nan  # zero-filled background → NaN (shows as black)
+        return arr
 
-    # Sum weighted lifetimes
+    shape = intensity.shape
+    amp_sum = np.zeros(shape, dtype=np.float64)
+    tau_weighted = np.zeros(shape, dtype=np.float64)
+
+    # Sum amplitude-weighted lifetimes — key format is 'tau1', 'tau2', ... (no underscore)
     for i in range(1, n_exp + 1):
-        tau_key = f'tau_{i}'
+        tau_key = f'tau{i}'   # was incorrectly f'tau_{i}'
         amp_key = f'a{i}'
 
         if tau_key in pixel_maps and amp_key in pixel_maps:
-            tau = pixel_maps[tau_key]
-            amp = pixel_maps[amp_key]
+            tau = np.asarray(pixel_maps[tau_key], dtype=np.float64)
+            amp = np.asarray(pixel_maps[amp_key], dtype=np.float64)
+            valid = np.isfinite(tau) & np.isfinite(amp)
+            tau_weighted[valid] += tau[valid] * amp[valid]
+            amp_sum[valid]      += amp[valid]
 
-            # Weight by amplitude
-            tau_int_weighted += tau * amp
+    # Amplitude-weighted mean: Σ(τᵢ·aᵢ) / Σ(aᵢ); unfitted pixels → NaN
+    result = np.full(shape, np.nan, dtype=np.float32)
+    mask = amp_sum > 0
+    result[mask] = (tau_weighted[mask] / amp_sum[mask]).astype(np.float32)
 
-    # Normalize by total intensity
-    mask = intensity > 0
-    tau_int_weighted[mask] /= intensity[mask]
-    tau_int_weighted[~mask] = np.nan
-
-    return tau_int_weighted
+    return result
 
 
 def apply_color_scale(
