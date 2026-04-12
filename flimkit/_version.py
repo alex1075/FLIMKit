@@ -1,4 +1,4 @@
-__version__ = "0.9.3" #Fixed tests
+__version__ = "0.9.4" #Fixed tests
 
 roadmap = '''Flim program roadmap:
 Version history:
