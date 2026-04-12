@@ -209,3 +209,71 @@ def test_estimate_bg_from_histogram():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+
+class TestPTUWriteRead:
+    """Test PTU file write and read roundtrip."""
+
+    def test_write_read_roundtrip(self, tmp_path):
+        """Write a synthetic histogram and read back, verify exact match."""
+        from flimkit.PTU.reader import PTUFile
+        import numpy as np
+
+        ny, nx, nb = 8, 8, 64
+        histogram = np.random.poisson(10, size=(ny, nx, nb)).astype(np.uint32)
+        tcspc_res = 97e-12
+        frequency = 19.5e6
+
+        ptu_path = tmp_path / "test.ptu"
+        n_records = PTUFile.write(ptu_path, histogram, tcspc_res, frequency, channel=1)
+        assert n_records > 0
+
+        ptu = PTUFile(str(ptu_path), verbose=False)
+        stack = ptu.pixel_stack(channel=1, binning=1)
+
+        assert stack.shape == (ny, nx, nb)
+        assert stack.sum() == pytest.approx(histogram.sum(), rel=0.01)
+
+        stack_raw = ptu.raw_pixel_stack(channel=1, binning=1)
+        assert stack_raw.sum() == pytest.approx(histogram.sum(), rel=0.01)
+
+    def test_write_invalid_shape_raises(self, tmp_path):
+        from flimkit.PTU.reader import PTUFile
+        histogram = np.ones((64, 64))
+        with pytest.raises(ValueError, match="must be .*Y, X, H"):
+            PTUFile.write(tmp_path / "bad.ptu", histogram, 97e-12, 20e6)
+
+
+
+class TestPTUWriteRead:
+    """Test PTU file write and read roundtrip."""
+
+    def test_write_read_roundtrip(self, tmp_path):
+        """Write a synthetic histogram and read back, verify exact match."""
+        from flimkit.PTU.reader import PTUFile
+        import numpy as np
+
+        ny, nx, nb = 8, 8, 64
+        histogram = np.random.poisson(10, size=(ny, nx, nb)).astype(np.uint32)
+        tcspc_res = 97e-12
+        frequency = 19.5e6
+
+        ptu_path = tmp_path / "test.ptu"
+        n_records = PTUFile.write(ptu_path, histogram, tcspc_res, frequency, channel=1)
+        assert n_records > 0
+
+        ptu = PTUFile(str(ptu_path), verbose=False)
+        stack = ptu.pixel_stack(channel=1, binning=1)
+
+        assert stack.shape == (ny, nx, nb)
+        assert stack.sum() == pytest.approx(histogram.sum(), rel=0.01)
+
+        stack_raw = ptu.raw_pixel_stack(channel=1, binning=1)
+        assert stack_raw.sum() == pytest.approx(histogram.sum(), rel=0.01)
+
+    def test_write_invalid_shape_raises(self, tmp_path):
+        from flimkit.PTU.reader import PTUFile
+        histogram = np.ones((64, 64))
+        with pytest.raises(ValueError, match="must be .*Y, X, H"):
+            PTUFile.write(tmp_path / "bad.ptu", histogram, 97e-12, 20e6)

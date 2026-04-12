@@ -1,9 +1,3 @@
-"""Mock Data Generator for FLIM Testing
-
-Creates synthetic PTU files, XLIF metadata, and test data
-for testing the FLIM pipeline without requiring real microscopy data.
-"""
-
 import numpy as np
 import json
 from pathlib import Path

@@ -1,8 +1,3 @@
-"""Unit Tests for xml_utils Module
-
-Tests XLIF parsing, tile position computation, and metadata extraction.
-"""
-
 import pytest
 import numpy as np
 from pathlib import Path

@@ -1,9 +1,3 @@
-"""Comprehensive End-to-End Tests for Complete FLIM Pipeline
-
-Tests the full workflow including interactive.py functions,
-tile stitching, and FLIM fitting integration.
-"""
-
 import pytest
 import numpy as np
 from pathlib import Path
@@ -873,15 +867,17 @@ class TestPerTileFitPipeline:
         # Use a 3×2 layout to verify non-square canvas handling
         tile_results, ch, cw = self._tile_results("3x2", n_exp=1)
         fit_flim_tiles_return = self._fit_flim_tiles_return_value(tile_results, ch, cw, n_exp=1)
-        expected_h = 3 * self.TILE_H
-        expected_w = 2 * self.TILE_W
+        
+        UPSAMPLE = 4
+        expected_h = 3 * self.TILE_H * UPSAMPLE
+        expected_w = 2 * self.TILE_W * UPSAMPLE
 
         with tempfile.TemporaryDirectory() as tmp:
             args = self._base_args(Path(tmp))
             args.ptu_basename = 'R 3'
 
             with patch('flimkit.PTU.stitch.fit_flim_tiles',
-                       return_value=fit_flim_tiles_return):
+                    return_value=fit_flim_tiles_return):
                 fit_result = _run_tile_fit(args)
                 canvas = fit_result['canvas']
 

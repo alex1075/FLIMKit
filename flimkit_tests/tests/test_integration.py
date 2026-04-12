@@ -1,8 +1,3 @@
-"""Integration Tests for FLIM Pipeline
-
-Tests complete workflows including stitching and fitting.
-"""
-
 import pytest
 import numpy as np
 from pathlib import Path
@@ -442,6 +437,97 @@ class TestPhasorWorkflow:
             except ImportError:
                 pytest.skip(f"{mod} not available")
 
+class TestMemoryEfficiency:
+    """Test memory mapping with large synthetic mosaics."""
+
+    def test_large_mosaic_memmap_stress(self, tmp_path):
+        """Create a large memmap array, write/read chunks, verify no memory leak."""
+        import psutil
+        import gc
+        from flimkit.PTU.stitch import stitch_flim_tiles
+        from mock_data import generate_test_project
+
+        # Generate a 4x4 tile project (bigger than typical 2x2)
+        project = generate_test_project(
+            tmp_path,
+            roi_name="R 2",
+            n_tiles=16,
+            layout="4x4",
+            tile_shape=(128, 128),  # 128x128 per tile → 512x512 canvas
+            n_bins=256,
+            mean_photons=100,
+        )
+
+        # Rename .npy to .ptu for stitching
+        for npy_file in project['ptu_dir'].glob('*.npy'):
+            npy_file.rename(npy_file.with_suffix('.ptu'))
+
+        output_dir = project['base_dir'] / "stitched"
+
+        # Measure memory before
+        gc.collect()
+        mem_before = psutil.Process().memory_info().rss / 1024**2  # MB
+
+        # Stitch with memmap
+        result = stitch_flim_tiles(
+            xlif_path=project['xlif_path'],
+            ptu_dir=project['ptu_dir'],
+            output_dir=output_dir,
+            ptu_basename=project['roi_name'],
+            rotate_tiles=False,
+            verbose=False,
+        )
+
+        # Force garbage collection
+        gc.collect()
+        mem_after = psutil.Process().memory_info().rss / 1024**2
+
+        # Memory increase should be moderate (< 500 MB for 512x512x256)
+        # The memmap itself is on disk, only small chunks loaded
+        assert mem_after - mem_before < 500, f"Memory increased by {mem_after - mem_before:.1f} MB"
+
+        # Load the memmap and verify we can access slices without loading all
+        flim_path = result['flim_path']
+        flim = np.memmap(flim_path, dtype=np.uint32, mode='r', shape=(512, 512, 256))
+
+        # Access a few chunks, should not cause large memory spike
+        _ = flim[100:200, 100:200, :].sum()
+        _ = flim[300:400, 300:400, :].mean()
+
+        # Ensure the memmap file is correctly sized
+        expected_size = 512 * 512 * 256 * 4  # uint32 = 4 bytes
+        actual_size = Path(flim_path).stat().st_size
+        assert actual_size == expected_size
+
+    def test_out_of_core_processing(self, tmp_path):
+        """Simulate processing large mosaic by iterating over chunks."""
+        import numpy as np
+
+        # Create a synthetic large memmap
+        shape = (1024, 1024, 256)
+        memmap_path = tmp_path / "large.npy"
+        mmap = np.memmap(memmap_path, dtype=np.uint32, mode='w+', shape=shape)
+
+        # Fill with random data in chunks to simulate real writing
+        chunk_size = 128
+        for i in range(0, shape[0], chunk_size):
+            i_end = min(i + chunk_size, shape[0])
+            mmap[i:i_end, :, :] = np.random.poisson(10, size=(i_end - i, shape[1], shape[2]))
+
+        mmap.flush()
+        del mmap
+
+        # Now process in chunks (like per-pixel fitting)
+        mmap_read = np.memmap(memmap_path, dtype=np.uint32, mode='r', shape=shape)
+        total_photons = 0
+        for i in range(0, shape[0], chunk_size):
+            i_end = min(i + chunk_size, shape[0])
+            chunk = mmap_read[i:i_end, :, :]
+            total_photons += chunk.sum()
+            # Simulate some computation
+            _ = np.log1p(chunk.astype(np.float32))
+
+        assert total_photons > 0
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

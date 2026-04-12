@@ -1,5 +1,3 @@
-"""Shared pytest configuration — ensures flimkit and mock_data are importable."""
-
 import sys
 from pathlib import Path
 

@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Test Runner for FLIM Pipeline
-
-Runs all tests and generates reports.
-"""
 
 import os
 import sys

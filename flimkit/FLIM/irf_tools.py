@@ -2,6 +2,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import curve_fit
 import matplotlib
+from datetime import timezone
 import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
@@ -171,7 +172,7 @@ def build_machine_irf_from_folder(
         np.savetxt(csv_path, machine_irf.astype(np.float64), delimiter=",")
 
         meta = {
-            "created_utc": datetime.utcnow().isoformat() + "Z",
+            "created_utc": datetime.now(timezone.utc).isoformat(),
             "source_folder": str(Path(folder).resolve()),
             "n_pairs": len(pairs),
             "pair_names": [name for name, _, _ in pairs],
