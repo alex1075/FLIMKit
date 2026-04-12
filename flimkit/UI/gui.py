@@ -2202,6 +2202,105 @@ Built with Python, Tkinter, NumPy, and SciPy.
             except Exception as e:
                 messagebox.showerror("Export Error", f"Failed to export logs: {e}")
 
+    def _find_scroll_canvas(self, widget):
+        """Walk widget ancestry to find the nearest scrollable canvas."""
+        w = widget
+        for _ in range(30):          # max depth
+            try:
+                if hasattr(w, '_canvas'):
+                    return w._canvas
+                w = w.master
+                if w is None:
+                    break
+            except Exception:
+                break
+        return None
+
+    def _setup_global_scroll(self):
+        """Bind mousewheel globally so scrolling works over any child widget."""
+        def _scroll(evt):
+            # Find canvas responsible for the widget under the cursor
+            try:
+                widget = self.root.winfo_containing(evt.x_root, evt.y_root)
+                if widget is None:
+                    return
+                canvas = self._find_scroll_canvas(widget)
+                if canvas is None:
+                    return
+                # Only scroll if canvas has a scrollable region
+                sr = canvas.cget('scrollregion')
+                if not sr:
+                    return
+                delta = evt.delta if hasattr(evt, 'delta') else 0
+                if evt.num == 5 or delta < 0:
+                    canvas.yview_scroll(3, "units")
+                elif evt.num == 4 or delta > 0:
+                    canvas.yview_scroll(-3, "units")
+            except Exception:
+                pass
+
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.bind_all(seq, _scroll, add="+")
+
+    def _setup_global_dnd(self):
+        """Register DnD drop targets on all Entry widgets in the UI."""
+        if not HAS_DND:
+            return
+        try:
+            from tkinterdnd2 import DND_FILES, DND_TEXT
+        except ImportError:
+            return
+
+        def _clean(data: str) -> str:
+            """Handle brace-quoted macOS paths and multi-file drops."""
+            data = data.strip()
+            # Multi-file drop: take first path only
+            if data.startswith("{"):
+                # Extract content of first braced group
+                end = data.find("}")
+                if end != -1:
+                    return data[1:end].strip()
+            # Space-separated paths (take first)
+            parts = data.split()
+            if parts:
+                return parts[0]
+            return data
+
+        def _register(widget):
+            try:
+                widget.drop_target_register(DND_FILES, DND_TEXT)
+                # Get the textvariable name and look it up on the widget
+                tv_name = widget.cget("textvariable")
+                if tv_name:
+                    tv = widget.nametowidget(str(tv_name)) if False else None
+                    # Simpler: bind directly to widget.set via StringVar
+                    def _drop(evt, w=widget):
+                        path = _clean(evt.data)
+                        try:
+                            # Directly update the entry text
+                            w.delete(0, "end")
+                            w.insert(0, path)
+                            # Also fire any associated traces
+                            w.event_generate("<<Modified>>")
+                        except Exception:
+                            pass
+                    widget.dnd_bind("<<Drop>>", _drop)
+            except Exception:
+                pass
+
+        def _walk(widget):
+            try:
+                cls = widget.winfo_class()
+                if cls in ("Entry", "TEntry"):
+                    _register(widget)
+                for child in widget.winfo_children():
+                    _walk(child)
+            except Exception:
+                pass
+
+        _walk(self.root)
+        print("[DnD] Drop targets registered on all Entry widgets")
+
     def _init_ui(self):
         """Build the entire user interface with left tab buttons and central content area."""
         self._buf: list = []
@@ -2313,6 +2412,14 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._form_content_frame = form_wrapper
         self._form_inner_frames = {}
 
+        # Register batch and irf scroll frames (menu-only; no sidebar button)
+        for _fid in ("batch", "irf"):
+            _outer, _inner = self._make_scroll_frame(form_wrapper)
+            _outer.grid(row=0, column=0, sticky="nsew")
+            _outer.grid_remove()
+            self._form_inner_frames[_fid] = (_outer, _inner)
+            self._form_frames[_fid]       = (_outer, _inner)
+
         # Create scrollable frames for each form
         # FOV: inside notebook's Fit Settings tab
         # Stitch: inside stitch notebook's Fit Settings tab
@@ -2355,7 +2462,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._build_fov_tab()
         self._build_stitch_tab()
         self._build_phasor_tab()
-        # Batch and Machine IRF forms are now only accessible via Tools menu
+        self._build_batch_tab()
+        self._build_machine_irf_tab()
+        # Batch and Machine IRF are accessible via the Tools menu
 
         
         # RIGHT PANEL: FOV Preview
@@ -2388,6 +2497,13 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
         # Ensure initial window fits within screen bounds
         self.root.after_idle(self._fit_window_to_screen)
+
+        # Global mousewheel scroll (works over any child widget)
+        self._setup_global_scroll()
+
+        # Global DnD registration (all Entry widgets)
+        # Deferred so all widgets exist before we walk the tree.
+        self.root.after(500, self._setup_global_dnd)
 
         # Set close handler
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -2469,7 +2585,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
         # Show selected form
         if form_id in self._form_inner_frames:
-            self._form_buttons[form_id].state(["pressed"])
+            # batch and irf are menu-only — no sidebar button to highlight
+            if form_id in self._form_buttons:
+                self._form_buttons[form_id].state(["pressed"])
             self._current_form = form_id
 
             # FOV mode: use notebook with tabs
@@ -2546,7 +2664,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self._stitch_tabs.grid_remove()
                 
                 # Hide all other traditional forms AND FOV/Stitch forms
-                for fid in ("phasor", "fov", "stitch"):
+                for fid in ("phasor", "fov", "stitch", "batch", "irf"):
                     if fid != form_id and fid in self._form_inner_frames:
                         self._form_inner_frames[fid][0].grid_remove()
                 
@@ -2564,8 +2682,19 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self._fov_preview.frame.grid_remove()
                 self._phasor_panel.frame.grid()
                 self._preview_frame_label.configure(text="  Phasor Analysis  ")
+            elif form_id in ("batch", "irf"):
+                # No preview needed for batch/irf — hide both panels
+                self._phasor_panel.frame.grid_remove()
+                self._fov_preview.frame.grid_remove()
+                label = "  Machine IRF Builder  " if form_id == "irf" else "  Batch Processing  "
+                self._preview_frame_label.configure(text=label)
+                # Show the IRF plot canvas if it exists (created after first build)
+                if form_id == "irf" and hasattr(self, "_irf_plot_frame"):
+                    self._irf_plot_frame.grid()
             else:
                 self._phasor_panel.frame.grid_remove()
+                if hasattr(self, "_irf_plot_frame"):
+                    self._irf_plot_frame.grid_remove()
                 self._fov_preview.frame.grid()
                 self._preview_frame_label.configure(text="  FOV Preview  ")
 
@@ -4913,9 +5042,68 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 verbose=True,
             )
 
-        self._launch(task_fn, output_dir=out_dir, task_name="Building Machine IRF")
+        def on_done_irf(result):
+            self._set_buttons("normal")
+            self._res.set_status("✓  Machine IRF built.")
+            if result is None or not isinstance(result, dict):
+                return
+            irf  = result.get("irf")
+            meta = result.get("metadata", {})
+            if irf is None:
+                return
+            tcspc_ns = float(meta.get("tcspc_res_ns_mean", 0.05))
+            import numpy as np
+            time_ns = np.arange(len(irf)) * tcspc_ns
+            # Build or reuse IRF plot canvas in the right panel
+            preview_parent = self._preview_frame_label
+            if not hasattr(self, "_irf_plot_frame"):
+                import tkinter as _tk
+                from tkinter import ttk as _ttk
+                from matplotlib.figure import Figure
+                from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+                self._irf_plot_frame = _ttk.Frame(preview_parent)
+                self._irf_plot_frame.grid(row=0, column=0, sticky="nsew")
+                self._irf_fig = Figure(figsize=(6, 4), dpi=100, facecolor="#1e1e1e")
+                self._irf_ax  = self._irf_fig.add_subplot(111)
+                self._irf_canvas_mpl = FigureCanvasTkAgg(self._irf_fig, master=self._irf_plot_frame)
+                self._irf_canvas_mpl.get_tk_widget().pack(fill="both", expand=True)
+            # Draw the IRF
+            ax = self._irf_ax
+            ax.clear()
+            ax.set_facecolor("#1e1e1e")
+            self._irf_fig.patch.set_facecolor("#1e1e1e")
+            n_pairs = meta.get("n_pairs", "?")
+            anchor  = meta.get("align_anchor", "")
+            reducer = meta.get("reducer", "")
+            ax.plot(time_ns, irf, color="#00d4ff", linewidth=2, label=f"Machine IRF ({reducer})")
+            ax.set_xlabel("Time (ns)", color="white")
+            ax.set_ylabel("Amplitude (normalised)", color="white")
+            ax.set_title(f"Machine IRF  |  {n_pairs} pairs  |  anchor={anchor}",
+                         color="white", fontsize=10)
+            ax.tick_params(colors="white")
+            ax.spines[:].set_color("#555")
+            # Mark FWHM
+            import numpy as _np
+            half_max = irf.max() / 2
+            above = _np.where(irf >= half_max)[0]
+            if len(above) > 1:
+                fwhm_ns = (above[-1] - above[0]) * tcspc_ns
+                ax.axhline(half_max, color="#ff9900", linewidth=1,
+                           linestyle="--", alpha=0.7, label=f"FWHM={fwhm_ns*1000:.0f} ps")
+                ax.axvspan(above[0]*tcspc_ns, above[-1]*tcspc_ns,
+                           alpha=0.12, color="#ff9900")
+            ax.legend(fontsize=8, facecolor="#2a2a2a", edgecolor="#555", labelcolor="white")
+            self._irf_canvas_mpl.draw_idle()
+            # Make it visible
+            self._irf_plot_frame.grid()
+            self._fov_preview.frame.grid_remove()
+            self._preview_frame_label.configure(text="  Machine IRF Builder  ")
 
-    def _launch(self, fn, output_dir=None, ptu_path=None, task_name="Working…"):
+        self._launch(task_fn, output_dir=out_dir, task_name="Building Machine IRF",
+                     _on_done_override=on_done_irf)
+
+    def _launch(self, fn, output_dir=None, ptu_path=None, task_name="Working…",
+                _on_done_override=None):
         self._buf.clear()
         self._set_buttons("disabled")
         self._res.set_status("⏳  Running...")
@@ -4958,7 +5146,10 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self.root.after(0, lambda: win_manager.close_all())
                 captured = "".join(self._buf)
                 rows     = _parse_summary(captured)
-                self.root.after(0, lambda: self._on_done(rows, output_dir, result, ptu_path))
+                if _on_done_override is not None:
+                    self.root.after(0, lambda r=result: _on_done_override(r))
+                else:
+                    self.root.after(0, lambda: self._on_done(rows, output_dir, result, ptu_path))
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
