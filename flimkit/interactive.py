@@ -1359,13 +1359,15 @@ def _run_tile_fit(args, progress_callback=None, cancel_event=None, progress_wind
     print(f"{'='*60}")
 
     save_assembled_maps(
-        canvas          = canvas,
-        global_summary  = global_summary,
-        output_dir      = Path(args.output_dir),
-        roi_name        = roi_name,
-        n_exp           = args.nexp,
-        tau_display_min = getattr(args, 'tau_display_min', None),
-        tau_display_max = getattr(args, 'tau_display_max', None),
+        canvas                = canvas,
+        global_summary        = global_summary,
+        output_dir            = Path(args.output_dir),
+        roi_name              = roi_name,
+        n_exp                 = args.nexp,
+        tau_display_min       = getattr(args, 'tau_display_min',       None),
+        tau_display_max       = getattr(args, 'tau_display_max',       None),
+        intensity_display_min = getattr(args, 'intensity_display_min', None),
+        intensity_display_max = getattr(args, 'intensity_display_max', None),
     )
 
     # Intensity-weighted lifetime colour image

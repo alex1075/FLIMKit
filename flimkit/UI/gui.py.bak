@@ -1810,33 +1810,6 @@ class _UIBuilder:
         self.root.maxsize(sw, sh)
         self.root.geometry(f"{target_w}x{target_h}+{x}+{y}")
 
-    def _set_pane_positions(self):
-        """Set initial sash positions for 15:45:40 layout (Project:Settings:FOV)."""
-        try:
-            # Update to ensure accurate measurements
-            self.root.update_idletasks()
-            
-            # Get main paned window width (excluding padding)
-            main_width = self._main_paned.winfo_width()
-            if main_width < 100:
-                return
-            
-            # Calculate positions for 15:45:40 ratio
-            # Total: left_paned (60%) | preview (40%)
-            left_width = int(main_width * 0.6)
-            
-            # Set main paned sash (between left_paned and preview)
-            self._main_paned.sashpos(0, left_width)
-            
-            # Within left_paned: Project (15%) | Settings (45%)
-            project_width = int(main_width * 0.15)
-            
-            # Set left paned sash (between Project and Settings)
-            self._left_paned.sashpos(0, project_width)
-            
-        except Exception as e:
-            print(f"[Layout] Could not set pane positions: {e}")
-
     def run_with_progress(self, task_fn, task_name="Working…", on_done=None, output_dir=None):
         """Run a function in a thread, showing a pop-out progress window with cancel."""
         win = ProgressWindow(self.root, task_name=task_name)
@@ -1885,8 +1858,6 @@ class _UIBuilder:
         file_menu.add_command(label="Restore NPZ...", command=self._menu_restore_npz)
         file_menu.add_command(label="Save NPZ", command=self._menu_save_npz)
         file_menu.add_command(label="Save NPZ As...", command=self._menu_save_npz_as)
-        file_menu.add_separator()
-        file_menu.add_command(label="Open Project Folder...", command=self._menu_open_project_folder)
         file_menu.add_separator()
         
         # Export submenu
@@ -1989,16 +1960,6 @@ class _UIBuilder:
         if npz_file:
             print(f"[Menu] Saving NPZ as: {npz_file}")
             # TODO: Implement save logic with chosen filename
-    
-    def _menu_open_project_folder(self):
-        """Open project folder dialog and load project."""
-        from tkinter import filedialog
-        folder = filedialog.askdirectory(title="Select Project Folder")
-        if folder:
-            print(f"[Menu] Opening project folder: {folder}")
-            # Delegate to project browser to load the folder
-            if hasattr(self, '_proj_browser') and self._proj_browser:
-                self._proj_browser.load_folder(folder)
     
     def _menu_export_fit_csv(self):
         """Export summed fit CSV."""
@@ -2347,78 +2308,68 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._current_session_file = None  # Track current session file for auto-save
         self._current_npz_path = None  # For backward compatibility
         self._last_loaded_ptu = None  # Guard against duplicate auto-loads
-        self._form_buttons = {}  # Dictionary to store form mode buttons
-        self._form_frames = {}  # Dictionary to store form frames
-        self._form_inner_frames = {}  # Dictionary to store scrollable inner frames
 
         # Build menu bar
         self._build_menu_bar()
 
-        # --- Mode Toolbar (below menu bar) ---
-        self._mode_toolbar = ttk.Frame(self.root)
-        self._mode_toolbar.grid(row=0, column=0, sticky="ew", padx=10, pady=(5, 0))
-        self._mode_toolbar.columnconfigure(0, weight=1)
-
-        ttk.Label(self._mode_toolbar, text="Mode:", font=("TkDefaultFont", 9, "bold")).pack(side="left", padx=(0, 10))
-
-        self.current_mode = tk.StringVar(value="fov")
-
-        btn_fov = ttk.Button(self._mode_toolbar, text="Single FOV Fit", width=16,
-                             command=lambda: self._switch_form("fov"))
-        btn_fov.pack(side="left", padx=2)
-        self._form_buttons["fov"] = btn_fov
-
-        btn_stitch = ttk.Button(self._mode_toolbar, text="Tile Stitch/Fit", width=16,
-                                command=lambda: self._switch_form("stitch"))
-        btn_stitch.pack(side="left", padx=2)
-        self._form_buttons["stitch"] = btn_stitch
-
-        btn_phasor = ttk.Button(self._mode_toolbar, text="Phasor Analysis", width=16,
-                                command=lambda: self._switch_form("phasor"))
-        btn_phasor.pack(side="left", padx=2)
-        self._form_buttons["phasor"] = btn_phasor
-
-        ttk.Separator(self._mode_toolbar, orient="vertical").pack(side="left", fill="y", padx=10, pady=2)
-
-        self.mode_status = tk.StringVar(value="Current: Single FOV Fit")
-        ttk.Label(self._mode_toolbar, textvariable=self.mode_status, foreground="grey").pack(side="left", padx=10)
-
-        # Update status in _switch_form
-        self._form_labels = {"fov": "Single FOV Fit", "stitch": "Tile Stitch/Fit", "phasor": "Phasor Analysis"}
-        
-        # Separator between toolbar and main content
-        ttk.Separator(self.root, orient="horizontal").grid(row=1, column=0, sticky="ew", pady=5)
-
         # Main horizontal PanedWindow: left (tabs+content+results) | right (FOV preview)
-        self._main_paned = ttk.PanedWindow(self.root, orient="horizontal")
-        self._main_paned.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
+        main_paned = ttk.PanedWindow(self.root, orient="horizontal")
+        main_paned.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=0)  # toolbar row - fixed height
-        self.root.rowconfigure(1, weight=0)  # separator row - fixed height
-        self.root.rowconfigure(2, weight=1)  # main content - expands
+        self.root.rowconfigure(0, weight=1)
 
         
-        # LEFT PANEL: Project Browser + Content area (both resizable)
+        # LEFT PANEL: Tab buttons (vertical) + Content area (vertical paned)
         
-        self._left_paned = ttk.PanedWindow(self._main_paned, orient="horizontal")
-        self._main_paned.add(self._left_paned, weight=3)  # 60% of total width (for Project 20% + Settings 40%)
+        left_frame = ttk.Frame(main_paned)
+        main_paned.add(left_frame, weight=3)  # 3:2 weight ratio
+        left_frame.columnconfigure(0, weight=0)  # Tab buttons (narrow)
+        left_frame.columnconfigure(1, weight=1)  # Content area (expand)
+        left_frame.rowconfigure(0, weight=1)
 
-        # Project Browser Panel (resizable)
-        btn_frame = ttk.Frame(self._left_paned)
-        self._left_paned.add(btn_frame, weight=1)  # 20% of total (1 out of 1+2)
+        # Left sidebar with vertical buttons
+        btn_frame = ttk.Frame(left_frame, width=100)
+        btn_frame.grid(row=0, column=0, sticky="ns", padx=(0, 4))
         btn_frame.columnconfigure(0, weight=1)
-        btn_frame.rowconfigure(0, weight=1)
+        btn_frame.grid_propagate(False)
 
-        self._proj_browser = ProjectBrowserPanel(btn_frame, app=self, width=170)
-        self._proj_browser.frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(btn_frame, text="Modes", font=("TkDefaultFont", 9, "bold")).pack(pady=(4, 8))
 
-        # Content pane in resizable section
-        content_paned = ttk.PanedWindow(self._left_paned, orient="vertical")
-        self._left_paned.add(content_paned, weight=2)  # 40% of total (2 out of 1+2)
+        self._form_buttons = {}
+        self._form_frames = {}
+        self._current_form = None
+
+        def make_button_click(form_name):
+            def on_click():
+                self._switch_form(form_name)
+            return on_click
+
+        # Create buttons for each form
+        form_list = [
+            ("fov", "Single FOV Fit"),
+            ("stitch", "Tile Stitch/Fit"),
+            ("phasor", "Phasor Analysis"),
+        ]
+
+        for form_id, form_label in form_list:
+            btn = ttk.Button(btn_frame, text=form_label, command=make_button_click(form_id))
+            btn.pack(fill="x", padx=2, pady=2)
+            self._form_buttons[form_id] = btn
+
+        # Project browser (column 1 — fixed width, scan list)
+        self._proj_browser = ProjectBrowserPanel(left_frame, app=self, width=170)
+        self._proj_browser.grid(row=0, column=1, sticky="nsew", padx=(0, 4))
+        left_frame.columnconfigure(1, weight=0, minsize=170)
+
+        # Vertical PanedWindow: content (top) | results (bottom)  [moved to col 2]
+        content_paned = ttk.PanedWindow(left_frame, orient="vertical")
+        content_paned.grid(row=0, column=2, sticky="nsew")
+        left_frame.columnconfigure(2, weight=1)
+        left_frame.rowconfigure(0, weight=1)
 
         # Create wrapper frames for each form (initially hidden)
         form_wrapper = ttk.Frame(content_paned)
-        content_paned.add(form_wrapper, weight=3)  # Increased from 2 to give more space to forms
+        content_paned.add(form_wrapper, weight=2)
         form_wrapper.columnconfigure(0, weight=1)
         form_wrapper.rowconfigure(0, weight=1)
 
@@ -2465,6 +2416,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._stitch_roi_analysis_frame = stitch_roi_frame
 
         self._form_content_frame = form_wrapper
+        self._form_inner_frames = {}
 
         # Register batch and irf scroll frames (menu-only; no sidebar button)
         for _fid in ("batch", "irf"):
@@ -2478,14 +2430,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
         # FOV: inside notebook's Fit Settings tab
         # Stitch: inside stitch notebook's Fit Settings tab
         # Others: traditional layout
-        form_list = [
-            ("fov", "Single FOV Fit"),
-            ("stitch", "Tile Stitch/Fit"),
-            ("phasor", "Phasor Analysis"),
-            ("batch", "Batch Processing"),
-            ("irf", "Machine IRF Builder"),
-        ]
-        
         for form_id, form_label in form_list:
             if form_id == "fov":
                 # FOV form goes inside the Fit Settings tab
@@ -2531,8 +2475,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
         
         # RIGHT PANEL: FOV Preview
         
-        preview_frame = ttk.LabelFrame(self._main_paned, text="  FOV Preview  ", padding=4)
-        self._main_paned.add(preview_frame, weight=2)  # 40% of total
+        preview_frame = ttk.LabelFrame(main_paned, text="  FOV Preview  ", padding=4)
+        main_paned.add(preview_frame, weight=2)
         preview_frame.columnconfigure(0, weight=1)
         preview_frame.rowconfigure(0, weight=1)
 
@@ -2559,9 +2503,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
         # Ensure initial window fits within screen bounds
         self.root.after_idle(self._fit_window_to_screen)
-        
-        # Set sash positions for 20:40:40 layout (Project:Settings:FOV)
-        self.root.after_idle(self._set_pane_positions)
 
         # Global mousewheel scroll (works over any child widget)
         self._setup_global_scroll()
@@ -2651,7 +2592,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
         # Show selected form
         if form_id in self._form_inner_frames:
             # batch and irf are menu-only — no sidebar button to highlight
-            
+            if form_id in self._form_buttons:
+                self._form_buttons[form_id].state(["pressed"])
             self._current_form = form_id
 
             # FOV mode: use notebook with tabs
@@ -2760,10 +2702,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 if hasattr(self, "_irf_plot_frame"):
                     self._irf_plot_frame.grid_remove()
                 self._fov_preview.frame.grid()
-
-        if hasattr(self, 'mode_status'):
-            self.mode_status.set(f"Current: {self._form_labels.get(form_id, form_id)}")
-            self._preview_frame_label.configure(text="  FOV Preview  ")
+                self._preview_frame_label.configure(text="  FOV Preview  ")
 
     def _set_window_icon(self):
         base_path = Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else Path(__file__).parent

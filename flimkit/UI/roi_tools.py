@@ -878,7 +878,8 @@ class RoiAnalysisPanel:
             
             # Color the row by region
             self._tree.tag_configure(f"color_{region_id}", foreground=color)
-    
+            self._tree.update_idletasks()
+            
     def add_region_from_drawing(self, tool_type: str, coords: List[List[float]]):
         """Call this when a user finishes drawing a region"""
         if not self.fov_preview:

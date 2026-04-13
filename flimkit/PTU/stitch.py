@@ -290,6 +290,44 @@ def stitch_flim_tiles(
             # Update _hists with corrected position
             _hists[ti] = (hist_ti, y0, x0, h)
 
+        # Recompute canvas size from corrected positions so tiles shifted
+        # beyond the original XLIF bounds are not clipped.
+        new_canvas_height = max(y0_ + h_.shape[0] for _, y0_, x0_, h_ in _hists)
+        new_canvas_width  = max(x0_ + h_.shape[1] for _, y0_, x0_, h_ in _hists)
+        if new_canvas_height > canvas_height or new_canvas_width > canvas_width:
+            if verbose:
+                print(
+                    f"  Registration expanded canvas: "
+                    f"{canvas_height}×{canvas_width} → "
+                    f"{new_canvas_height}×{new_canvas_width} px"
+                )
+            # Reallocate in-memory canvas; re-open memmap at new shape.
+            intensity_canvas = np.zeros(
+                (new_canvas_height, new_canvas_width), dtype=np.float64)
+            flim_canvas._mmap.close()
+            flim_canvas = np.memmap(
+                str(output_flim), dtype=np.uint32, mode="w+",
+                shape=(new_canvas_height, new_canvas_width, n_time_bins))
+            # Rebuild ownership map at the new size.
+            _owner     = np.full(
+                (new_canvas_height, new_canvas_width), -1,     dtype=np.int32)
+            _min_dist2 = np.full(
+                (new_canvas_height, new_canvas_width), np.inf, dtype=np.float64)
+            for ti_, (_, y0_, x0_, h_) in enumerate(_hists):
+                y1_ = min(y0_ + h_.shape[0], new_canvas_height)
+                x1_ = min(x0_ + h_.shape[1], new_canvas_width)
+                cy_ = y0_ + h_.shape[0] / 2.0
+                cx_ = x0_ + h_.shape[1] / 2.0
+                rows_ = np.arange(y0_, y1_, dtype=np.float64)
+                cols_ = np.arange(x0_, x1_, dtype=np.float64)
+                d2_   = (rows_ - cy_)[:, np.newaxis] ** 2 + (cols_ - cx_) ** 2
+                reg_  = _min_dist2[y0_:y1_, x0_:x1_]
+                cl_   = d2_ < reg_
+                _min_dist2[y0_:y1_, x0_:x1_] = np.where(cl_, d2_, reg_)
+                _owner[y0_:y1_, x0_:x1_]     = np.where(cl_, ti_, _owner[y0_:y1_, x0_:x1_])
+            canvas_height = new_canvas_height
+            canvas_width  = new_canvas_width
+
     # Write each tile's data only for pixels it owns
     if verbose:
         blending_mode = "with registration" if (register_tiles and tiles_processed > 1) else "no blending"
@@ -802,7 +840,7 @@ def fit_flim_tiles(
     verbose:       bool = True,
     progress_callback     = None,
     cancel_event          = None,
-) -> tuple[list[dict[str, Any]], int, int]:
+) -> tuple[list[dict[str, Any]], int, int, list[dict], np.ndarray, np.ndarray, float, np.ndarray, dict]:
     """
     Per-tile FLIM fitting with pooled machine IRF.
 
@@ -1098,10 +1136,20 @@ def fit_flim_tiles(
         if verbose:
             print(f'  Canvas after registration: {canvas_h}×{canvas_w} px')
 
-    # Build corrected_positions from tile_results (which have updated pixel_y
-    # after registration) — NOT from tile_meta which has original XLIF values.
+    # Build corrected_positions keyed by PTU filename so that any tiles
+    # skipped in Pass 2 (tile_results shorter than tile_meta) don't corrupt
+    # the file→position mapping via a silent zip truncation.
+    _pos_by_file = {tr['ptu_name']: tr for tr in tile_results}
     corrected_positions = [
-        {**tc['t'], 'pixel_y': tr['pixel_y'], 'pixel_x': tr['pixel_x']}
-        for tc, tr in zip(tile_meta, tile_results)
+        {
+            **tc['t'],
+            'pixel_y': _pos_by_file[tc['t']['file']]['pixel_y']
+                       if tc['t']['file'] in _pos_by_file
+                       else tc['t']['pixel_y'],
+            'pixel_x': _pos_by_file[tc['t']['file']]['pixel_x']
+                       if tc['t']['file'] in _pos_by_file
+                       else tc['t']['pixel_x'],
+        }
+        for tc in tile_meta
     ]
     return tile_results, canvas_h, canvas_w, corrected_positions, pooled_decay, pooled_irf, tcspc_ref, global_popt, global_summary

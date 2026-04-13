@@ -56,6 +56,7 @@ class TestCompleteStitchingPipeline:
                 output_dir=output_dir,
                 ptu_basename=test_project_2x2['roi_name'],
                 rotate_tiles=True,
+                register_tiles=False,  
                 verbose=False
             )
             
@@ -92,6 +93,7 @@ class TestCompleteStitchingPipeline:
                 output_dir=output_dir,
                 ptu_basename=test_project_3x3['roi_name'],
                 rotate_tiles=True,
+                register_tiles=False,
                 verbose=False
             )
             
@@ -115,6 +117,8 @@ class TestCompleteStitchingPipeline:
                 ptu_dir=test_project_2x2['ptu_dir'],
                 output_dir=output_dir,
                 ptu_basename=test_project_2x2['roi_name'],
+                rotate_tiles=True,
+                register_tiles=False,
                 verbose=False
             )
             

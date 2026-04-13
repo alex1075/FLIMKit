@@ -112,14 +112,12 @@ def assemble_tile_maps(
     canvas['intensity'] = intensity_canvas
     canvas['coverage']  = coverage.astype(np.float32)
 
-    n_overlap = int((owner >= 0).sum()) - int((coverage > 0).sum())
-    pct_multi = int((np.array([
-        ((owner[tr['pixel_y']:min(tr['pixel_y']+tr['tile_h'],H),
-            tr['pixel_x']:min(tr['pixel_x']+tr['tile_w'],W)]) == ti).sum()
-        for ti, tr in enumerate(tile_results) if tr.get('pixel_maps') is not None
-    ]).sum())) 
-    print(f"  Canvas {H}×{W}  |  tiles={len(tile_results)}  "
-          f"|  ownership map built (nearest-centre, no blending)")
+    n_covered = int((owner >= 0).sum())
+    print(
+        f"  Canvas {H}×{W}  |  tiles={len(tile_results)}  "
+        f"|  covered={n_covered:,} px  "
+        f"|  ownership map built (nearest-centre, no blending)"
+    )
 
     return canvas
 
