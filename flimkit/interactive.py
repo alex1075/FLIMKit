@@ -1,4 +1,3 @@
-import inquirer
 import argparse
 import numpy as np
 from pathlib import Path
@@ -78,6 +77,7 @@ def _load_machine_irf_prompt(machine_irf_path, n_bins, decay_peak_bin):
 
 def yes_no_question(question):
     """Ask a yes/no question using inquirer and return 'y' or 'n'."""
+    import inquirer
     questions = [inquirer.List('yesno',
                                message=question,
                                choices=['Yes', 'No'])]
@@ -88,7 +88,7 @@ def yes_no_question(question):
 def stitch_tiles_inquire():
     """Interactive prompt for tile stitching parameters."""
     print("\n--- ROI Reconstruction: Tile Stitching ---")
-    
+    import inquirer
     # XLIF metadata file
     xlif_path = input("Enter path to XLIF metadata file: ").strip()
     if not xlif_path or not Path(xlif_path).exists():
@@ -127,6 +127,7 @@ def stitch_tiles_inquire():
 
 def stitch_and_fit_inquire():
     """Interactive prompt for combined stitch + fit workflow."""
+    import inquirer
     print("\n--- ROI Reconstruction + FLIM Fitting ---")
     
     # First get stitching parameters
@@ -663,7 +664,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progres
 def single_FOV_flim_fit_inquire():
     """Interactive prompt to collect FLIM fitting parameters."""
     print("\n--- Interactive FLIM Fit Setup ---")
-
+    import inquirer
     ptu_path = input("Enter path to PTU file for this FOV: ").strip()
     if not ptu_path:
         raise ValueError("PTU file path is required.")
@@ -1080,6 +1081,7 @@ def stitch_and_fit(interactive=False):
     """Entry point for combined stitch + fit workflow."""
     if interactive:
         print("\n--- Stitched ROI Fitting ---")
+        import inquirer
         pipeline_q = [inquirer.List(
             'pipeline',
             message="Which fitting pipeline?",
@@ -1148,7 +1150,7 @@ def tile_fit_inquire():
     print("\n--- Per-Tile FLIM Fitting ---")
     print("Fits each tile independently with its own IRF, then assembles")
     print("the results into a full-ROI canvas.  Avoids inter-tile IRF mismatch.\n")
-
+    import inquirer
     stitch_args = stitch_tiles_inquire()
 
     print("\nFitting Parameters")
