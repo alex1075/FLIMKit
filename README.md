@@ -212,10 +212,10 @@ The compiled app requires no Python installation. Output files are saved to the 
 - [x] Standalone compiled app (macOS, Windows, Linux)
 - [x] Documentation and tests
 - [X] Session restoration
-- [ ] Adding image ROI selection post fitting for spatially resolved lifetime analysis #TBD
+- [X] Adding image ROI selection post fitting for spatially resolved lifetime analysis #TBD
 - [ ] Chemical validation of fitting results with known fluorophores
 - [ ] Publication
-- [ ] Batch phasor analysis of multiple FOVs in GUI (Can be done with a notebook in the [FLIMkit-Examples repo in the meantime](https://github.com/alex1075/FLIMKit-Examples.git))
+- [ ] Batch n-exp analysis of multiple FOVs in GUI (Can be done with a notebook in the [FLIMkit-Examples repo in the meantime](https://github.com/alex1075/FLIMKit-Examples.git))
 - [ ] Fix object/cell detection from intensity image (hit or miss currently) #TBD
 
 ## Contact

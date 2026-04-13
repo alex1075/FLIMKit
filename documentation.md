@@ -1,6 +1,6 @@
 # FLIMKit Documentation
 
-> **Version 1.0.0** — A Python toolkit for Fluorescence Lifetime Imaging Microscopy (FLIM)
+> **Version 0.9.5** — A Python toolkit for Fluorescence Lifetime Imaging Microscopy (FLIM)
 
 > **Warning:** This project is in active development. Please cross-validate results with other software before drawing conclusions.
 
@@ -847,20 +847,6 @@ Saved as `.npz` archives containing:
 | Phasor points scattered off semicircle | Check IRF calibration; uncalibrated data will not lie on the universal semicircle |
 | Per-pixel fitting is slow | Increase `--binning` (2 or 4) or reduce `--de-maxiter` |
 | Fit Summary tab empty after fitting | Ensure you are running the latest GUI — `_extract_summary_rows` was updated to handle both single-FOV and tile-fit output schemas |
-
----
-
-## Roadmap
-
-- [x] Single FOV fitting
-- [x] Batch processing of multiple FOVs
-- [x] Reconstruction and fitting of multi-tile ROIs
-- [x] Phasor analysis with interactive cursors, peak detection, session save/load
-- [x] Desktop GUI with embedded phasor panel and live FOV preview
-- [x] Standalone compiled app (macOS, Windows, Linux)
-- [x] Documentation and tests
-- [ ] Chemical validation of fitting results with known fluorophores
-- [ ] Publication
 
 ---
 
