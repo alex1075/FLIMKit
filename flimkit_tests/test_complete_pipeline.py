@@ -155,6 +155,7 @@ class TestCompleteStitchingPipeline:
                 ptu_dir=test_project_2x2['ptu_dir'],
                 output_dir=output_dir,
                 ptu_basename=test_project_2x2['roi_name'],
+                register_tiles=False,
                 verbose=False
             )
             
