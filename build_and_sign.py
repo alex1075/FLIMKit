@@ -196,6 +196,7 @@ def build_app():
         "--hidden-import", "xarray",
         "--hidden-import", "tifffile",
         "--hidden-import", "ptufile",
+        "--hidden-import", "openpyxl",
         "--hidden-import", "tkinterdnd2",
         "--hidden-import", "TKinterModernThemes",
         "--add-data", "mpl-cache:mpl-cache",   # pre-warmed font cache
