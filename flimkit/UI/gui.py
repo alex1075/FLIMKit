@@ -17,6 +17,14 @@ from pathlib import Path
 from typing import Optional
 import matplotlib
 matplotlib.use("TkAgg")
+# Dark-theme text defaults for all figures
+matplotlib.rcParams.update({
+    'text.color': 'white',
+    'axes.labelcolor': 'white',
+    'xtick.color': 'white',
+    'ytick.color': 'white',
+    'axes.titlecolor': 'white',
+})
 import matplotlib.image as mpimg
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -440,7 +448,7 @@ class IRFWidget:
     _AUTO_FILL = object()
 
     CHOICES = [
-        ("Leica analytical model (XLSX)  [recommended]", "irf_xlsx"),
+        ("Leica analytical model (XLSX)",                "irf_xlsx"),
         ("Machine IRF (.npy pre-built)",                 "machine_irf"),
         ("Scatter PTU (measured IRF)",                   "file"),
         ("Estimate from decay – raw",                    "raw"),
@@ -540,6 +548,167 @@ class IRFWidget:
             return dict(irf=None, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True, machine_irf=None)
 
 
+# ── Expert Settings Dialog ──────────────────────────────────────────
+
+# Default expert settings (mirrors configs.py)
+_EXPERT_DEFAULTS = {
+    "binning_factor": 1,
+    "optimizer": "de",
+    "lm_restarts": 8,
+    "de_population": 30,
+    "de_maxiter": 5000,
+    "n_workers": -1,
+    "cost_function": "poisson",
+    "channels": "",
+    "min_photons": 10,
+}
+
+
+class ExpertSettingsDialog(tk.Toplevel):
+    """Modal dialog for advanced fitting parameters."""
+
+    def __init__(self, parent, current: dict):
+        super().__init__(parent)
+        self.title("Expert Fit Settings")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.result: Optional[dict] = None
+        cfg = _C()
+
+        # Merge defaults ← config ← current overrides
+        vals = dict(_EXPERT_DEFAULTS)
+        vals.update({
+            "binning_factor": cfg["binning_factor"],
+            "optimizer": cfg["Optimizer"],
+            "lm_restarts": cfg["lm_restarts"],
+            "de_population": cfg["de_population"],
+            "de_maxiter": cfg["de_maxiter"],
+            "n_workers": cfg["n_workers"],
+            "min_photons": cfg["MIN_PHOTONS_PERPIX"],
+        })
+        vals.update(current)
+
+        PAD = {"padx": 4, "pady": 3}
+        row = 0
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill="both", expand=True)
+
+        # ── Optimizer ────────────────────────────────
+        ttk.Label(f, text="Optimizer:").grid(row=row, column=0, sticky="w", **PAD)
+        self._sv_optimizer = tk.StringVar(value=vals["optimizer"])
+        opt_frame = ttk.Frame(f)
+        opt_frame.grid(row=row, column=1, columnspan=3, sticky="w", **PAD)
+        ttk.Radiobutton(opt_frame, text="Differential Evolution (DE)",
+                        variable=self._sv_optimizer, value="de").pack(side="left", padx=(0, 8))
+        ttk.Radiobutton(opt_frame, text="Levenberg-Marquardt (LM)",
+                        variable=self._sv_optimizer, value="lm_multistart").pack(side="left")
+
+        # ── DE settings ─────────────────────────────
+        row += 1
+        ttk.Label(f, text="DE population:").grid(row=row, column=0, sticky="w", **PAD)
+        self._sv_de_pop = tk.StringVar(value=str(vals["de_population"]))
+        ttk.Entry(f, textvariable=self._sv_de_pop, width=8).grid(row=row, column=1, sticky="w", **PAD)
+        ttk.Label(f, text="DE max iterations:").grid(row=row, column=2, sticky="w", **PAD)
+        self._sv_de_maxiter = tk.StringVar(value=str(vals["de_maxiter"]))
+        ttk.Entry(f, textvariable=self._sv_de_maxiter, width=8).grid(row=row, column=3, sticky="w", **PAD)
+
+        # ── LM settings ─────────────────────────────
+        row += 1
+        ttk.Label(f, text="LM random restarts:").grid(row=row, column=0, sticky="w", **PAD)
+        self._sv_lm_restarts = tk.StringVar(value=str(vals["lm_restarts"]))
+        ttk.Entry(f, textvariable=self._sv_lm_restarts, width=8).grid(row=row, column=1, sticky="w", **PAD)
+
+        # ── Binning ──────────────────────────────────
+        row += 1
+        ttk.Label(f, text="Spatial binning (NxN):").grid(row=row, column=0, sticky="w", **PAD)
+        self._sv_binning = tk.StringVar(value=str(vals["binning_factor"]))
+        ttk.Entry(f, textvariable=self._sv_binning, width=8).grid(row=row, column=1, sticky="w", **PAD)
+        ttk.Label(f, text="(1 = no binning)", foreground="grey").grid(row=row, column=2, columnspan=2, sticky="w", **PAD)
+
+        # ── Workers ──────────────────────────────────
+        row += 1
+        ttk.Label(f, text="CPU workers:").grid(row=row, column=0, sticky="w", **PAD)
+        self._sv_workers = tk.StringVar(value=str(vals["n_workers"]))
+        ttk.Entry(f, textvariable=self._sv_workers, width=8).grid(row=row, column=1, sticky="w", **PAD)
+        ttk.Label(f, text="(-1 = all cores)", foreground="grey").grid(row=row, column=2, columnspan=2, sticky="w", **PAD)
+
+        # ── Min photons ──────────────────────────────
+        row += 1
+        ttk.Label(f, text="Min photons/pixel:").grid(row=row, column=0, sticky="w", **PAD)
+        self._sv_min_ph = tk.StringVar(value=str(vals["min_photons"]))
+        ttk.Entry(f, textvariable=self._sv_min_ph, width=8).grid(row=row, column=1, sticky="w", **PAD)
+
+        # ── Cost function ────────────────────────────
+        row += 1
+        ttk.Label(f, text="Cost function:").grid(row=row, column=0, sticky="w", **PAD)
+        self._sv_cost = tk.StringVar(value=vals["cost_function"])
+        cf_frame = ttk.Frame(f)
+        cf_frame.grid(row=row, column=1, columnspan=3, sticky="w", **PAD)
+        ttk.Radiobutton(cf_frame, text="Poisson deviance",
+                        variable=self._sv_cost, value="poisson").pack(side="left", padx=(0, 8))
+        ttk.Radiobutton(cf_frame, text="Chi² (legacy)",
+                        variable=self._sv_cost, value="chi2").pack(side="left")
+
+        # ── Channels ─────────────────────────────────
+        row += 1
+        ttk.Label(f, text="Channel filter:").grid(row=row, column=0, sticky="w", **PAD)
+        self._sv_channels = tk.StringVar(value=str(vals.get("channels", "") or ""))
+        ttk.Entry(f, textvariable=self._sv_channels, width=12).grid(row=row, column=1, sticky="w", **PAD)
+        ttk.Label(f, text="(blank = all channels)", foreground="grey").grid(row=row, column=2, columnspan=2, sticky="w", **PAD)
+
+        # ── Buttons ──────────────────────────────────
+        row += 1
+        btn_frame = ttk.Frame(f)
+        btn_frame.grid(row=row, column=0, columnspan=4, pady=(12, 0))
+        ttk.Button(btn_frame, text="Confirm", command=self._confirm).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Reset Defaults", command=self._reset).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side="left", padx=4)
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        # Centre on parent
+        self.update_idletasks()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        w, h = self.winfo_width(), self.winfo_height()
+        self.geometry(f"+{px + (pw - w) // 2}+{py + (ph - h) // 2}")
+
+    def _collect(self) -> dict:
+        ch = self._sv_channels.get().strip()
+        return {
+            "optimizer": self._sv_optimizer.get(),
+            "de_population": int(self._sv_de_pop.get() or 30),
+            "de_maxiter": int(self._sv_de_maxiter.get() or 5000),
+            "lm_restarts": int(self._sv_lm_restarts.get() or 8),
+            "binning_factor": int(self._sv_binning.get() or 1),
+            "n_workers": int(self._sv_workers.get() or -1),
+            "min_photons": int(self._sv_min_ph.get() or 10),
+            "cost_function": self._sv_cost.get(),
+            "channels": int(ch) if ch.isdigit() else (None if ch == "" else ch),
+        }
+
+    def _confirm(self):
+        try:
+            self.result = self._collect()
+        except ValueError as e:
+            messagebox.showerror("Invalid value", str(e), parent=self)
+            return
+        self.destroy()
+
+    def _reset(self):
+        d = _EXPERT_DEFAULTS
+        self._sv_optimizer.set(d["optimizer"])
+        self._sv_de_pop.set(str(d["de_population"]))
+        self._sv_de_maxiter.set(str(d["de_maxiter"]))
+        self._sv_lm_restarts.set(str(d["lm_restarts"]))
+        self._sv_binning.set(str(d["binning_factor"]))
+        self._sv_workers.set(str(d["n_workers"]))
+        self._sv_min_ph.set(str(d["min_photons"]))
+        self._sv_cost.set(d["cost_function"])
+        self._sv_channels.set("")
+
+
 class FOVPreviewPanel:
     """Real-time preview of FOV intensity image and decay curve."""
 
@@ -548,16 +717,27 @@ class FOVPreviewPanel:
         self.frame.columnconfigure(0, weight=1)
         self.frame.rowconfigure(0, weight=1)
 
-        # Create figure with GridSpec layout: intensity & FLIM side-by-side | decay below + colorbar
+        # Create figure with GridSpec layout
         from matplotlib.gridspec import GridSpec
-        self._fig = Figure(figsize=(10, 8), dpi=100, facecolor="#ffffff")
-        # 2 rows, 3 cols: col 0 & 1 for images, col 2 for colorbar
+        self._fig = Figure(figsize=(10, 8), dpi=100, facecolor="black")
+        self._decay_visible = True  # Track decay panel visibility
+        self._display_mode = "flim"  # "flim" or "intensity" — which image gets the main slot
+        # Initial layout: 2 rows, 3 cols
         gs = GridSpec(2, 3, figure=self._fig, height_ratios=[1, 0.6], width_ratios=[1, 1, 0.05], hspace=0.3, wspace=0.15)
         
         self._ax_img = self._fig.add_subplot(gs[0, 0])    # Intensity (top-left)
         self._ax_flim = self._fig.add_subplot(gs[0, 1])   # FLIM (top-right)
         self._ax_cbar = self._fig.add_subplot(gs[0, 2])   # Colorbar (top-right, narrow)
         self._ax_decay = self._fig.add_subplot(gs[1, :])  # Decay (bottom, full width)
+        for _ax in (self._ax_img, self._ax_flim):
+            _ax.set_facecolor('black')
+        self._ax_decay.set_facecolor('white')
+        self._ax_decay.tick_params(colors='black')
+        self._ax_decay.xaxis.label.set_color('black')
+        self._ax_decay.yaxis.label.set_color('black')
+        self._ax_decay.title.set_color('black')
+        self._strip_image_axes(self._ax_img)
+        self._strip_image_axes(self._ax_flim)
         
         self._canvas_mpl = FigureCanvasTkAgg(self._fig, master=self.frame)
         self._canvas_mpl.get_tk_widget().grid(row=0, column=0, sticky="nsew")
@@ -600,6 +780,23 @@ class FOVPreviewPanel:
         
         ttk.Button(ctrl_frame, text="Update", width=8, command=self._update_flim_display).grid(row=1, column=5, sticky="w", padx=2)
 
+        # Row 2: Show/Hide decay toggle + display mode
+        self._bv_show_decay = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ctrl_frame, text="Show Decay Plot",
+                        variable=self._bv_show_decay,
+                        command=self._toggle_decay).grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        # Display mode selector (FLIM vs Intensity) — relevant when decay hidden
+        self._sv_display_mode = tk.StringVar(value="flim")
+        dm_frame = ttk.Frame(ctrl_frame)
+        dm_frame.grid(row=2, column=3, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(dm_frame, text="View:").pack(side="left", padx=(0, 4))
+        ttk.Radiobutton(dm_frame, text="FLIM", variable=self._sv_display_mode,
+                        value="flim", command=self._on_display_mode_changed).pack(side="left")
+        ttk.Radiobutton(dm_frame, text="Intensity", variable=self._sv_display_mode,
+                        value="intensity", command=self._on_display_mode_changed).pack(side="left")
+
         self._ptu_path = None
         
         #  FLIM image display state
@@ -625,9 +822,16 @@ class FOVPreviewPanel:
         self._temp_line = None  # Temporary line for visual feedback
         self._mouse_press_event = None  # Track last press event
         self._roi_analysis_panel = None  # Will be set by FLIMKitApp
+        self._roi_drag = None  # {id, ox, oy} when dragging a ROI
         
         # Connect matplotlib event handlers to FLIM axes
         self._setup_drawing_events()
+        self._cached_decay_lines = []  # Persist decay data across layout rebuilds
+        self._cached_decay_title = ""
+        self._cached_decay_yscale = "log"
+
+        # Connect scroll-wheel zoom on image axes
+        self._setup_zoom()
 
     def load_fov(self, ptu_path: Optional[str]):
         """Load and display intensity image + decay curve from PTU file."""
@@ -656,10 +860,8 @@ class FOVPreviewPanel:
             # Clip at 99th percentile for better contrast
             intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
             self._ax_img.imshow(intensity_clipped, cmap="inferno", origin="upper")
-            self._ax_img.set_title("Intensity Image", fontsize=10, fontweight="bold")
-            self._ax_img.set_xlabel("X (pixels)")
-            self._ax_img.set_ylabel("Y (pixels)")
-            self._ax_img.tick_params(labelsize=8)
+            self._ax_img.set_title("Intensity", fontsize=9, fontweight="bold")
+            self._strip_image_axes(self._ax_img)
 
             # Clear FLIM axes (no fit data yet)
             self._ax_flim.clear()
@@ -669,12 +871,13 @@ class FOVPreviewPanel:
 
             # Plot decay curve
             self._ax_decay.clear()
+            self._ax_decay.set_facecolor('white')
             self._ax_decay.semilogy(time_ns, decay, color="steelblue", linewidth=1.5)
-            self._ax_decay.set_title("Summed Decay", fontsize=10, fontweight="bold")
-            self._ax_decay.set_xlabel("Time (ns)")
-            self._ax_decay.set_ylabel("Photon Count")
+            self._ax_decay.set_title("Summed Decay", fontsize=10, fontweight="bold", color='black')
+            self._ax_decay.set_xlabel("Time (ns)", color='black')
+            self._ax_decay.set_ylabel("Photon Count", color='black')
             self._ax_decay.grid(True, alpha=0.3)
-            self._ax_decay.tick_params(labelsize=8)
+            self._ax_decay.tick_params(labelsize=8, colors='black')
 
             # FIX 1: preserve drawn regions after PTU reload
             self._redraw_region_overlays()
@@ -720,11 +923,15 @@ class FOVPreviewPanel:
                     decay = None
                     time_ns = None
             
-            # Get intensity image: prefer canvas (from tile fitting), fallback to PTU
+            # Get intensity image: prefer canvas (from tile fitting), then fit_result, then PTU fallback
             intensity = None
             if canvas is not None and 'intensity' in canvas:
                 intensity = canvas['intensity']
                 print(f"  - Using intensity from canvas (tile fitting)")
+            elif 'intensity' in fit_result:
+                intensity = fit_result['intensity']
+                if isinstance(intensity, np.ndarray):
+                    print(f"  - Using intensity from fit_result")
             elif ptu_path and Path(ptu_path).exists():
                 ptu = PTUFile(ptu_path, verbose=False)
                 stack = ptu.pixel_stack(channel=None, binning=1)
@@ -827,10 +1034,8 @@ class FOVPreviewPanel:
             # Clip at 99th percentile for better contrast
             intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
             self._ax_img.imshow(intensity_clipped, cmap="inferno", origin="upper")
-            self._ax_img.set_title("Intensity Image", fontsize=10, fontweight="bold")
-            self._ax_img.set_xlabel("X (pixels)")
-            self._ax_img.set_ylabel("Y (pixels)")
-            self._ax_img.tick_params(labelsize=8)
+            self._ax_img.set_title("Intensity", fontsize=9, fontweight="bold")
+            self._strip_image_axes(self._ax_img)
 
             # Update FLIM lifetime image
             self._ax_flim.clear()
@@ -848,10 +1053,8 @@ class FOVPreviewPanel:
                 cmap.set_bad(color='black')
                 
                 im = self._ax_flim.imshow(scaled, cmap=cmap, origin="upper", vmin=0, vmax=1)
-                self._ax_flim.set_title("FLIM Lifetime (ns)", fontsize=10, fontweight="bold")
-                self._ax_flim.set_xlabel("X (pixels)")
-                self._ax_flim.set_ylabel("Y (pixels)")
-                self._ax_flim.tick_params(labelsize=8)
+                self._ax_flim.set_title("FLIM Lifetime (ns)", fontsize=9, fontweight="bold")
+                self._strip_image_axes(self._ax_flim)
                 
                 # Colorbar with actual data range from lifetime map
                 valid_data = self._lifetime_map[~np.isnan(self._lifetime_map)]
@@ -887,6 +1090,7 @@ class FOVPreviewPanel:
 
             # Plot decay with fit and IRF
             self._ax_decay.clear()
+            self._ax_decay.set_facecolor('white')
             
             if decay is None or len(decay) == 0:
                 print(f"  - No decay data available for plotting")
@@ -921,13 +1125,13 @@ class FOVPreviewPanel:
                     print(f"  - No global_popt ({global_popt is not None}) or nexp<=0 ({nexp}) for model")
             
             self._ax_decay.set_title(f"Summed Decay{f' ({nexp}-exp fit)' if nexp > 0 else ''}", 
-                                    fontsize=10, fontweight="bold")
-            self._ax_decay.set_xlabel("Time (ns)")
-            self._ax_decay.set_ylabel("Photon Count")
+                                    fontsize=10, fontweight="bold", color='black')
+            self._ax_decay.set_xlabel("Time (ns)", color='black')
+            self._ax_decay.set_ylabel("Photon Count", color='black')
             if decay is not None and len(decay) > 0:
                 self._ax_decay.legend(fontsize=8, loc="upper right")
             self._ax_decay.grid(True, alpha=0.3)
-            self._ax_decay.tick_params(labelsize=8)
+            self._ax_decay.tick_params(labelsize=8, colors='black')
 
             # Show control frame now that we have FLIM data
             self._ctrl_frame.grid()
@@ -985,10 +1189,8 @@ class FOVPreviewPanel:
             self._ax_img.clear()
             intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
             self._ax_img.imshow(intensity_clipped, cmap="inferno", origin="upper")
-            self._ax_img.set_title("Stitched ROI", fontsize=10, fontweight="bold")
-            self._ax_img.set_xlabel("X (pixels)")
-            self._ax_img.set_ylabel("Y (pixels)")
-            self._ax_img.tick_params(labelsize=8)
+            self._ax_img.set_title("Stitched ROI", fontsize=9, fontweight="bold")
+            self._strip_image_axes(self._ax_img)
             
             # Try to load lifetime map - check multiple sources
             lifetime_data = None
@@ -1036,10 +1238,8 @@ class FOVPreviewPanel:
                 
                 im = self._ax_flim.imshow(lifetime_norm, cmap="viridis", origin="upper", vmin=0, vmax=1)
                 self._ax_flim.set_title(f"FLIM Lifetime ({lifetime_min:.2f}–{lifetime_max:.2f} ns)", 
-                                       fontsize=10, fontweight="bold")
-                self._ax_flim.set_xlabel("X (pixels)")
-                self._ax_flim.set_ylabel("Y (pixels)")
-                self._ax_flim.tick_params(labelsize=8)
+                                       fontsize=9, fontweight="bold")
+                self._strip_image_axes(self._ax_flim)
                 
                 # Colorbar
                 self._ax_cbar.clear()
@@ -1059,6 +1259,7 @@ class FOVPreviewPanel:
             
             # Decay plot
             self._ax_decay.clear()
+            self._ax_decay.set_facecolor('white')
             self._ax_decay.text(0.5, 0.5, "Per-tile fit complete ✓", 
                                ha="center", va="center", transform=self._ax_decay.transAxes,
                                fontsize=10, color="forestgreen", fontweight="bold")
@@ -1078,6 +1279,7 @@ class FOVPreviewPanel:
         self._ax_img.clear()
         self._ax_flim.clear()
         self._ax_decay.clear()
+        self._ax_decay.set_facecolor('white')
         self._ax_cbar.clear()
         self._flim_cbar = None
         self._ax_img.set_title("No FOV loaded")
@@ -1149,10 +1351,8 @@ class FOVPreviewPanel:
             cmap.set_bad(color='black')
             
             im = self._ax_flim.imshow(scaled, cmap=cmap, origin="upper", vmin=0, vmax=1)
-            self._ax_flim.set_title("FLIM Lifetime (ns)", fontsize=10, fontweight="bold")
-            self._ax_flim.set_xlabel("X (pixels)")
-            self._ax_flim.set_ylabel("Y (pixels)")
-            self._ax_flim.tick_params(labelsize=8)
+            self._ax_flim.set_title("FLIM Lifetime (ns)", fontsize=9, fontweight="bold")
+            self._strip_image_axes(self._ax_flim)
             
             # Update colorbar
             valid_data = self._lifetime_map[~np.isnan(self._lifetime_map)]
@@ -1270,17 +1470,22 @@ class FOVPreviewPanel:
             print(f"[ROI Manager] Could not load regions: {e}")
     
     def _redraw_region_overlays(self):
-        """Redraw all region patches on the FLIM image axes."""
+        """Redraw all region patches on the visible image axes."""
         import matplotlib.patches as mpatches
         from flimkit.UI.roi_tools import get_rectangle_patch, get_ellipse_patch, get_polygon_patch
         
+        # Determine which axes to draw on
+        target_axes = [ax for ax in (self._ax_flim, self._ax_img) if ax.get_visible()]
+        
         # Clear old patches
         for patch in self._roi_patches.values():
-            if patch in self._ax_flim.patches:
+            try:
                 patch.remove()
+            except ValueError:
+                pass
         self._roi_patches = {}
         
-        # Draw all regions
+        # Draw all regions on visible axes
         for region in self._roi_manager.get_all_regions():
             region_id = region['id']
             tool_type = region['tool']
@@ -1288,32 +1493,326 @@ class FOVPreviewPanel:
             color = self._roi_manager.get_color(region_id)
             linewidth = 2.5 if region_id == self._roi_manager.get_selected_id() else 1.5
             
-            try:
-                if tool_type == 'rect':
-                    patch = get_rectangle_patch(coords, edgecolor=color, linewidth=linewidth)
-                elif tool_type == 'ellipse':
-                    patch = get_ellipse_patch(coords, edgecolor=color, linewidth=linewidth)
-                elif tool_type in ('polygon', 'freehand'):
-                    patch = get_polygon_patch(coords, edgecolor=color, linewidth=linewidth)
-                else:
-                    continue
-                
-                self._ax_flim.add_patch(patch)
-                self._roi_patches[region_id] = patch
-            except Exception as e:
-                print(f"[ROI] Could not draw region {region_id}: {e}")
+            for ax in target_axes:
+                try:
+                    if tool_type == 'rect':
+                        patch = get_rectangle_patch(coords, edgecolor=color, linewidth=linewidth)
+                    elif tool_type == 'ellipse':
+                        patch = get_ellipse_patch(coords, edgecolor=color, linewidth=linewidth)
+                    elif tool_type in ('polygon', 'freehand'):
+                        patch = get_polygon_patch(coords, edgecolor=color, linewidth=linewidth)
+                    else:
+                        continue
+                    
+                    ax.add_patch(patch)
+                    self._roi_patches[region_id] = patch
+                except Exception as e:
+                    print(f"[ROI] Could not draw region {region_id}: {e}")
         
         self._canvas_mpl.draw_idle()
-    
+
+    @staticmethod
+    def _strip_image_axes(ax):
+        """Remove ticks, tick labels, and axis labels from an image axes."""
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+
+    def _setup_zoom(self):
+        """Connect scroll-wheel zoom and middle-click pan on image axes."""
+        self._zoom_cid = self._canvas_mpl.mpl_connect('scroll_event', self._on_scroll_zoom)
+        self._pan_press_cid = self._canvas_mpl.mpl_connect('button_press_event', self._on_pan_press)
+        self._pan_release_cid = self._canvas_mpl.mpl_connect('button_release_event', self._on_pan_release)
+        self._pan_motion_cid = self._canvas_mpl.mpl_connect('motion_notify_event', self._on_pan_motion)
+        self._pan_origin = None
+
+    def _on_scroll_zoom(self, event):
+        """Zoom in/out on image axes with scroll wheel."""
+        ax = event.inaxes
+        if ax is None or ax not in (self._ax_img, self._ax_flim):
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+
+        base_scale = 1.3
+        if event.button == 'up':
+            scale_factor = 1 / base_scale
+        elif event.button == 'down':
+            scale_factor = base_scale
+        else:
+            return
+
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        # Zoom centred on cursor
+        x_range = (xlim[1] - xlim[0]) * scale_factor
+        y_range = (ylim[1] - ylim[0]) * scale_factor
+
+        ax.set_xlim([event.xdata - x_range * (event.xdata - xlim[0]) / (xlim[1] - xlim[0]),
+                     event.xdata + x_range * (xlim[1] - event.xdata) / (xlim[1] - xlim[0])])
+        ax.set_ylim([event.ydata - y_range * (event.ydata - ylim[0]) / (ylim[1] - ylim[0]),
+                     event.ydata + y_range * (ylim[1] - event.ydata) / (ylim[1] - ylim[0])])
+
+        self._canvas_mpl.draw_idle()
+
+    def _on_pan_press(self, event):
+        """Start panning on middle-click, right-click, or left-click in select mode."""
+        if event.button == 1 and self._drawing_mode.get() != "select":
+            return  # Left-click reserved for drawing in non-select modes
+        ax = event.inaxes
+        if ax is None or ax not in self._active_image_axes():
+            return
+        if event.xdata is None:
+            return
+        # Left-click in select mode: check if clicking on an existing ROI first
+        if event.button == 1:
+            hit_id = self._hit_test_roi(event.xdata, event.ydata, ax)
+            if hit_id is not None:
+                self._start_roi_drag(hit_id, event.xdata, event.ydata)
+                return
+        self._pan_origin = (event.xdata, event.ydata, ax)
+
+    def _on_pan_release(self, event):
+        """End panning or ROI dragging."""
+        if self._roi_drag is not None:
+            self._finish_roi_drag()
+        self._pan_origin = None
+
+    def _on_pan_motion(self, event):
+        """Pan image axes or drag ROI."""
+        # ROI dragging takes priority
+        if self._roi_drag is not None:
+            if event.xdata is not None and event.ydata is not None:
+                self._update_roi_drag(event.xdata, event.ydata)
+            return
+        if self._pan_origin is None:
+            return
+        ox, oy, ax = self._pan_origin
+        if event.inaxes != ax or event.xdata is None:
+            return
+        dx = ox - event.xdata
+        dy = oy - event.ydata
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        ax.set_xlim(xlim[0] + dx, xlim[1] + dx)
+        ax.set_ylim(ylim[0] + dy, ylim[1] + dy)
+        self._canvas_mpl.draw_idle()
+
+    # ── ROI hit-testing and dragging ──────────────────────────────
+
+    def _hit_test_roi(self, x, y, ax):
+        """Return the region_id of the ROI patch under (x, y), or None."""
+        for region_id, patch in self._roi_patches.items():
+            if patch.axes is ax and patch.contains_point(ax.transData.transform((x, y))):
+                return region_id
+        return None
+
+    def _start_roi_drag(self, region_id, x, y):
+        """Begin dragging a ROI."""
+        self._roi_drag = {'id': region_id, 'ox': x, 'oy': y}
+        self._roi_manager.select_region(region_id)
+        self._redraw_region_overlays()
+        if self._roi_analysis_panel:
+            self._roi_analysis_panel._refresh_region_list()
+
+    def _update_roi_drag(self, x, y):
+        """Move the dragged ROI by the mouse delta."""
+        drag = self._roi_drag
+        dx = x - drag['ox']
+        dy = y - drag['oy']
+        region = self._roi_manager.get_region(drag['id'])
+        if region is None:
+            self._roi_drag = None
+            return
+        new_coords = [[c[0] + dx, c[1] + dy] for c in region['coords']]
+        self._roi_manager.update_region(drag['id'], coords=new_coords)
+        drag['ox'] = x
+        drag['oy'] = y
+        self._redraw_region_overlays()
+
+    def _finish_roi_drag(self):
+        """Complete ROI drag and persist changes."""
+        self._roi_drag = None
+        self._save_regions_update()
+
+    def _on_display_mode_changed(self):
+        """Switch which image is shown in the main slot when decay is hidden."""
+        new_mode = self._sv_display_mode.get()
+        if new_mode == self._display_mode:
+            return
+        self._display_mode = new_mode
+        self._rebuild_layout()
+
+    def _toggle_decay(self):
+        """Show or hide the decay plot, rearranging the layout accordingly."""
+        show = self._bv_show_decay.get()
+        if show == self._decay_visible:
+            return
+        self._decay_visible = show
+        self._rebuild_layout()
+
+    def _rebuild_layout(self):
+        """Rebuild the GridSpec layout based on decay visibility.
+
+        Decay visible (default):
+            Row 0: [Intensity] [FLIM] [cbar]     height_ratio 1
+            Row 1: [       Decay          ]       height_ratio 0.6
+
+        Decay hidden:
+            Row 0: [    FLIM   ] [cbar]           height_ratio 1
+            Row 1: [ Intensity ]                  height_ratio 0.5
+        """
+        from matplotlib.gridspec import GridSpec
+
+        # Preserve any current image data from the axes
+        flim_title = self._ax_flim.get_title() if self._ax_flim.get_visible() else "FLIM Lifetime (ns)"
+        img_title = self._ax_img.get_title() if self._ax_img.get_visible() else "Intensity"
+
+        # Store decay line data so it can be redrawn (update persistent cache)
+        current_lines = []
+        for line in self._ax_decay.get_lines():
+            current_lines.append({
+                'x': line.get_xdata().copy(),
+                'y': line.get_ydata().copy(),
+                'color': line.get_color(),
+                'lw': line.get_linewidth(),
+                'label': line.get_label(),
+                'alpha': line.get_alpha(),
+                'marker': line.get_marker(),
+                'ms': line.get_markersize(),
+            })
+        if current_lines:
+            self._cached_decay_lines = current_lines
+            self._cached_decay_title = self._ax_decay.get_title()
+            self._cached_decay_yscale = self._ax_decay.get_yscale()
+        decay_lines = self._cached_decay_lines
+        decay_title = self._cached_decay_title
+        decay_yscale = self._cached_decay_yscale
+
+        # Remove old axes
+        for ax in (self._ax_img, self._ax_flim, self._ax_cbar, self._ax_decay):
+            ax.remove()
+
+        # Build new gridspec
+        if self._decay_visible:
+            gs = GridSpec(2, 3, figure=self._fig,
+                          height_ratios=[1, 0.6],
+                          width_ratios=[1, 1, 0.05],
+                          hspace=0.3, wspace=0.15)
+            self._ax_img   = self._fig.add_subplot(gs[0, 0])
+            self._ax_flim  = self._fig.add_subplot(gs[0, 1])
+            self._ax_cbar  = self._fig.add_subplot(gs[0, 2])
+            self._ax_decay = self._fig.add_subplot(gs[1, :])
+        else:
+            if self._display_mode == 'intensity':
+                # Single large intensity image, no colorbar needed
+                gs = GridSpec(1, 1, figure=self._fig)
+                self._ax_img   = self._fig.add_subplot(gs[0, 0])
+                # Hidden placeholders
+                self._ax_flim  = self._fig.add_axes([0, 0, 0.01, 0.01])
+                self._ax_flim.set_visible(False)
+                self._ax_cbar  = self._fig.add_axes([0, 0, 0.01, 0.01])
+                self._ax_cbar.set_visible(False)
+            else:
+                # Single large FLIM image + colorbar
+                gs = GridSpec(1, 2, figure=self._fig,
+                              width_ratios=[1, 0.05],
+                              wspace=0.08)
+                self._ax_flim  = self._fig.add_subplot(gs[0, 0])
+                self._ax_cbar  = self._fig.add_subplot(gs[0, 1])
+                # Hidden placeholder
+                self._ax_img   = self._fig.add_axes([0, 0, 0.01, 0.01])
+                self._ax_img.set_visible(False)
+            self._ax_decay = self._fig.add_axes([0, 0, 0.01, 0.01])
+            self._ax_decay.set_visible(False)
+
+        for _ax in (self._ax_img, self._ax_flim):
+            _ax.set_facecolor('black')
+
+        # Re-populate images from cached map data
+        if self._ax_img.get_visible() and self._intensity_map is not None:
+            import numpy as np
+            intensity_clipped = np.clip(self._intensity_map, 0,
+                                        np.percentile(self._intensity_map, 99))
+            self._ax_img.imshow(intensity_clipped, cmap="inferno", origin="upper")
+            self._ax_img.set_title(img_title, fontsize=9, fontweight="bold")
+            self._strip_image_axes(self._ax_img)
+        elif self._ax_img.get_visible():
+            self._ax_img.set_title(img_title, fontsize=9, fontweight="bold")
+            self._strip_image_axes(self._ax_img)
+
+        if self._ax_flim.get_visible():
+            if self._lifetime_map is not None:
+                import numpy as np
+                scaled = flim_display.apply_color_scale(
+                    self._lifetime_map,
+                    vmin=self._flim_color_scale['vmin'],
+                    vmax=self._flim_color_scale['vmax'],
+                    gamma=self._flim_color_scale['gamma'],
+                )
+                cmap = flim_display.get_colormap(self._flim_color_scale['cmap'])
+                cmap.set_bad(color='black')
+                im = self._ax_flim.imshow(scaled, cmap=cmap, origin="upper",
+                                           vmin=0, vmax=1)
+                # Rebuild colorbar
+                if self._ax_cbar.get_visible():
+                    self._ax_cbar.clear()
+                    self._flim_cbar = None
+                    valid = self._lifetime_map[~np.isnan(self._lifetime_map)]
+                    if valid.size > 0:
+                        cs = self._flim_color_scale
+                        d_min = cs['vmin'] if cs['vmin'] is not None else float(np.min(valid))
+                        d_max = cs['vmax'] if cs['vmax'] is not None else float(np.max(valid))
+                        cbar = self._fig.colorbar(im, cax=self._ax_cbar)
+                        cbar.set_label("τ (ns)", fontsize=8)
+                        self._flim_cbar = cbar
+                        n_ticks = 5
+                        tp = np.linspace(0, 1, n_ticks)
+                        tv = d_min + tp * (d_max - d_min)
+                        cbar.set_ticks(tp)
+                        cbar.set_ticklabels([f"{v:.2f}" for v in tv], fontsize=7)
+            self._ax_flim.set_title(flim_title, fontsize=9, fontweight="bold")
+            self._strip_image_axes(self._ax_flim)
+
+        # Re-populate decay if visible
+        if self._decay_visible and decay_lines:
+            for ld in decay_lines:
+                self._ax_decay.plot(
+                    ld['x'], ld['y'],
+                    color=ld['color'], linewidth=ld['lw'],
+                    label=ld['label'], alpha=ld['alpha'],
+                    marker=ld['marker'], markersize=ld['ms'],
+                )
+            self._ax_decay.set_yscale(decay_yscale)
+            self._ax_decay.set_title(decay_title, fontsize=10, fontweight="bold", color='black')
+            self._ax_decay.set_xlabel("Time (ns)", color='black')
+            self._ax_decay.set_ylabel("Photon Count", color='black')
+            self._ax_decay.set_facecolor('white')
+            self._ax_decay.tick_params(labelsize=8, colors='black')
+            self._ax_decay.grid(True, alpha=0.3)
+
+        # Re-draw ROI overlays on the new FLIM axes
+        self._redraw_region_overlays()
+
+        # Reconnect drawing events to new axes
+        self._setup_drawing_events()
+
+        self._canvas_mpl.draw_idle()
+
     def _setup_drawing_events(self):
         """Connect matplotlib event handlers to FLIM axes for drawin."""
         self._canvas_mpl.mpl_connect('button_press_event', self._on_draw_press)
         self._canvas_mpl.mpl_connect('motion_notify_event', self._on_draw_motion)
         self._canvas_mpl.mpl_connect('button_release_event', self._on_draw_release)
     
+    def _active_image_axes(self):
+        """Return the set of image axes that should accept drawing events."""
+        return {ax for ax in (self._ax_img, self._ax_flim) if ax.get_visible()}
+
     def _on_draw_press(self, event):
-        """Handle mouse press on FLIM image."""
-        if not event.inaxes or event.inaxes != self._ax_flim:
+        """Handle mouse press on image axes."""
+        if not event.inaxes or event.inaxes not in self._active_image_axes():
             return
         
         mode = self._drawing_mode.get()
@@ -1327,7 +1826,7 @@ class FOVPreviewPanel:
     
     def _on_draw_motion(self, event):
         """Handle mouse motion during drawing."""
-        if not self._is_drawing or not event.inaxes or event.inaxes != self._ax_flim:
+        if not self._is_drawing or not event.inaxes or event.inaxes not in self._active_image_axes():
             return
         
         mode = self._drawing_mode.get()
@@ -1349,8 +1848,8 @@ class FOVPreviewPanel:
             preview = Rectangle((min(x0, x1), min(y0, y1)), 
                                abs(x1 - x0), abs(y1 - y0),
                                edgecolor='cyan', facecolor='none', 
-                               linewidth=1, linestyle='--', alpha=0.5)
-            self._ax_flim.add_patch(preview)
+                               linewidth=1, linestyle='', alpha=0.5)
+            event.inaxes.add_patch(preview)
             self._temp_line = preview
             self._canvas_mpl.draw_idle()
         
@@ -1360,7 +1859,7 @@ class FOVPreviewPanel:
     
     def _on_draw_release(self, event):
         """Handle mouse release to complete drawing."""
-        if not self._is_drawing or not event.inaxes or event.inaxes != self._ax_flim:
+        if not self._is_drawing or not event.inaxes or event.inaxes not in self._active_image_axes():
             return
         
         mode = self._drawing_mode.get()
@@ -2347,6 +2846,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._current_session_file = None  # Track current session file for auto-save
         self._current_npz_path = None  # For backward compatibility
         self._last_loaded_ptu = None  # Guard against duplicate auto-loads
+        self._last_loaded_xlif = None  # Guard against duplicate auto-loads
+        self._ptu_after_id = None   # Pending after() ID for FOV load
+        self._xlif_after_id = None  # Pending after() ID for XLIF load
         self._form_buttons = {}  # Dictionary to store form mode buttons
         self._form_frames = {}  # Dictionary to store form frames
         self._form_inner_frames = {}  # Dictionary to store scrollable inner frames
@@ -2354,9 +2856,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         # Build menu bar
         self._build_menu_bar()
 
-        # --- Mode Toolbar (below menu bar) ---
+        # Mode Toolbar (below menu bar)
         self._mode_toolbar = ttk.Frame(self.root)
-        self._mode_toolbar.grid(row=0, column=0, sticky="ew", padx=10, pady=(5, 0))
+        self._mode_toolbar.grid(row=0, column=0, sticky="ew", padx=10, pady=(2, 0))
         self._mode_toolbar.columnconfigure(0, weight=1)
 
         ttk.Label(self._mode_toolbar, text="Mode:", font=("TkDefaultFont", 9, "bold")).pack(side="left", padx=(0, 10))
@@ -2387,14 +2889,14 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._form_labels = {"fov": "Single FOV Fit", "stitch": "Tile Stitch/Fit", "phasor": "Phasor Analysis"}
         
         # Separator between toolbar and main content
-        ttk.Separator(self.root, orient="horizontal").grid(row=1, column=0, sticky="ew", pady=5)
+        ttk.Separator(self.root, orient="horizontal").grid(row=1, column=0, sticky="ew", pady=(2, 0))
 
         # Main horizontal PanedWindow: left (tabs+content+results) | right (FOV preview)
         self._main_paned = ttk.PanedWindow(self.root, orient="horizontal")
-        self._main_paned.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
+        self._main_paned.grid(row=2, column=0, sticky="nsew", padx=4, pady=(2, 4))
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=0)  # toolbar row - fixed height
-        self.root.rowconfigure(1, weight=0)  # separator row - fixed height
+        self.root.rowconfigure(0, weight=0, minsize=0)  # toolbar row - fixed height
+        self.root.rowconfigure(1, weight=0, minsize=0)  # separator row - fixed height
         self.root.rowconfigure(2, weight=1)  # main content - expands
 
         
@@ -2520,6 +3022,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._res.set_load_callback(self._load_fitted_data_from_file)
         self._res.set_save_npz_callback(self._save_npz_quick)
 
+        # Expert fit settings overrides (shared by FOV and stitch tabs)
+        self._expert_overrides: dict = {}
+
         # Build form content for each form
         self._build_fov_tab()
         self._build_stitch_tab()
@@ -2577,11 +3082,48 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._set_window_icon()
 
     def _refresh_scrollable_frame(self, form_id: str):
-        """Refresh the scrollable frame canvas after it's been shown. Fixes display issues when switching back to hidden forms."""
+        """Refresh the scrollable frame canvas after it's been shown."""
         if form_id not in self._form_inner_frames:
             return
-        
+
         outer, inner = self._form_inner_frames[form_id]
+        if not hasattr(outer, '_canvas'):
+            return
+
+        # Guard against re-entrant refreshes
+        if hasattr(outer, '_refresh_scheduled') and outer._refresh_scheduled:
+            return
+        outer._refresh_scheduled = True
+
+        canvas = outer._canvas
+        window_id = outer._window_id
+
+        def do_refresh():
+            try:
+                self.root.update_idletasks()
+                canvas_width = canvas.winfo_width()
+                canvas_height = canvas.winfo_height()
+                if canvas_width > 1:
+                    canvas.itemconfigure(window_id, width=canvas_width)
+                inner.update()
+                inner_height = inner.winfo_reqheight()
+                if inner_height > 1:
+                    canvas.itemconfigure(window_id, height=inner_height)
+                bbox = canvas.bbox("all")
+                if bbox:
+                    canvas.configure(scrollregion=bbox)
+                else:
+                    h = max(canvas_height, inner_height, 300) if inner_height > 1 else 500
+                    w = max(canvas_width, 300) if canvas_width > 1 else 400
+                    canvas.configure(scrollregion=(0, 0, w, h))
+                canvas.yview_moveto(0)
+                canvas.update()
+            except Exception:
+                pass
+            finally:
+                outer._refresh_scheduled = False
+
+        self.root.after_idle(lambda: self.root.after(80, do_refresh))
         
         # Schedule refresh on next event loop iteration to allow grid() to complete
         def do_refresh():
@@ -2660,6 +3202,13 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self._stitch_tabs.grid_remove()
                 if "phasor" in self._form_inner_frames:
                     self._form_inner_frames["phasor"][0].grid_remove()
+
+                # Restore the FOV ROI-analysis panel connection.
+                # Switching to stitch mode overwrites _roi_analysis_panel on the
+                # preview with _stitch_roi_panel; we must put it back so that FOV
+                # drawing / analysis callbacks reach the visible panel.
+                if hasattr(self, '_roi_analysis_panel'):
+                    self._fov_preview._roi_analysis_panel = self._roi_analysis_panel
                 
                 # Now show FOV form
                 fov_frame = self._form_inner_frames["fov"][0]
@@ -2675,8 +3224,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 # Select Fit Settings tab
                 self._analysis_tabs.select(0)
                 
-                # Force notebook update before refresh
-                self._fit_settings_tab.update()
+                # Force layout update (update_idletasks avoids re-entrant event processing)
+                self._fit_settings_tab.update_idletasks()
                 
                 # Refresh canvas to ensure content displays properly
                 self._refresh_scrollable_frame(form_id)
@@ -2715,8 +3264,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 # Select Fit Settings tab
                 self._stitch_tabs.select(0)
                 
-                # Force notebook update before refresh
-                self._stitch_settings_tab.update()
+                # Force layout update (update_idletasks avoids re-entrant event processing)
+                self._stitch_settings_tab.update_idletasks()
                 
                 # Refresh canvas to ensure content displays properly
                 self._refresh_scrollable_frame(form_id)
@@ -2746,6 +3295,23 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self._fov_preview.frame.grid_remove()
                 self._phasor_panel.frame.grid()
                 self._preview_frame_label.configure(text="  Phasor Analysis  ")
+                # Auto-populate phasor PTU + IRF from FOV fields if available
+                if (hasattr(self, 'sv_ph_ptu') and hasattr(self, 'sv_ptu')
+                        and not self.sv_ph_ptu.get().strip()):
+                    fov_ptu = self.sv_ptu.get().strip()
+                    if fov_ptu:
+                        self.sv_ph_ptu.set(fov_ptu)
+                    # Carry over IRF settings
+                    if hasattr(self, '_irf_fov'):
+                        method = self._irf_fov.sv_method.get()
+                        if method == "irf_xlsx" and hasattr(self, 'sv_xlsx'):
+                            xlsx = self.sv_xlsx.get().strip()
+                            if xlsx and not self.sv_ph_irf.get().strip():
+                                self.sv_ph_irf.set(xlsx)
+                        elif method == "machine_irf":
+                            mirf = self._irf_fov.sv_path.get().strip()
+                            if mirf and not self.sv_ph_mirf.get().strip():
+                                self.sv_ph_mirf.set(mirf)
             elif form_id in ("batch", "irf"):
                 # No preview needed for batch/irf — hide both panels
                 self._phasor_panel.frame.grid_remove()
@@ -2849,6 +3415,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 "irf_st_method":  self._irf_st.sv_method.get() if hasattr(self, '_irf_st') else "irf_xlsx",
                 "irf_st_path":    self._irf_st.sv_path.get()   if hasattr(self, '_irf_st') else "",
                 "tile_irf_dir":   self.sv_tile_irf_dir.get() if hasattr(self, 'sv_tile_irf_dir') else "",
+
+                # Expert fit settings overrides
+                "expert_overrides": self._expert_overrides if hasattr(self, '_expert_overrides') else {},
             }
             print(f"[Session] Captured form state: active_form={state.get('active_form')}")
             return state
@@ -2859,11 +3428,12 @@ Built with Python, Tkinter, NumPy, and SciPy.
     def _restore_form_state(self, state: dict):
         """Restore all form field values from captured state dict."""
         try:
-            # Restore input files (always available)
-            if "ptu_file" in state and hasattr(self, 'sv_ptu'):
-                self.sv_ptu.set(state["ptu_file"])
-            if "xlsx_file" in state and hasattr(self, 'sv_xlsx'):
-                self.sv_xlsx.set(state["xlsx_file"])
+            # Restore input files (skip PTU/XLIF—they're mode-specific and
+            # should come fresh from project browser or user input, not old state)
+            # if "ptu_file" in state and hasattr(self, 'sv_ptu'):
+            #     self.sv_ptu.set(state["ptu_file"])
+            # if "xlsx_file" in state and hasattr(self, 'sv_xlsx'):
+            #     self.sv_xlsx.set(state["xlsx_file"])
             
             # Restore IRF settings
             if "irf_method" in state and hasattr(self, '_irf_fov'):
@@ -2901,10 +3471,12 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self.sv_int_threshold.set(state["threshold"])
             
             # ── Stitch-form fields ────────────────────────────────────────────
-            if "xlif_file" in state and hasattr(self, 'sv_xlif'):
-                self.sv_xlif.set(state["xlif_file"])
-            if "ptu_dir" in state and hasattr(self, 'sv_ptu_dir'):
-                self.sv_ptu_dir.set(state["ptu_dir"])
+            # Skip xlif_file and ptu_dir—they're mode-specific and should come
+            # fresh from project browser, not from old state
+            # if "xlif_file" in state and hasattr(self, 'sv_xlif'):
+            #     self.sv_xlif.set(state["xlif_file"])
+            # if "ptu_dir" in state and hasattr(self, 'sv_ptu_dir'):
+            #     self.sv_ptu_dir.set(state["ptu_dir"])
             if "out_st" in state and hasattr(self, 'sv_out_st'):
                 self.sv_out_st.set(state["out_st"])
             if "bv_rotate" in state and hasattr(self, 'bv_rotate'):
@@ -2947,8 +3519,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self._perpix_toggled()     # show/hide _pxf
 
             # ── Stitch-form fields ───────────────────────────────────────
-            if "xlif_file"     in state and hasattr(self, 'sv_xlif'):          self.sv_xlif.set(state["xlif_file"])
-            if "ptu_dir"       in state and hasattr(self, 'sv_ptu_dir'):        self.sv_ptu_dir.set(state["ptu_dir"])
+            # Skip xlif_file and ptu_dir—they're mode-specific
+            # if "xlif_file"     in state and hasattr(self, 'sv_xlif'):          self.sv_xlif.set(state["xlif_file"])
+            # if "ptu_dir"       in state and hasattr(self, 'sv_ptu_dir'):        self.sv_ptu_dir.set(state["ptu_dir"])
             if "out_st"        in state and hasattr(self, 'sv_out_st'):         self.sv_out_st.set(state["out_st"])
             if "bv_rotate"     in state and hasattr(self, 'bv_rotate'):         self.bv_rotate.set(state["bv_rotate"])
             if "tau_lo"        in state and hasattr(self, 'sv_tau_lo'):         self.sv_tau_lo.set(state["tau_lo"])
@@ -2970,6 +3543,13 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self.sv_pipeline.set(state["pipeline"]); self._pipeline_changed()
             if "bv_perpix" in state and hasattr(self, 'bv_perpix'):
                 self.bv_perpix.set(state["bv_perpix"]); self._perpix_toggled()
+
+            # Restore expert fit settings
+            if "expert_overrides" in state and hasattr(self, '_expert_overrides'):
+                ex = state["expert_overrides"]
+                if isinstance(ex, dict):
+                    self._expert_overrides = ex
+                    self._update_expert_banners()
 
             # Restore active form mode
             if "active_form" in state:
@@ -3281,6 +3861,129 @@ Built with Python, Tkinter, NumPy, and SciPy.
         except Exception as e:
             print(f"[Auto-Load Error] {e}")
 
+    def _auto_load_session_for_stitch(self, output_dir: str):
+        """Check for and auto-load session file for a stitched ROI."""
+        try:
+            from pathlib import Path
+            import json
+            import numpy as np
+
+            session_file = Path(output_dir) / "roi_session.npz"
+            if not session_file.exists():
+                return
+
+            print(f"[Auto-Load] Found tile session: {session_file.name}")
+            session_data = np.load(session_file, allow_pickle=True)
+
+            # Convert to dict for easier handling
+            loaded = {key: session_data[key] for key in session_data.files}
+
+            # Restore form state
+            if "form_state_json" in loaded:
+                try:
+                    form_state_str = loaded["form_state_json"]
+                    if isinstance(form_state_str, np.ndarray):
+                        form_state_str = form_state_str.item()
+                    if isinstance(form_state_str, bytes):
+                        form_state_str = form_state_str.decode('utf-8')
+                    form_state = json.loads(form_state_str)
+                    self._restore_form_state(form_state)
+                except Exception as e:
+                    print(f"[Auto-Load] Could not restore form state: {e}")
+
+            # Restore summary table
+            if "summary_params" in loaded:
+                params = loaded["summary_params"]
+                values = loaded["summary_values"]
+                units = loaded["summary_units"]
+
+                if isinstance(params, np.ndarray):
+                    params = params.tolist()
+                if isinstance(values, np.ndarray):
+                    values = values.tolist()
+                if isinstance(units, np.ndarray):
+                    units = units.tolist()
+
+                rows = []
+                for p, v, u in zip(params, values, units):
+                    if isinstance(p, bytes): p = p.decode('utf-8')
+                    if isinstance(v, bytes): v = v.decode('utf-8')
+                    if isinstance(u, bytes): u = u.decode('utf-8')
+                    rows.append((str(p), str(v), str(u)))
+
+                if rows:
+                    self._res.populate_summary(rows)
+
+            # Restore FOV preview state (color scale, n_exp)
+            if "fov_color_scale" in loaded:
+                try:
+                    cs = loaded["fov_color_scale"]
+                    if isinstance(cs, bytes):
+                        cs = cs.decode('utf-8')
+                    self._fov_preview._flim_color_scale = json.loads(cs)
+                except:
+                    pass
+
+            if "fov_n_exp" in loaded:
+                n_exp = loaded["fov_n_exp"]
+                if isinstance(n_exp, (np.integer, int)):
+                    self._fov_preview._n_exp = int(n_exp)
+
+            # Restore ROI regions (before redrawing FLIM image)
+            if "fov_regions" in loaded:
+                regions_json = loaded["fov_regions"]
+                if isinstance(regions_json, np.ndarray):
+                    regions_json = regions_json.item()
+                if isinstance(regions_json, bytes):
+                    regions_json = regions_json.decode('utf-8')
+                if regions_json:  # Only load if not empty
+                    self._fov_preview._load_regions_from_json(regions_json)
+                    if self._roi_analysis_panel:
+                        self._roi_analysis_panel._refresh_region_list()
+
+            # Build a fit_result dict from the loaded data
+            fit_result = {}
+            for key, val in loaded.items():
+                if key in ("summary_params", "summary_values", "summary_units",
+                        "form_state_json", "fov_regions", "fov_color_scale", "fov_n_exp"):
+                    continue
+                fit_result[key] = val
+
+            # Reconstruct global_summary with hoisted arrays (like in _load_fitted_data_from_file)
+            if "global_summary_json" in fit_result:
+                from flimkit.UI.gui import _reconstruct_dict_from_session
+                fit_result["global_summary"] = _reconstruct_dict_from_session(fit_result, "global_summary")
+
+            # Ensure intensity TIFF is loaded before displaying fit results.
+            # Call load_stitched_roi to get the intensity image from TIFF files,
+            # but only if we haven't loaded it yet.
+            if self._fov_preview._intensity_map is None:
+                self._fov_preview.load_stitched_roi(output_dir)
+
+            # Display the decay plot and FLIM image
+            # display_fit_results will compute and draw the FLIM lifetime map
+            # from pixel_maps in the fit result, so it will overwrite any TIFF-based
+            # lifetime that load_stitched_roi might have started.
+            self._fov_preview.display_fit_results(None, fit_result)
+            
+            # Ensure canvas is fully rendered before proceeding
+            self._fov_preview._canvas_mpl.draw_idle()
+
+            # Store fit result for export/save buttons
+            self._res.set_fit_result(fit_result, output_dir, npz_path=str(session_file))
+
+            # Update status
+            self._res._status.set("✓ Session restored — ready to export or re-fit")
+            self._fov_preview._ctrl_frame.grid()
+            self._res._export_btn.configure(state="normal")
+
+            print("[Auto-Load] Tile session fully restored")
+
+        except Exception as e:
+            print(f"[Auto-Load] Error loading tile session: {e}")
+            import traceback
+            traceback.print_exc()
+
     def load_roi_fit(self, npz_path: str) -> dict:
         """Load previously saved ROI fit data from NPZ file."""
         try:
@@ -3383,8 +4086,13 @@ Built with Python, Tkinter, NumPy, and SciPy.
             traceback.print_exc()
             messagebox.showerror("Error", f"Failed to save session:\n{str(e)}")
 
-    def _load_fitted_data_from_file(self, npz_path: str):
-        """Load previously fitted data from NPZ and display in results panel."""
+    def _load_fitted_data_from_file(self, npz_path: str, suppress_popups: bool = False):
+        """Load previously fitted data from NPZ and display in results panel.
+        
+        Args:
+            npz_path: Path to the NPZ file to load
+            suppress_popups: If True, suppress success/error messagebox popups (e.g., when loading from project tree)
+        """
         try:
             import numpy as np
             import json
@@ -3392,7 +4100,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
             
             fit_result = self.load_roi_fit(npz_path)
             if not fit_result:
-                messagebox.showerror("Load Error", f"Failed to load fitted data from:\n{npz_path}")
+                if not suppress_popups:
+                    messagebox.showerror("Load Error", f"Failed to load fitted data from:\n{npz_path}")
                 return
             
             # Extract summary data
@@ -3609,13 +4318,15 @@ Built with Python, Tkinter, NumPy, and SciPy.
             self._res.set_fit_result(fit_result, output_dir, npz_path=npz_path)
             
             # Stay on the current form (no "results" form exists)
-            messagebox.showinfo("Success", f"Loaded fitted data from:\n{Path(npz_path).name}")
+            if not suppress_popups:
+                messagebox.showinfo("Success", f"Loaded fitted data from:\n{Path(npz_path).name}")
             
             
         except Exception as e:
             import traceback
             traceback.print_exc()
-            messagebox.showerror("Error", f"Failed to load fitted data:\n{str(e)}")
+            if not suppress_popups:
+                messagebox.showerror("Error", f"Failed to load fitted data:\n{str(e)}")
 
     def _show_export_dialog(self, image_dict: dict, output_dir: str):
         """Show export options dialog for fit images and NPZ data."""
@@ -3787,6 +4498,12 @@ Built with Python, Tkinter, NumPy, and SciPy.
             output_path.mkdir(parents=True, exist_ok=True)
             
             exported_count = 0
+
+            # Resolve pixel size (µm/px) for scale bar
+            pixel_size_um = self._get_pixel_size_um()
+            if with_scalebar and pixel_size_um is None:
+                print("[Export] No pixel size available — scale bar will be omitted")
+                with_scalebar = False
             
             if fmt == "ometiff":
                 # Try to use tifffile for OME-TIFF export (lossless, preserves metadata)
@@ -3844,6 +4561,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
                         intensity_clipped = np.clip(intensity, 0, np.percentile(intensity, 99))
                         im = ax.imshow(intensity_clipped, cmap='inferno', origin='upper', aspect='auto')
                         ax.axis('off')
+
+                        if with_scalebar:
+                            self._draw_scale_bar(ax, w, h, pixel_size_um)
                         
                         output_file = output_path / "intensity.png"
                         fig.savefig(output_file, dpi=100, bbox_inches='tight', pad_inches=0, facecolor='black')
@@ -3869,6 +4589,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
                         
                         im = ax.imshow(lifetime, cmap='viridis', origin='upper', aspect='auto')
                         ax.axis('off')
+
+                        if with_scalebar:
+                            self._draw_scale_bar(ax, w, h, pixel_size_um)
                         
                         # Add ROI annotations if requested
                         if with_annotations and self._fov_preview._roi_manager.get_all_regions():
@@ -3950,6 +4673,88 @@ Built with Python, Tkinter, NumPy, and SciPy.
             import traceback
             traceback.print_exc()
 
+    def _get_pixel_size_um(self) -> "float | None":
+        """Return the pixel size in µm for the currently loaded scan, or None."""
+        try:
+            from pathlib import Path
+
+            # 1) Stitch mode — check stitch metadata JSON for pixel_size_um
+            if getattr(self, '_current_form', None) == 'stitch':
+                xlif = self.sv_xlif.get().strip() if hasattr(self, 'sv_xlif') else ''
+                if xlif:
+                    from flimkit.utils.xml_utils import get_pixel_size_from_xlif
+                    pixel_size_m, _ = get_pixel_size_from_xlif(Path(xlif))
+                    if pixel_size_m and pixel_size_m > 0:
+                        return pixel_size_m * 1e6
+
+            # 2) FOV mode — read ImgHdr_PixRes from the PTU header
+            ptu_path = getattr(self._fov_preview, '_ptu_path', None)
+            if ptu_path and Path(ptu_path).exists():
+                from flimkit.PTU.reader import PTUFile
+                ptu = PTUFile(str(ptu_path), verbose=False)
+                pix_res = ptu.tags.get('ImgHdr_PixRes', 0)
+                if pix_res and float(pix_res) > 0:
+                    # ImgHdr_PixRes is in metres per pixel
+                    return float(pix_res) * 1e6
+        except Exception as e:
+            print(f"[Export] Could not determine pixel size: {e}")
+        return None
+
+    @staticmethod
+    def _draw_scale_bar(ax, img_w_px: int, img_h_px: int, pixel_size_um: float):
+        """Draw a scale bar in the bottom-right corner of *ax*.
+
+        Chooses a "nice" bar length (1, 2, 5, 10, 20, 50, 100, 200, 500 µm)
+        that occupies roughly 15-25 % of the image width.
+        """
+        from matplotlib.patches import FancyBboxPatch
+
+        fov_um = img_w_px * pixel_size_um
+        target = fov_um * 0.20  # aim for ~20 % of width
+
+        # Pick the largest "nice" value ≤ target
+        nice = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+        bar_um = nice[0]
+        for n in nice:
+            if n <= target:
+                bar_um = n
+            else:
+                break
+
+        bar_px = bar_um / pixel_size_um
+        bar_h  = max(3, img_h_px * 0.015)  # bar thickness ≈ 1.5 % of height
+
+        margin_x = img_w_px * 0.03
+        margin_y = img_h_px * 0.03
+        x0 = img_w_px - margin_x - bar_px
+        y0 = img_h_px - margin_y - bar_h
+
+        # Semi-transparent background behind bar + label
+        label = f"{bar_um} µm"
+        fontsize = max(7, min(14, img_h_px * 0.035))
+        pad_x = bar_px * 0.08
+        pad_y = fontsize * 1.8  # room for text above bar
+        bg = FancyBboxPatch(
+            (x0 - pad_x, y0 - pad_y),
+            bar_px + 2 * pad_x,
+            bar_h + pad_y + margin_y * 0.5,
+            boxstyle="round,pad=4",
+            facecolor="black", edgecolor="none", alpha=0.55,
+            zorder=9,
+        )
+        ax.add_patch(bg)
+
+        # White bar
+        from matplotlib.patches import Rectangle
+        bar = Rectangle((x0, y0), bar_px, bar_h,
+                         facecolor="white", edgecolor="none", zorder=10)
+        ax.add_patch(bar)
+
+        # Label centred above bar
+        ax.text(x0 + bar_px / 2, y0 - fontsize * 0.35,
+                label, color="white", fontsize=fontsize,
+                ha="center", va="bottom", zorder=10)
+
     def _export_npz_fit(self, fit_result: dict, output_dir: str, ptu_path: str = None):
         """Copy the existing NPZ fit file to export directory instead of recreating it."""
         try:
@@ -3993,9 +4798,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
             import traceback
             traceback.print_exc()
 
-    # -------------------------------------------------------------------------
+    
     # TAB 1 – Single-FOV FLIM fit
-    # -------------------------------------------------------------------------
+    
     def _build_fov_tab(self):
         outer, tab = self._form_inner_frames["fov"]
         tab.columnconfigure(0, weight=1)
@@ -4023,20 +4828,36 @@ Built with Python, Tkinter, NumPy, and SciPy.
         fp = _section(tab, "Fitting Parameters")
         fp.grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
+        # Exponential components (row 0)
         ttk.Label(fp, text="Exponential components:").grid(
             row=0, column=0, sticky="w", **PAD)
         self.iv_nexp_fov = tk.IntVar(value=2)
         for n in (1, 2, 3):
             ttk.Radiobutton(fp, text=str(n), variable=self.iv_nexp_fov,
-                            value=n).grid(row=0, column=n, sticky="w", padx=4)
+                            value=n).grid(row=0, column=n, sticky="w", padx=1)
 
-        ttk.Label(fp, text="Fitting mode:").grid(row=1, column=0, sticky="w", **PAD)
-        self.sv_mode_fov = tk.StringVar(value="summed")
-        for c, (lbl, val) in enumerate(
-                [("Summed only", "summed"), ("Per-pixel", "perPixel"), ("Both", "both")], 1):
-            ttk.Radiobutton(fp, text=lbl, variable=self.sv_mode_fov,
-                            value=val).grid(row=1, column=c, sticky="w", padx=4)
+         #Fitting mode row (independent, no column-width interference) 
+        mode_row = ttk.Frame(fp)
+        mode_row.grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
 
+        ttk.Label(mode_row, text="Fitting mode:").pack(side="left", padx=(0, 10))
+        self.sv_mode_fov = tk.StringVar(value="both")
+
+        # Pack radio buttons tightly together
+        radio_frame = ttk.Frame(mode_row)
+        radio_frame.pack(side="left")
+        ttk.Radiobutton(radio_frame, text="Full", variable=self.sv_mode_fov,
+                        value="both").pack(side="left", padx=2)
+        ttk.Radiobutton(radio_frame, text="Fast", variable=self.sv_mode_fov,
+                        value="summed").pack(side="left", padx=2)
+        # ttk.Radiobutton(radio_frame, text="Per‑pixel", variable=self.sv_mode_fov,
+        #                 value="perPixel").pack(side="left", padx=2)
+
+        # Optional explanatory text for "Summed"
+        ttk.Label(mode_row, text="(fast = no FLIM image)",
+                  foreground="grey").pack(side="left", padx=(10, 0))
+
+        # Fit window (now row 2)
         ttk.Label(fp, text="Fit window (ns):").grid(row=2, column=0, sticky="w", **PAD)
         self.sv_tau_min_fov = tk.StringVar(value=str(_C()["Tau_min"]))
         self.sv_tau_max_fov = tk.StringVar(value=str(_C()["Tau_max"]))
@@ -4045,6 +4866,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
         ttk.Entry(fp, textvariable=self.sv_tau_max_fov, width=7).grid(row=2, column=3, sticky="w", padx=4)
         ttk.Label(fp, text="ns  (fitting range)", foreground="grey").grid(row=2, column=4, sticky="w")
 
+        # Output prefix (now row 3)
         ttk.Label(fp, text="Output prefix:").grid(row=3, column=0, sticky="w", **PAD)
         self.sv_out_fov = tk.StringVar(value="flim_out")
         ttk.Entry(fp, textvariable=self.sv_out_fov, width=35).grid(
@@ -4070,13 +4892,25 @@ Built with Python, Tkinter, NumPy, and SciPy.
         ttk.Label(fm, text="(leave blank for no threshold)",
                   foreground="grey").grid(row=1, column=2, sticky="w")
 
-        self._btn_fov = ttk.Button(tab, text="▶  Run Single-FOV Fit",
-                                   command=self._run_fov)
-        self._btn_fov.grid(row=4, column=0, pady=8, ipadx=20, ipady=4)
+        # Expert settings banner (hidden until expert settings are confirmed)
+        self._expert_banner_fov = ttk.Label(
+            tab, text="⚙  Custom expert settings active",
+            foreground="#e8a838", font=("TkDefaultFont", 9, "bold"))
+        self._expert_banner_fov.grid(row=4, column=0, sticky="w", padx=8)
+        self._expert_banner_fov.grid_remove()
 
-    # -------------------------------------------------------------------------
+        # Bottom row: Expert Settings + Run button
+        btn_row_fov = ttk.Frame(tab)
+        btn_row_fov.grid(row=5, column=0, pady=8)
+        ttk.Button(btn_row_fov, text="⚙  Expert Settings",
+                   command=self._open_expert_settings).pack(side="left", padx=4)
+        self._btn_fov = ttk.Button(btn_row_fov, text="▶  Run Single-FOV Fit",
+                                   command=self._run_fov)
+        self._btn_fov.pack(side="left", padx=4, ipadx=20, ipady=4)
+
+    
     # TAB 2 – Tile Stitch / Fit
-    # -------------------------------------------------------------------------
+    
     def _build_stitch_tab(self):
         outer, tab = self._form_inner_frames["stitch"]
         tab.columnconfigure(0, weight=1)
@@ -4085,6 +4919,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
         ff.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         ff.columnconfigure(1, weight=1)
         self.sv_xlif    = tk.StringVar()
+        self.sv_xlif.trace_add("write", self._on_xlif_changed)
         self.sv_ptu_dir = tk.StringVar()
         self.sv_out_st  = tk.StringVar()
 
@@ -4123,12 +4958,25 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._build_stitch_fit(self._fit_frame)
         self._fit_frame.grid_remove()
 
-        self._btn_st = ttk.Button(tab, text="▶  Run Tile Stitch",
+        # Expert settings banner (hidden until expert settings are confirmed)
+        self._expert_banner_st = ttk.Label(
+            tab, text="⚙  Custom expert settings active",
+            foreground="#e8a838", font=("TkDefaultFont", 9, "bold"))
+        self._expert_banner_st.grid(row=3, column=0, sticky="w", padx=8)
+        self._expert_banner_st.grid_remove()
+
+        # Bottom row: Expert Settings + Run button
+        btn_row_st = ttk.Frame(tab)
+        btn_row_st.grid(row=4, column=0, pady=8)
+        self._btn_expert_st = ttk.Button(btn_row_st, text="⚙  Expert Settings",
+                   command=self._open_expert_settings)
+        self._btn_expert_st.pack(side="left", padx=4)
+        self._btn_st = ttk.Button(btn_row_st, text="▶  Run Tile Stitch",
                                   command=self._run_stitch)
-        self._btn_st.grid(row=3, column=0, pady=8, ipadx=20, ipady=4)
+        self._btn_st.pack(side="left", padx=4, ipadx=20, ipady=4)
 
     def _build_stitch_fit(self, parent):
-        self._irf_st = IRFWidget(parent, default="irf_xlsx",
+        self._irf_st = IRFWidget(parent, default="machine_irf",
                                   machine_irf_default=str(_C()["MACHINE_IRF_DEFAULT_PATH"]))
         self._irf_st.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self._irf_st.frame.columnconfigure(1, weight=1)
@@ -4144,7 +4992,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                             value=n).grid(row=0, column=n, sticky="w", padx=4)
 
         self.bv_perpix = tk.BooleanVar(value=False)
-        ttk.Checkbutton(fp, text="Per-pixel fitting (produces lifetime maps; slower)",
+        ttk.Checkbutton(fp, text="Per-pixel fitting [REQUIRED FOR ROI ANALYSIS]",
                         variable=self.bv_perpix,
                         command=self._perpix_toggled).grid(
             row=1, column=0, columnspan=4, sticky="w", **PAD)
@@ -4164,7 +5012,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                         variable=self.bv_save_int_weighted).grid(row=0, column=1, sticky="w", padx=(0, 8))
         ttk.Checkbutton(self._pxf, text="Export amplitude-weighted map",
                         variable=self.bv_save_amp_weighted).grid(row=1, column=0, sticky="w", padx=(0, 8))
-        ttk.Checkbutton(self._pxf, text="Save individual component maps (τ₁, τ₂, a₁, a₂)",
+        ttk.Checkbutton(self._pxf, text="Save individual component maps",
                         variable=self.bv_save_ind).grid(row=1, column=1, sticky="w")
 
         self.sv_tau_lo = tk.StringVar()
@@ -4185,15 +5033,16 @@ Built with Python, Tkinter, NumPy, and SciPy.
         ttk.Entry(self._pxf, textvariable=self.sv_int_hi, width=7).grid(row=3, column=3, padx=4)
         ttk.Label(self._pxf, text="(blank = auto)", foreground="grey").grid(row=3, column=4, padx=4)
 
-        ttk.Label(self._pxf, text="Fit window (ns):").grid(row=4, column=0, sticky="w", pady=2)
+        self._pxf.grid_remove()
+
+        # Fit window — applies to all fitting modes, not just per-pixel
         self.sv_tau_fit_lo = tk.StringVar(value=str(_C()["Tau_min"]))
         self.sv_tau_fit_hi = tk.StringVar(value=str(_C()["Tau_max"]))
-        ttk.Entry(self._pxf, textvariable=self.sv_tau_fit_lo, width=7).grid(row=4, column=1, padx=4)
-        ttk.Label(self._pxf, text="to").grid(row=4, column=2)
-        ttk.Entry(self._pxf, textvariable=self.sv_tau_fit_hi, width=7).grid(row=4, column=3, padx=4)
-        ttk.Label(self._pxf, text="ns  (fitting range)", foreground="grey").grid(row=4, column=4, padx=4)
-
-        self._pxf.grid_remove()
+        ttk.Label(fp, text="Fit window (ns):").grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Entry(fp, textvariable=self.sv_tau_fit_lo, width=7).grid(row=3, column=1, padx=4)
+        ttk.Label(fp, text="to").grid(row=3, column=2)
+        ttk.Entry(fp, textvariable=self.sv_tau_fit_hi, width=7).grid(row=3, column=3, padx=4)
+        ttk.Label(fp, text="ns  (fitting range)", foreground="grey").grid(row=3, column=4, padx=4)
 
         fm = _section(parent, "Masking & Thresholding")
         fm.grid(row=2, column=0, sticky="ew", pady=(0, 6))
@@ -4238,19 +5087,73 @@ Built with Python, Tkinter, NumPy, and SciPy.
                   foreground="grey").grid(row=1, column=1, columnspan=2, sticky="w", padx=4)
         self._tile_extras_frame.grid_remove()
 
+    def _apply_expert_overrides(self, a):
+        """Apply expert settings overrides to an argparse.Namespace."""
+        ex = self._expert_overrides
+        if not ex:
+            return
+        if "optimizer" in ex:
+            a.optimizer = ex["optimizer"]
+        if "de_population" in ex:
+            a.de_population = ex["de_population"]
+        if "de_maxiter" in ex:
+            a.de_maxiter = ex["de_maxiter"]
+        if "lm_restarts" in ex:
+            a.restarts = ex["lm_restarts"]
+        if "binning_factor" in ex:
+            a.binning = ex["binning_factor"]
+        if "n_workers" in ex:
+            a.workers = ex["n_workers"]
+        if "min_photons" in ex:
+            a.min_photons = ex["min_photons"]
+        if "cost_function" in ex:
+            a.cost_function = ex["cost_function"]
+        if "channels" in ex:
+            a.channel = ex["channels"]
+
+    def _open_expert_settings(self):
+        """Open the expert settings dialog and update banners accordingly."""
+        dlg = ExpertSettingsDialog(self.root, self._expert_overrides)
+        self.root.wait_window(dlg)
+        if dlg.result is not None:
+            # Check if all values match defaults → treat as "no overrides"
+            is_default = all(
+                dlg.result.get(k) == v for k, v in _EXPERT_DEFAULTS.items()
+            )
+            if is_default:
+                self._expert_overrides = {}
+            else:
+                self._expert_overrides = dlg.result
+            self._update_expert_banners()
+
+    def _update_expert_banners(self):
+        """Show or hide the expert settings banners on FOV and stitch tabs."""
+        active = bool(self._expert_overrides)
+        for banner in (self._expert_banner_fov, self._expert_banner_st):
+            if active:
+                banner.grid()
+            else:
+                banner.grid_remove()
+
     def _pipeline_changed(self):
         mode = self.sv_pipeline.get()
         if mode == "stitch_only":
             self._fit_frame.grid_remove()
             self._btn_st.configure(text="▶  Run Tile Stitch")
+            self._btn_expert_st.pack_forget()
+            self._expert_banner_st.grid_remove()
         elif mode == "stitch_fit":
             self._fit_frame.grid()
             self._tile_extras_frame.grid_remove()
             self._btn_st.configure(text="▶  Run Stitch + Fit")
+            self._btn_expert_st.pack(side="left", padx=4, before=self._btn_st)
+            self._update_expert_banners()
         else:  # tile_fit
             self._fit_frame.grid()
             self._tile_extras_frame.grid()
             self._btn_st.configure(text="▶  Run Per-Tile Fit")
+            self._btn_expert_st.pack(side="left", padx=4, before=self._btn_st)
+            self._update_expert_banners()
         self._update_form_scrollbar("stitch")
         self.root.after_idle(self._fit_window_to_screen)
 
@@ -4554,9 +5457,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self.run_with_progress(
             task, task_name=f"Batch ROI Fit ({len(xlif_files)} ROIs)", on_done=on_done, output_dir=out_dir)
 
-    # -------------------------------------------------------------------------
+    
     # TAB 4 – Machine IRF Builder
-    # -------------------------------------------------------------------------
+    
     def _build_machine_irf_tab(self):
         outer, tab = self._form_inner_frames["irf"]
         tab.columnconfigure(0, weight=1)
@@ -4630,9 +5533,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         )
         self._btn_mirf.grid(row=3, column=0, pady=8, ipadx=20, ipady=4)
 
-    # -------------------------------------------------------------------------
+    
     # TAB 5 – Phasor
-    # -------------------------------------------------------------------------
+    
     def _build_phasor_tab(self):
         # Get outer and inner frames from tuple
         outer, inner = self._form_inner_frames["phasor"]
@@ -4724,28 +5627,115 @@ Built with Python, Tkinter, NumPy, and SciPy.
             self._ph_new.grid_remove()
             self._ph_sess.grid()
 
-    # -------------------------------------------------------------------------
+    
     # FOV Preview auto-load
-    # -------------------------------------------------------------------------
+    
     def _on_fov_ptu_changed(self, var, index, mode):
-        """Auto-load FOV preview when PTU file is selected."""
         ptu_path = self.sv_ptu.get().strip()
-        
-        # Skip if PTU hasn't actually changed (prevents loop from trace callback)
+        if not ptu_path:
+            return
+
+        # Skip if already loading or if the path hasn't changed
         if ptu_path == self._last_loaded_ptu:
             return
-        
-        self._last_loaded_ptu = ptu_path
-        
-        if ptu_path and hasattr(self, '_fov_preview'):
-            # Defer loading to give the UI a chance to update
-            self.root.after(100, lambda: self._fov_preview.load_fov(ptu_path))
-            # Auto-load session if it exists (restore form + results)
-            self.root.after(150, lambda: self._auto_load_session_for_ptu(ptu_path))
+        if getattr(self, '_loading_ptu', False):
+            return
 
-    # -------------------------------------------------------------------------
+        self._last_loaded_ptu = ptu_path
+        self._loading_ptu = True
+
+        def load():
+            try:
+                self._fov_preview.load_fov(ptu_path)
+                self._auto_load_session_for_ptu(ptu_path)
+            finally:
+                self._loading_ptu = False
+
+        if self._ptu_after_id is not None:
+            self.root.after_cancel(self._ptu_after_id)
+        self._ptu_after_id = self.root.after(100, load)
+
+    def _cancel_pending_scan_loads(self):
+        """Cancel any pending after() callbacks from trace-driven scan loads."""
+        if self._ptu_after_id is not None:
+            self.root.after_cancel(self._ptu_after_id)
+            self._ptu_after_id = None
+        if self._xlif_after_id is not None:
+            self.root.after_cancel(self._xlif_after_id)
+            self._xlif_after_id = None
+        self._loading_ptu = False
+        self._loading_xlif = False
+
+    def _on_xlif_changed(self, var, index, mode):
+        """Auto-load stitched preview and session when XLIF file is selected."""
+        xlif_path = self.sv_xlif.get().strip()
+        if not xlif_path:
+            return
+
+        # Prevent duplicate loads
+        if xlif_path == self._last_loaded_xlif:
+            return
+        if getattr(self, '_loading_xlif', False):
+            return
+
+        self._last_loaded_xlif = xlif_path
+        self._loading_xlif = True
+
+        # Find the corresponding ScanRecord in the project
+        stem = Path(xlif_path).stem
+        output_dir = None
+        session_file = None
+
+        if hasattr(self, '_proj_browser') and self._proj_browser._project:
+            rec = self._proj_browser._project.scans.get(stem)
+            if rec and rec.out_st:
+                # rec.out_st can be either:
+                #   - Base output dir (e.g. /project/output) → append stem to get ROI dir
+                #   - ROI-specific dir (e.g. /project/output/A_Control) → use as-is
+                # Check if the path already ends with the stem to handle both cases
+                out_path = Path(rec.out_st)
+                roi_name = stem.replace(" ", "_")
+                if out_path.name == roi_name:
+                    # Already the ROI-specific dir
+                    output_dir = str(out_path)
+                else:
+                    # Just the base dir, append stem
+                    output_dir = str(out_path / roi_name)
+                session_file = Path(output_dir) / "roi_session.npz"
+                if not session_file.exists():
+                    # Session might be missing, but output_dir is still correct for preview
+                    session_file = None
+
+        # Fallback to UI fields if project record not available
+        if output_dir is None:
+            ptu_dir = self.sv_ptu_dir.get().strip()
+            out_base = self.sv_out_st.get().strip()
+            if ptu_dir and out_base:
+                roi_name = stem.replace(" ", "_")
+                output_dir = str(Path(out_base) / roi_name)
+
+        if output_dir is None:
+            self._loading_xlif = False
+            return  # Not enough info
+
+        # Cancel any previous pending XLIF load
+        if self._xlif_after_id is not None:
+            self.root.after_cancel(self._xlif_after_id)
+
+        # Load stitched preview and session in a single deferred callback
+        _sf = session_file  # capture for closure
+        def _do_xlif_load():
+            try:
+                self._fov_preview.load_stitched_roi(output_dir)
+                if _sf and _sf.exists():
+                    self._auto_load_session_for_stitch(output_dir)
+            finally:
+                self._loading_xlif = False
+
+        self._xlif_after_id = self.root.after(100, _do_xlif_load)
+    
     # Run handlers
-    # -------------------------------------------------------------------------
+    
     def _run_fov(self):
         ptu = self.sv_ptu.get().strip()
         if not ptu or not Path(ptu).exists():
@@ -4794,6 +5784,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         a.no_plots      = False
         a.cell_mask     = self.bv_cell.get()
         a.intensity_threshold = _thresh(self.bv_thr_fov, self.sv_thr_fov)
+
+        # Apply expert overrides (if any)
+        self._apply_expert_overrides(a)
 
         out_dir = str(Path(a.out).parent)
         self._launch(
@@ -4861,6 +5854,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         a.save_tau_weighted      = self.bv_save_tau_weighted.get()
         a.save_int_weighted      = self.bv_save_int_weighted.get()
         a.save_amp_weighted      = self.bv_save_amp_weighted.get()
+
+        # Apply expert overrides (if any)
+        self._apply_expert_overrides(a)
 
         if pipeline == "tile_fit":
             # Per-tile: each tile gets its own fit; per-pixel forced; no per-tile plots
@@ -4938,9 +5934,14 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     if hasattr(self, '_proj_browser'):
                         xlif_stem = Path(a.xlif).stem if hasattr(a, 'xlif') else None
                         if xlif_stem:
+                            # a.output_dir is the roi-specific dir  (e.g. /project/output/R_2).
+                            # ScanRecord.session_path appends roi_clean to out_st, so we must
+                            # store the PARENT (base output dir) here, not the roi-specific dir.
+                            # Storing the roi-specific dir causes double-nesting and makes
+                            # has_session always False, keeping the indicator stuck at ○.
                             self._proj_browser.on_fit_done(
                                 xlif_stem,
-                                out_st   = getattr(a, 'output_dir', None),
+                                out_st   = str(Path(a.output_dir).parent),
                                 ptu_dir  = getattr(a, 'ptu_dir',    None),
                             )
                 except Exception as e:
@@ -5165,7 +6166,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
             if len(above) > 1:
                 fwhm_ns = (above[-1] - above[0]) * tcspc_ns
                 ax.axhline(half_max, color="#ff9900", linewidth=1,
-                           linestyle="--", alpha=0.7, label=f"FWHM={fwhm_ns*1000:.0f} ps")
+                           linestyle="", alpha=0.7, label=f"FWHM={fwhm_ns*1000:.0f} ps")
                 ax.axvspan(above[0]*tcspc_ns, above[-1]*tcspc_ns,
                            alpha=0.12, color="#ff9900")
             ax.legend(fontsize=8, facecolor="#2a2a2a", edgecolor="#555", labelcolor="white")
@@ -5396,9 +6397,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
             btn.configure(state=state)
 
 
-# -----------------------------------------------------------------------------
+
 # Themed version (uses TKinterModernThemes)
-# -----------------------------------------------------------------------------
+
 if HAS_TKMT:
     class FLIMKitGUIThemed(TKMT.ThemedTKinterFrame, _UIBuilder):
         def __init__(self, theme="sun-valley", mode="dark"):
@@ -5407,11 +6408,13 @@ if HAS_TKMT:
             self.root = self.master
             self.root.minsize(760, 700)
             self._init_ui()
-            self.run()
+            # Skip TKMT's makeResizable — it sets weight=1 on every row,
+            # overriding our weight=0 on the toolbar/separator rows.
+            self.run(cleanresize=False)
 
-# -----------------------------------------------------------------------------
+
 # Fallback version (plain Tk, optional drag‑and‑drop)
-# -----------------------------------------------------------------------------
+
 class FLIMKitGUIFallback(_UIBuilder):
     def __init__(self, root):
         self.root = root
@@ -5421,9 +6424,9 @@ class FLIMKitGUIFallback(_UIBuilder):
         self.root.mainloop()
 
 
-# -----------------------------------------------------------------------------
+
 # Entry point – choose themed or fallback
-# -----------------------------------------------------------------------------
+
 def launch_gui():
     global GUI_MODE
     GUI_MODE = True

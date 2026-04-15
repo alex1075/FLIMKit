@@ -172,6 +172,8 @@ class ProjectBrowserPanel:
 
     def _on_select(self, _event=None):
         """Handle a Listbox click: populate the app form and load any session."""
+        if getattr(self, '_selecting', False):
+            return
         sel = self._lb.curselection()
         if not sel or self._project is None:
             return
@@ -179,27 +181,66 @@ class ProjectBrowserPanel:
         rec  = self._project.scans.get(stem)
         if rec is None:
             return
-        self._load_scan(rec)
+        self._selecting = True
+        try:
+            self._load_scan(rec)
+        finally:
+            self._selecting = False
 
     def _load_scan(self, rec: "ScanRecord"):
         app = self._app
 
+        # Cancel any pending after() loads from previous scan selection
+        if hasattr(app, '_cancel_pending_scan_loads'):
+            app._cancel_pending_scan_loads()
+
+        # Clear ROIs from the previous scan so they don't bleed into the new one
+        if hasattr(app, '_fov_preview'):
+            app._fov_preview._roi_manager.clear_all()
+            app._fov_preview._roi_patches.clear()
+            app._fov_preview._redraw_region_overlays()
+        for panel in (getattr(app, '_roi_analysis_panel', None),
+                      getattr(app, '_stitch_roi_panel', None)):
+            if panel is not None:
+                panel._refresh_region_list()
+
         if rec.scan_type == "fov":
             #  Single FOV ─
             app._switch_form("fov")
-            # Set PTU path (triggers preview + existing _auto_load_session_for_ptu)
+            
+            # Set guard flag BEFORE sv_ptu.set() to prevent auto-load trace from firing
+            # (we'll load the session explicitly below instead)
+            if hasattr(app, '_last_loaded_ptu'):
+                app._last_loaded_ptu = rec.source_path
+            
+            # Set PTU path (triggers preview, but auto-load trace will return early)
             app.sv_ptu.set(rec.source_path)
-            # Override output prefix if the project has a remembered value
-            prefix = self._project.default_output_prefix(rec.stem) if self._project else "flim_out"
+            # Auto-populate XLSX if a paired file exists
+            if rec.xlsx_path and hasattr(app, "sv_xlsx"):
+                app.sv_xlsx.set(rec.xlsx_path)
+            # If no XLSX, default to Machine IRF; otherwise default to Leica analytical
+            if hasattr(app, "_irf_fov"):
+                if rec.xlsx_path:
+                    app._irf_fov.sv_method.set("irf_xlsx")
+                else:
+                    app._irf_fov.sv_method.set("machine_irf")
+            # Auto-populate output prefix with PTU base name
             if hasattr(app, "sv_out_fov"):
-                app.sv_out_fov.set(prefix)
-            # The existing _auto_load_session_for_ptu trace fires via sv_ptu.set().
-            # That looks for {ptu_parent}/{stem}.roi_session.npz — exactly where
-            # the FOV pipeline saves it, so nothing extra is needed here.
+                app.sv_out_fov.set(rec.stem)
+            
+            # If a session exists, restore it using the File > Restore NPZ pathway (suppress popups for project tree)
+            if rec.session_path and hasattr(app, "_load_fitted_data_from_file"):
+                app._load_fitted_data_from_file(str(rec.session_path), suppress_popups=True)
 
         else:
             #  XLIF / Tile scan 
             app._switch_form("stitch")
+
+            # Set guard flag BEFORE sv_xlif.set() to prevent auto-load trace from firing
+            # (we'll load the session explicitly below instead)
+            if hasattr(app, '_last_loaded_xlif'):
+                app._last_loaded_xlif = rec.source_path
+
             app.sv_xlif.set(rec.source_path)
 
             if rec.ptu_dir and hasattr(app, "sv_ptu_dir"):
@@ -209,13 +250,6 @@ class ProjectBrowserPanel:
             if hasattr(app, "sv_out_st"):
                 app.sv_out_st.set(out_st)
 
-            # Attempt to restore session if one exists
-            session = rec.session_path
-            if session and hasattr(app, "_load_roi_session"):
-                try:
-                    print(f"[Project] Auto-loading session: {session.name}")
-                    session_data = app._load_roi_session(str(session))
-                    if session_data and hasattr(app, "_restore_session_to_ui"):
-                        app._restore_session_to_ui(session_data, ptu_or_dir=str(session.parent))
-                except Exception as exc:
-                    print(f"[Project] Could not restore session: {exc}")
+            # If a session exists, restore it using the File > Restore NPZ pathway (suppress popups for project tree)
+            if rec.session_path and hasattr(app, "_load_fitted_data_from_file"):
+                app._load_fitted_data_from_file(str(rec.session_path), suppress_popups=True)

@@ -21,9 +21,10 @@ class ScanRecord:
     stem:          str
     scan_type:     str            # "fov" | "xlif"
     source_path:   str            # absolute path to .ptu or .xlif
-    ptu_dir:       Optional[str]  # absolute path to .sptw folder (XLIF only)
-    out_st:        Optional[str]  # base output dir last used (XLIF only)
-    output_prefix: Optional[str]  # sv_out_fov prefix last used (FOV only)
+    ptu_dir:       Optional[str] = None  # absolute path to .sptw folder (XLIF only)
+    out_st:        Optional[str] = None  # base output dir last used (XLIF only)
+    output_prefix: Optional[str] = None  # sv_out_fov prefix last used (FOV only)
+    xlsx_path:     Optional[str] = None  # paired .xlsx file path (FOV only, e.g. file.ptu -> file.xlsx)
 
     #  derived helpers 
 
@@ -111,18 +112,24 @@ class ProjectFile:
         """
         Walk project_dir (one level only) for .ptu and .xlif files.
         Adds new scans; leaves existing records untouched.
+        For each PTU found, also checks for a paired .xlsx with the same name.
         """
         for ptu in sorted(self.project_dir.glob("*.ptu")):
             if ptu.name.startswith("._"):
                 continue
             if ptu.stem not in self.scans:
+                # Check for paired .xlsx file (same name, different extension)
+                xlsx_file = self.project_dir / f"{ptu.stem}.xlsx"
+                xlsx_path = str(xlsx_file) if xlsx_file.exists() and not xlsx_file.name.startswith("._") else None
+                
                 self.scans[ptu.stem] = ScanRecord(
                     stem          = ptu.stem,
                     scan_type     = "fov",
                     source_path   = str(ptu),
                     ptu_dir       = None,
                     out_st        = None,
-                    output_prefix = "flim_out",
+                    output_prefix = None,
+                    xlsx_path     = xlsx_path,
                 )
 
         for xlif in sorted(self.project_dir.glob("*.xlif")):
@@ -137,6 +144,7 @@ class ProjectFile:
                     ptu_dir       = str(ptu_dir) if ptu_dir else None,
                     out_st        = str(self.output_base),
                     output_prefix = None,
+                    xlsx_path     = None,
                 )
 
     def _find_sptw(self, xlif: Path) -> Optional[Path]:
@@ -194,11 +202,11 @@ class ProjectFile:
         return str(self.output_base)
 
     def default_output_prefix(self, stem: str) -> str:
-        """Return the output prefix for a FOV scan."""
+        """Return the output prefix for a FOV scan (defaults to PTU base name)."""
         rec = self.scans.get(stem)
         if rec and rec.output_prefix:
             return rec.output_prefix
-        return "flim_out"
+        return stem
 
     def sorted_scans(self):
         """Yield (stem, ScanRecord) sorted alphabetically."""
