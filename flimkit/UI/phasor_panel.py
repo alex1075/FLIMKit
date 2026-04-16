@@ -45,6 +45,7 @@ class PhasorViewPanel:
 
     def __init__(self, parent, max_cursors: int = 6):
         self.max_cursors = max_cursors
+        self.on_change = None   # optional callback(panel) after cursor/param changes
 
 
         self._real:  Optional[np.ndarray] = None
@@ -407,6 +408,7 @@ class PhasorViewPanel:
 
         self._redraw_cursors()
         self._analyse()
+        self._notify_change()
         self._status_var.set(
             f"{len(self._cursors)} cursor(s)  |  "
             f"G={event.xdata:.4f}  S={event.ydata:.4f}")
@@ -418,6 +420,7 @@ class PhasorViewPanel:
         self._redraw_phasor()          # also clears cursor artists
         self._redraw_image(masks=None)
         self._canvas.draw_idle()
+        self._notify_change()
         self._status_var.set("Cleared.  Click phasor to place cursors.")
 
     def _on_undo(self):
@@ -427,8 +430,17 @@ class PhasorViewPanel:
         self._redraw_phasor()
         self._redraw_cursors()
         self._analyse()
+        self._notify_change()
         self._status_var.set(
             f"{len(self._cursors)} cursor(s)  |  last cursor removed.")
+
+    def _notify_change(self):
+        """Fire the optional on_change callback after cursor/param edits."""
+        if self.on_change is not None:
+            try:
+                self.on_change(self)
+            except Exception as e:
+                print(f"[PhasorViewPanel] on_change callback error: {e}")
 
     def _on_param_change(self):
         """Radius / ratio slider changed — recompute immediately if cursors exist."""
@@ -436,6 +448,7 @@ class PhasorViewPanel:
             self._redraw_phasor()
             self._redraw_cursors()
             self._analyse()
+            self._notify_change()
 
     def _on_save(self):
         if self._real is None:

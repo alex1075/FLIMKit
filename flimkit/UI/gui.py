@@ -3050,6 +3050,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
         # Phasor panel shares the same right-panel cell; hidden until needed.
         self._phasor_panel = PhasorViewPanel(preview_frame, max_cursors=6)
+        self._phasor_panel.on_change = self._on_phasor_change
         self._phasor_panel.frame.grid(row=0, column=0, sticky="nsew")
         self._phasor_panel.frame.grid_remove()
         self._preview_frame_label = preview_frame
@@ -6057,6 +6058,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     display_image=result.get('display_image'),
                     min_photons=min_ph,
                 )
+                # Auto-save phasor session next to the PTU file
+                self._auto_save_phasor(ptu)
                 self._res.set_status(
                     "✓  Phasor data loaded — click the phasor to place cursors.")
 
@@ -6086,6 +6089,56 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
+
+    def _auto_save_phasor(self, ptu_path: str):
+        """Auto-save phasor session next to the PTU file as {stem}_phasor.npz."""
+        try:
+            sd = self._phasor_panel.get_session_dict()
+            if sd.get('real_cal') is None:
+                return
+            p = Path(ptu_path)
+            save_path = str(p.parent / f"{p.stem}_phasor.npz")
+            from flimkit.phasor_launcher import save_session
+            save_session(
+                save_path,
+                real_cal=sd['real_cal'],
+                imag_cal=sd['imag_cal'],
+                mean=sd['mean'],
+                frequency=sd['frequency'],
+                cursors=sd['cursors'],
+                params=sd['params'],
+                ptu_file=ptu_path,
+                display_image=sd.get('display_image'),
+            )
+            print(f"[Phasor] Auto-saved session → {save_path}")
+            # Notify project browser
+            if hasattr(self, '_proj_browser'):
+                self._proj_browser.on_phasor_done(p.stem)
+        except Exception as e:
+            print(f"[Phasor] Auto-save failed: {e}")
+
+    def _on_phasor_change(self, panel):
+        """Called when the user modifies cursors / params on the phasor panel."""
+        ptu = self.sv_ph_ptu.get().strip() if hasattr(self, 'sv_ph_ptu') else ""
+        if ptu and Path(ptu).exists():
+            self._auto_save_phasor(ptu)
+
+    def _restore_phasor_session(self, npz_path: str):
+        """Load a phasor .npz session into the phasor panel."""
+        try:
+            min_ph = float(self.sv_ph_minph.get() or 0.01)
+        except ValueError:
+            min_ph = 0.01
+        def _worker():
+            from flimkit.phasor_launcher import load_session
+            return load_session(npz_path)
+        def _done(result):
+            if isinstance(result, Exception):
+                print(f"[Phasor] Could not restore session: {result}")
+                return
+            self._phasor_panel.load_session(result, min_photons=min_ph)
+            self._res.set_status("✓  Phasor session restored.")
+        self._phasor_thread(_worker, _done, status="⏳  Restoring phasor session…")
 
     def _run_build_machine_irf(self):
         src_dir = self.sv_mirf_src.get().strip()

@@ -1,35 +1,45 @@
 # FLIMKit Development Roadmap
 
-**Last Updated:** April 9, 2026
+**Last Updated:** April 16, 2026
 
-## High Priority
+## High Priority - To Do
 
-### 1. Undo/Redo System
-Take back region edits without losing everything. Ctrl+Z & Ctrl+Shift+Z, with visual button states.
+### 1. Config File Management
+YAML/JSON settings that persist. UI panel to edit colors, default tools, output dirs. Per-project overrides + reset option. (Infrastructure exists; needs persistence layer)
 
-### 2. Project Tree View
-Left sidebar browser for multi-PTU scans. Shows .ptu files only (hides duplicate .npy), quick switching between scans.
+### 2. Automatic Error Log Exporter
+On crash: timestamped logs with system info, app version, and what you were doing. Export for debugging. (Basic logging exists; needs crash handler integration)
 
-### 3. Config File Management
-YAML/JSON settings that persist. UI panel to edit colors, default tools, output dirs. Per-project overrides + reset option.
+### 3. Filter by Stats
+UI controls to filter/select regions by tau, photon count, and other statistics. Display filtered results.
 
-### 4. Automatic Error Log Exporter
-On crash: timestamped logs with system info, app version, and what you were doing. Export for debugging.
+### 4. Stat Histograms
+Histogram visualization for ROI statistical distributions (tau, photon counts, etc.).
 
-## Medium Priority
+## Medium Priority - To Do
 
-Batch FOV analysis • Filter by stats • Stat histograms • Auto-detect regions • Tested full IRF support • Keyboard shortcuts • Better error messages
+### 1. Auto-Detect Regions
+Automatic boundary detection for regions of interest based on intensity or lifetime gradients.
 
-## Completed
+## Completed 
 
-Region drawing (4 tools) • Per-region stats (tau, photon counts) • CSV/GeoJSON export-import • Progress bars • Auto-save to NPZ • Multi-panel UI
+**High Priority:**
+- Undo/Redo System (Ctrl+Z & Ctrl+Shift+Z with menu & button states)
+- Project Tree View (Left sidebar browser for multi-PTU scans)
 
-## Quick Notes
+**Medium Priority:**
+- Batch FOV analysis
+- Tested full IRF support (6 methods: Leica XLSX, Machine IRF, Scatter PTU, Estimate raw, Estimate parametric, Gaussian)
+- Keyboard shortcuts (Undo/redo, zoom, menu accelerators)
+- Better error messages (Extensive throughout codebase)
 
-- **Undo/Redo:** next in line
-- **Project Tree:** QOL improvement for multi-file scanning workflows
-- **Config:** Keeps settings flexible outside of code defaults
-- **Error Logs:** Peace of mind + easier debugging
+**Core Features:**
+- Region drawing (4 tools: rectangle, ellipse, polygon, freehand)
+- Per-region stats (tau, photon counts)
+- CSV/GeoJSON export-import
+- Progress bars
+- Auto-save to NPZ
+- Multi-panel UI
 
 
 ## Known issues

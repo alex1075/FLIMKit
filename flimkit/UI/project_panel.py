@@ -13,8 +13,10 @@ if TYPE_CHECKING:
 
 #  visual constants 
 
-_ICON_SESSION  = "●"   # scan has a saved session
-_ICON_NOSESSION = "○"  # no session yet
+_ICON_FIT_ONLY    = "●"   # fit session only
+_ICON_PHASOR_ONLY = "◐"   # phasor session only
+_ICON_BOTH        = "◉"   # both fit + phasor
+_ICON_NOSESSION   = "○"   # no session yet
 _ICON_FOV  = "F"
 _ICON_XLIF = "T"       # T for Tiled
 
@@ -124,6 +126,14 @@ class ProjectBrowserPanel:
         self._project.save()
         self._refresh()
 
+    def on_phasor_done(self, stem: str):
+        """Call after a phasor session is auto-saved to refresh indicators."""
+        if self._project is None:
+            return
+        self._project.update_after_phasor(stem)
+        self._project.save()
+        self._refresh()
+
     #  private helpers 
 
     def _setup_dnd(self):
@@ -156,15 +166,25 @@ class ProjectBrowserPanel:
         self._stems.clear()
 
         for stem, rec in self._project.sorted_scans():
-            session_dot = _ICON_SESSION if rec.has_session else _ICON_NOSESSION
+            has_fit = rec.has_session
+            has_ph  = rec.has_phasor_session
+            if has_fit and has_ph:
+                session_dot = _ICON_BOTH
+            elif has_fit:
+                session_dot = _ICON_FIT_ONLY
+            elif has_ph:
+                session_dot = _ICON_PHASOR_ONLY
+            else:
+                session_dot = _ICON_NOSESSION
             type_tag    = _ICON_XLIF if rec.scan_type == "xlif" else _ICON_FOV
-            # Format: "● F my_fov_name"  or  "○ T R 2"
+            # Format: "◉ F my_fov_name"  or  "○ T R 2"
             label = f"{session_dot} {type_tag} {stem}"
             self._lb.insert(tk.END, label)
             self._stems.append(stem)
 
         n = len(self._stems)
-        n_sess = sum(1 for r in self._project.scans.values() if r.has_session)
+        n_sess = sum(1 for r in self._project.scans.values()
+                     if r.has_session or r.has_phasor_session)
         folder_name = self._project.project_dir.name
         self._sv_status.set(
             f"{folder_name}  |  {n} scan{'s' if n != 1 else ''}  |  {n_sess} saved"
@@ -205,8 +225,15 @@ class ProjectBrowserPanel:
                 panel._refresh_region_list()
 
         if rec.scan_type == "fov":
-            #  Single FOV ─
-            app._switch_form("fov")
+            #  Single FOV ──────────────────────────────────
+            # Determine which mode the user is in
+            current_form = getattr(app, '_current_form', 'fov')
+            want_phasor = (current_form == "phasor")
+
+            if want_phasor:
+                app._switch_form("phasor")
+            else:
+                app._switch_form("fov")
             
             # Set guard flag BEFORE sv_ptu.set() to prevent auto-load trace from firing
             # (we'll load the session explicitly below instead)
@@ -228,9 +255,16 @@ class ProjectBrowserPanel:
             if hasattr(app, "sv_out_fov"):
                 app.sv_out_fov.set(rec.stem)
             
-            # If a session exists, restore it using the File > Restore NPZ pathway (suppress popups for project tree)
-            if rec.session_path and hasattr(app, "_load_fitted_data_from_file"):
-                app._load_fitted_data_from_file(str(rec.session_path), suppress_popups=True)
+            if want_phasor:
+                # Populate phasor PTU field and auto-restore phasor session
+                if hasattr(app, 'sv_ph_ptu'):
+                    app.sv_ph_ptu.set(rec.source_path)
+                if rec.phasor_session_path and hasattr(app, '_restore_phasor_session'):
+                    app._restore_phasor_session(str(rec.phasor_session_path))
+            else:
+                # Restore fit session if available
+                if rec.session_path and hasattr(app, "_load_fitted_data_from_file"):
+                    app._load_fitted_data_from_file(str(rec.session_path), suppress_popups=True)
 
         else:
             #  XLIF / Tile scan 

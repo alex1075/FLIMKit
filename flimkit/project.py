@@ -35,7 +35,7 @@ class ScanRecord:
 
     @property
     def session_path(self) -> Optional[Path]:
-        """Return the session .npz path if it exists, else None."""
+        """Return the fit session .npz path if it exists, else None."""
         if self.scan_type == "fov":
             p = Path(self.source_path)
             candidate = p.parent / f"{p.stem}.roi_session.npz"
@@ -46,8 +46,21 @@ class ScanRecord:
         return candidate if candidate.exists() else None
 
     @property
+    def phasor_session_path(self) -> Optional[Path]:
+        """Return the phasor session .npz path if it exists, else None."""
+        if self.scan_type != "fov":
+            return None
+        p = Path(self.source_path)
+        candidate = p.parent / f"{p.stem}_phasor.npz"
+        return candidate if candidate.exists() else None
+
+    @property
     def has_session(self) -> bool:
         return self.session_path is not None
+
+    @property
+    def has_phasor_session(self) -> bool:
+        return self.phasor_session_path is not None
 
 
 class ProjectFile:
@@ -188,6 +201,10 @@ class ProjectFile:
             rec.output_prefix = output_prefix
         if ptu_dir is not None:
             rec.ptu_dir = ptu_dir
+
+    def update_after_phasor(self, stem: str):
+        """No-op placeholder — phasor sessions are discovered by file convention."""
+        pass
 
     #  convenience
 
