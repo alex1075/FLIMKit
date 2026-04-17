@@ -149,6 +149,10 @@ class ProjectBrowserPanel:
         from flimkit.project import ProjectFile
         self._project = ProjectFile.load_or_create(Path(folder))
         self._project.save()   # write project.json immediately
+        # Apply per-project config overrides
+        if self._project.config:
+            from flimkit.utils.config_manager import cfg
+            cfg.load_project_overrides(self._project.config)
         self._refresh()
 
     def _open_project(self):
@@ -156,6 +160,8 @@ class ProjectBrowserPanel:
         if not folder:
             return
         self.load_folder(folder)
+        if hasattr(self._app, '_add_to_recent'):
+            self._app._add_to_recent(folder, "project")
 
     def _refresh(self):
         """Rebuild the listbox from the current project."""
@@ -242,6 +248,10 @@ class ProjectBrowserPanel:
             
             # Set PTU path (triggers preview, but auto-load trace will return early)
             app.sv_ptu.set(rec.source_path)
+
+            # Always load the FOV intensity preview from the project panel
+            if hasattr(app, '_fov_preview'):
+                app._fov_preview.load_fov(rec.source_path)
             # Auto-populate XLSX if a paired file exists
             if rec.xlsx_path and hasattr(app, "sv_xlsx"):
                 app.sv_xlsx.set(rec.xlsx_path)

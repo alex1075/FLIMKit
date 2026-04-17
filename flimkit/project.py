@@ -83,6 +83,7 @@ class ProjectFile:
         self.project_dir: Path = Path(project_dir).resolve()
         self.output_base: Path = self.project_dir / DEFAULT_OUTPUT_SUBDIR
         self.scans: Dict[str, ScanRecord] = {}
+        self.config: Dict = {}  # per-project config overrides
 
     # persistence
 
@@ -103,6 +104,7 @@ class ProjectFile:
                     pf.output_base = Path(ob)
                 for stem, rec_dict in data.get("scans", {}).items():
                     pf.scans[stem] = ScanRecord(**rec_dict)
+                pf.config = data.get("config", {})
             except Exception as exc:
                 # Corrupted project.json — start fresh, log the error
                 print(f"[Project] Warning: could not read {json_path.name}: {exc}")
@@ -116,6 +118,8 @@ class ProjectFile:
             "output_base": str(self.output_base),
             "scans": {stem: asdict(rec) for stem, rec in self.scans.items()},
         }
+        if self.config:
+            payload["config"] = self.config
         with open(self.project_dir / PROJECT_FILENAME, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, ensure_ascii=False)
 

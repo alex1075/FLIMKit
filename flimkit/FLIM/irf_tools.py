@@ -438,14 +438,12 @@ def reconstruct_irf_from_decay(decay: np.ndarray,
         cut_idx = next_idx
         prev_val = next_val
 
-    # Place IRF counts on the full grid with −1 bin shift
-    # The −1 bin shift maps the convention that the IRF peak sits 0.5 bins
-    # before the decay peak.
+    # Place IRF counts on the full grid — no pre-shift.
+    # Let the fitter's shift parameter handle all IRF alignment.
     irf_full = np.zeros(n_bins, dtype=float)
     for src in range(start_idx, cut_idx + 1):
-        dst = src - 1          # −0.5 bin → nearest-integer bin shift
-        if 0 <= dst < n_bins:
-            irf_full[dst] = decay[src]
+        if 0 <= src < n_bins:
+            irf_full[src] = decay[src]
 
     total = irf_full.sum()
     if total == 0:
@@ -459,10 +457,10 @@ def reconstruct_irf_from_decay(decay: np.ndarray,
         above = np.where(irf_norm >= irf_norm.max() / 2)[0]
         fwhm = (above[-1] - above[0]) * tcspc_ns if len(above) > 1 else tcspc_ns
         print(f"  IRF reconstructed from decay rising edge:")
-        print(f"    Peak bin (decay)  = {peak_idx}  →  IRF peak bin = {peak_idx - 1}")
+        print(f"    Peak bin (decay)  = {peak_idx}  →  IRF peak bin = {peak_idx}")
         print(f"    Rising edge       = {n_rising} bins")
         print(f"    Bins after peak   = {bap}")
-        print(f"    IRF extent        = bins {start_idx - 1}..{cut_idx - 1}  "
+        print(f"    IRF extent        = bins {start_idx}..{cut_idx}  "
               f"({cut_idx - start_idx + 1} bins)")
         print(f"    FWHM (grid)       = {fwhm * 1000:.1f} ps")
 

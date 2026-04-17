@@ -135,9 +135,19 @@ def plot_lifetime_histogram(maps, n_exp, out_prefix):
     ok  = np.isfinite(tau) & (wt > 0)
     if ok.sum() < 2:
         return
-    mu_w = np.average(tau[ok], weights=wt[ok])
+    tau_ok = tau[ok]
+    data_range = float(tau_ok.max() - tau_ok.min())
+    # Skip histogram if range is too narrow to bin meaningfully
+    if data_range < 1e-12:
+        print(f"  Skipping lifetime histogram — τ range too narrow ({tau_ok[0]:.4f} ns)")
+        return
+    mu_w = np.average(tau_ok, weights=wt[ok])
+    n_bins = min(100, max(2, int(np.sqrt(ok.sum()))))
+    # Clamp bins so each bin spans at least ~1e-12
+    max_bins = max(1, int(data_range / 1e-12))
+    n_bins = min(n_bins, max_bins)
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(tau[ok], bins=100, weights=wt[ok], color="#2a9d8f", alpha=0.85)
+    ax.hist(tau_ok, bins=n_bins, weights=wt[ok], color="#2a9d8f", alpha=0.85)
     ax.axvline(mu_w, color="red", ls="--", lw=1.5,
                label=f"Weighted mean = {mu_w:.3f} ns")
     ax.set_xlabel("τ_mean (intensity-weighted) [ns]")

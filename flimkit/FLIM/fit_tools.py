@@ -100,8 +100,8 @@ def _build_bounds(n_exp, tau_min, tau_max, decay_peak,
     Build lower/upper bound lists matching the parameter vector layout
     in reconvolution_model.
     """
-    lo = [tau_min] * n_exp + [0.0] * n_exp + [-2.0]   # τ, α, shift (±2 bins)
-    hi = [tau_max] * n_exp + [10 * decay_peak] * n_exp + [2.0]
+    lo = [tau_min] * n_exp + [0.0] * n_exp + [-5.0]   # τ, α, shift (±5 bins)
+    hi = [tau_max] * n_exp + [10 * decay_peak] * n_exp + [5.0]
 
     if fit_sigma:
         lo += [0.0];  hi += [3.0]

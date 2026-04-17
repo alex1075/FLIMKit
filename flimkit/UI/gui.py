@@ -165,10 +165,11 @@ def _parse_summary(captured_log: str) -> list:
 class _Redirect:
     """Redirect stdout/stderr to ScrolledText; batches updates for performance (thread-safe)."""
 
-    def __init__(self, widget: scrolledtext.ScrolledText, buf: list, root=None):
+    def __init__(self, widget: scrolledtext.ScrolledText, buf: list, root=None, is_stderr=False):
         self.widget = widget
         self.buf    = buf
         self.root   = root  # For thread-safe GUI updates
+        self._is_stderr = is_stderr
         self._batch = []  # Accumulate text before writing
         self._batch_size = 5000  # characters, or time-based flush
         self._last_flush = time.time()
@@ -179,6 +180,14 @@ class _Redirect:
             return
         self.buf.append(text)
         self._batch.append(text)
+
+        # Forward stderr content to crash handler log
+        if self._is_stderr:
+            try:
+                from flimkit.utils.crash_handler import log_event
+                log_event(f"STDERR: {text.rstrip()}", level="warning")
+            except Exception:
+                pass
         
         # Flush if batch is large or timeout elapsed
         should_flush = False
@@ -732,10 +741,10 @@ class FOVPreviewPanel:
         for _ax in (self._ax_img, self._ax_flim):
             _ax.set_facecolor('black')
         self._ax_decay.set_facecolor('white')
-        self._ax_decay.tick_params(colors='black')
-        self._ax_decay.xaxis.label.set_color('black')
-        self._ax_decay.yaxis.label.set_color('black')
-        self._ax_decay.title.set_color('black')
+        self._ax_decay.tick_params(colors='white')
+        self._ax_decay.xaxis.label.set_color('white')
+        self._ax_decay.yaxis.label.set_color('white')
+        self._ax_decay.title.set_color('white')
         self._strip_image_axes(self._ax_img)
         self._strip_image_axes(self._ax_flim)
         
@@ -873,11 +882,11 @@ class FOVPreviewPanel:
             self._ax_decay.clear()
             self._ax_decay.set_facecolor('white')
             self._ax_decay.semilogy(time_ns, decay, color="steelblue", linewidth=1.5)
-            self._ax_decay.set_title("Summed Decay", fontsize=10, fontweight="bold", color='black')
-            self._ax_decay.set_xlabel("Time (ns)", color='black')
-            self._ax_decay.set_ylabel("Photon Count", color='black')
+            self._ax_decay.set_title("Summed Decay", fontsize=10, fontweight="bold", color='white')
+            self._ax_decay.set_xlabel("Time (ns)", color='white')
+            self._ax_decay.set_ylabel("Photon Count", color='white')
             self._ax_decay.grid(True, alpha=0.3)
-            self._ax_decay.tick_params(labelsize=8, colors='black')
+            self._ax_decay.tick_params(labelsize=8, colors='white')
 
             # FIX 1: preserve drawn regions after PTU reload
             self._redraw_region_overlays()
@@ -1125,13 +1134,13 @@ class FOVPreviewPanel:
                     print(f"  - No global_popt ({global_popt is not None}) or nexp<=0 ({nexp}) for model")
             
             self._ax_decay.set_title(f"Summed Decay{f' ({nexp}-exp fit)' if nexp > 0 else ''}", 
-                                    fontsize=10, fontweight="bold", color='black')
-            self._ax_decay.set_xlabel("Time (ns)", color='black')
-            self._ax_decay.set_ylabel("Photon Count", color='black')
+                                    fontsize=10, fontweight="bold", color='white')
+            self._ax_decay.set_xlabel("Time (ns)", color='white')
+            self._ax_decay.set_ylabel("Photon Count", color='white')
             if decay is not None and len(decay) > 0:
-                self._ax_decay.legend(fontsize=8, loc="upper right")
+                self._ax_decay.legend(fontsize=8, loc="upper right", labelcolor='black')
             self._ax_decay.grid(True, alpha=0.3)
-            self._ax_decay.tick_params(labelsize=8, colors='black')
+            self._ax_decay.tick_params(labelsize=8, colors='white')
 
             # Show control frame now that we have FLIM data
             self._ctrl_frame.grid()
@@ -1785,11 +1794,11 @@ class FOVPreviewPanel:
                     marker=ld['marker'], markersize=ld['ms'],
                 )
             self._ax_decay.set_yscale(decay_yscale)
-            self._ax_decay.set_title(decay_title, fontsize=10, fontweight="bold", color='black')
-            self._ax_decay.set_xlabel("Time (ns)", color='black')
-            self._ax_decay.set_ylabel("Photon Count", color='black')
+            self._ax_decay.set_title(decay_title, fontsize=10, fontweight="bold", color='white')
+            self._ax_decay.set_xlabel("Time (ns)", color='white')
+            self._ax_decay.set_ylabel("Photon Count", color='white')
             self._ax_decay.set_facecolor('white')
-            self._ax_decay.tick_params(labelsize=8, colors='black')
+            self._ax_decay.tick_params(labelsize=8, colors='white')
             self._ax_decay.grid(True, alpha=0.3)
 
         # Re-draw ROI overlays on the new FLIM axes
@@ -1944,6 +1953,7 @@ class ResultsPanel:
         self._fit_result = None
         self._output_dir = None
         self._current_npz_path = None  # Track current fit NPZ file location
+        self._scan_name = None  # Current FOV/scan stem for export filenames
         self._export_callback = None
         self._load_callback = None
         self._save_npz_callback = None
@@ -1979,6 +1989,7 @@ class ResultsPanel:
             return
         path = filedialog.asksaveasfilename(
             title="Save log as…",
+            initialfile=f"{self._scan_name}_log.txt" if self._scan_name else "",
             defaultextension=".txt",
             filetypes=[("Text files", "*.txt"), ("All", "*.*")])
         if path:
@@ -1999,12 +2010,14 @@ class ResultsPanel:
             import traceback
             traceback.print_exc()
     
-    def set_fit_result(self, fit_result: dict, output_dir: str, npz_path: str = None):
+    def set_fit_result(self, fit_result: dict, output_dir: str, npz_path: str = None, scan_name: str = None):
         """Store fit result and enable export/save buttons."""
         self._fit_result = fit_result
         self._output_dir = output_dir
         if npz_path:
             self._current_npz_path = npz_path
+        if scan_name:
+            self._scan_name = scan_name
         # Enable buttons if there are images to export
         has_images = any(isinstance(v, np.ndarray) for v in (fit_result or {}).values())
         self._export_btn.configure(state="normal" if has_images else "disabled")
@@ -2037,8 +2050,10 @@ class ResultsPanel:
             import csv
             from pathlib import Path
             
+            init_name = f"{self._scan_name}_summed_fit.csv" if self._scan_name else None
             csv_file = filedialog.asksaveasfilename(
                 title="Export Summed Fit Data",
+                initialfile=init_name,
                 defaultextension=".csv",
                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
                 initialdir=self._output_dir)
@@ -2338,6 +2353,8 @@ class _UIBuilder:
 
     def run_with_progress(self, task_fn, task_name="Working…", on_done=None, output_dir=None):
         """Run a function in a thread, showing a pop-out progress window with cancel."""
+        from flimkit.utils.crash_handler import log_event
+        log_event(f"Task started: {task_name}")
         win = ProgressWindow(self.root, task_name=task_name)
         cancel_event = win.cancelled
 
@@ -2350,8 +2367,9 @@ class _UIBuilder:
             orig_stdout, orig_stderr = sys.stdout, sys.stderr
             # Always redirect to UI's ScrolledText widget with thread-safe updates
             redir = _Redirect(self._res.log, self._buf, root=self.root)
+            redir_err = _Redirect(self._res.log, self._buf, root=self.root, is_stderr=True)
             sys.stdout = redir
-            sys.stderr = redir
+            sys.stderr = redir_err
             try:
                 result = task_fn(progress_callback, cancel_event)
                 self.root.after(0, lambda: win.close())
@@ -2360,13 +2378,19 @@ class _UIBuilder:
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
-                self.root.after(0, lambda: win.set_status(f"Error: {exc}"))
+                from flimkit.utils.crash_handler import log_exception
+                log_exception(f"run_with_progress: {task_name}")
+                self.root.after(0, lambda e=exc: win.set_status(f"Error: {e}"))
                 self.root.after(0, lambda: win.btn_cancel.config(text="Close", command=win.close))
             finally:
                 if hasattr(redir, 'close'):
                     redir.close()
                 else:
                     redir.flush()
+                if hasattr(redir_err, 'close'):
+                    redir_err.close()
+                else:
+                    redir_err.flush()
                 sys.stdout = orig_stdout
                 sys.stderr = orig_stderr
 
@@ -2403,7 +2427,7 @@ class _UIBuilder:
         # Recent Files submenu
         self._recent_files_menu = tk.Menu(file_menu, tearoff=0)
         file_menu.add_cascade(label="Recent Files", menu=self._recent_files_menu)
-        self._recent_files = []  # Will track last 5 files
+        self._recent_files = self._load_recent_list()  # [{"path": ..., "type": "file"|"project"}]
         self._update_recent_files_menu()
         
         file_menu.add_separator()
@@ -2441,33 +2465,89 @@ class _UIBuilder:
         help_menu.add_command(label="View Error Logs", command=self._menu_view_error_logs)
         help_menu.add_command(label="Export Error Logs", command=self._menu_export_error_logs)
     
+    _RECENT_FILE = os.path.join(os.path.expanduser("~"), ".flimkit", "recent.json")
+    _MAX_RECENT = 10
+
+    def _load_recent_list(self):
+        """Load recent items from ~/.flimkit/recent.json."""
+        try:
+            with open(self._RECENT_FILE, "r") as f:
+                import json
+                data = json.load(f)
+            return [e for e in data if isinstance(e, dict) and "path" in e and "type" in e]
+        except (FileNotFoundError, ValueError):
+            return []
+
+    def _save_recent_list(self):
+        """Persist recent items to ~/.flimkit/recent.json."""
+        import json
+        os.makedirs(os.path.dirname(self._RECENT_FILE), exist_ok=True)
+        with open(self._RECENT_FILE, "w") as f:
+            json.dump(self._recent_files, f, indent=2)
+
     def _update_recent_files_menu(self):
         """Update the Recent Files submenu."""
         self._recent_files_menu.delete(0, tk.END)
         if self._recent_files:
-            for filepath in self._recent_files:
+            for entry in self._recent_files:
+                path = entry["path"]
+                kind = entry.get("type", "file")
+                prefix = "[Project] " if kind == "project" else ""
+                label = f"{prefix}{path}"
                 self._recent_files_menu.add_command(
-                    label=str(filepath),
-                    command=lambda f=filepath: self._load_recent_file(f)
+                    label=label,
+                    command=lambda e=entry: self._load_recent_item(e)
                 )
+            self._recent_files_menu.add_separator()
+            self._recent_files_menu.add_command(label="Clear Recent", command=self._clear_recent_files)
         else:
-            self._recent_files_menu.add_command(label="(No recent files)", state="disabled")
-    
-    def _load_recent_file(self, filepath):
-        """Load a recent PTU file."""
-        print(f"[Menu] Loading recent file: {filepath}")
-        # TODO: Implement file loading
-    
-    def _add_to_recent_files(self, filepath):
-        """Add a file to recent files (keep last 5)."""
-        if str(filepath) in self._recent_files:
-            self._recent_files.remove(str(filepath))
-        self._recent_files.insert(0, str(filepath))
-        if len(self._recent_files) > 5:
-            self._recent_files.pop()
+            self._recent_files_menu.add_command(label="(No recent items)", state="disabled")
+
+    def _load_recent_item(self, entry):
+        """Load a recent file or project."""
+        path = entry["path"]
+        kind = entry.get("type", "file")
+        if kind == "project":
+            if os.path.isdir(path):
+                print(f"[Menu] Opening recent project: {path}")
+                if hasattr(self, '_proj_browser') and self._proj_browser:
+                    self._proj_browser.load_folder(path)
+                self._add_to_recent(path, "project")
+            else:
+                print(f"[Menu] Project folder not found: {path}")
+        else:
+            if os.path.isfile(path):
+                print(f"[Menu] Loading recent file: {path}")
+                self.sv_ptu.set(path)
+                self._add_to_recent(path, "file")
+            else:
+                print(f"[Menu] File not found: {path}")
+
+    def _add_to_recent(self, filepath, kind="file"):
+        """Add a file or project to recent items (keep last N)."""
+        path_str = str(filepath)
+        self._recent_files = [e for e in self._recent_files if e["path"] != path_str]
+        self._recent_files.insert(0, {"path": path_str, "type": kind})
+        if len(self._recent_files) > self._MAX_RECENT:
+            self._recent_files = self._recent_files[:self._MAX_RECENT]
         self._update_recent_files_menu()
+        self._save_recent_list()
+
+    def _clear_recent_files(self):
+        """Clear the recent files list."""
+        self._recent_files = []
+        self._update_recent_files_menu()
+        self._save_recent_list()
     
     # ===== FILE MENU CALLBACKS =====
+    def _current_scan_stem(self) -> str:
+        """Return the stem of the currently loaded PTU file, or empty string."""
+        if hasattr(self, 'sv_ptu'):
+            p = self.sv_ptu.get().strip()
+            if p:
+                return Path(p).stem
+        return ""
+
     def _menu_restore_npz(self):
         """Restore NPZ file."""
         if self._res and hasattr(self._res, '_load_fitted_data'):
@@ -2481,8 +2561,10 @@ class _UIBuilder:
     def _menu_save_npz_as(self):
         """Save NPZ as new file."""
         from tkinter import filedialog
+        scan = self._current_scan_stem()
         npz_file = filedialog.asksaveasfilename(
             title="Save NPZ As",
+            initialfile=f"{scan}.roi_session.npz" if scan else "",
             defaultextension=".npz",
             filetypes=[("NPZ files", "*.npz"), ("All files", "*.*")])
         if npz_file:
@@ -2498,6 +2580,7 @@ class _UIBuilder:
             # Delegate to project browser to load the folder
             if hasattr(self, '_proj_browser') and self._proj_browser:
                 self._proj_browser.load_folder(folder)
+            self._add_to_recent(folder, "project")
     
     def _menu_export_fit_csv(self):
         """Export summed fit CSV."""
@@ -2536,6 +2619,9 @@ class _UIBuilder:
     
     def _menu_preferences(self):
         """Open preferences dialog."""
+        from flimkit.utils.config_manager import cfg
+        prefs = cfg.get_section("preferences")
+
         pref_win = tk.Toplevel(self.root)
         pref_win.title("Preferences")
         pref_win.geometry("500x400")
@@ -2557,12 +2643,12 @@ class _UIBuilder:
         note.add(disp_frame, text="Display")
         
         ttk.Label(disp_frame, text="Colormap:", font=("TkDefaultFont", 10)).pack(anchor="w", pady=(5, 0))
-        cmap_var = tk.StringVar(value="viridis")
+        cmap_var = tk.StringVar(value=prefs.get("colormap", "viridis"))
         ttk.Combobox(disp_frame, textvariable=cmap_var, 
                      values=["viridis", "plasma", "gray", "jet"], state="readonly").pack(anchor="w", pady=(0, 10))
         
         ttk.Label(disp_frame, text="Font Size:", font=("TkDefaultFont", 10)).pack(anchor="w", pady=(5, 0))
-        font_var = tk.IntVar(value=9)
+        font_var = tk.IntVar(value=prefs.get("font_size", 9))
         ttk.Spinbox(disp_frame, from_=8, to=14, textvariable=font_var, width=10).pack(anchor="w", pady=(0, 10))
         
         # === Analysis Tab ===
@@ -2570,11 +2656,11 @@ class _UIBuilder:
         note.add(anal_frame, text="Analysis")
         
         ttk.Label(anal_frame, text="Default Number of Exponents:", font=("TkDefaultFont", 10)).pack(anchor="w", pady=(5, 0))
-        exp_var = tk.IntVar(value=2)
+        exp_var = tk.IntVar(value=prefs.get("default_nexp", 2))
         ttk.Spinbox(anal_frame, from_=1, to=5, textvariable=exp_var, width=10).pack(anchor="w", pady=(0, 10))
         
         ttk.Label(anal_frame, text="Export Format:", font=("TkDefaultFont", 10)).pack(anchor="w", pady=(5, 0))
-        fmt_var = tk.StringVar(value="CSV")
+        fmt_var = tk.StringVar(value=prefs.get("export_format", "CSV"))
         ttk.Combobox(anal_frame, textvariable=fmt_var, 
                      values=["CSV", "Excel", "NumPy"], state="readonly").pack(anchor="w", pady=(0, 10))
         
@@ -2583,13 +2669,14 @@ class _UIBuilder:
         note.add(files_frame, text="Files")
         
         ttk.Label(files_frame, text="Output Directory:", font=("TkDefaultFont", 10)).pack(anchor="w", pady=(5, 0))
-        output_var = tk.StringVar(value=os.path.expanduser("~/FLIMKit/output"))
+        saved_outdir = prefs.get("output_directory", "") or os.path.expanduser("~/FLIMKit/output")
+        output_var = tk.StringVar(value=saved_outdir)
         ttk.Entry(files_frame, textvariable=output_var, width=40).pack(anchor="w", pady=(0, 5))
         ttk.Button(files_frame, text="Browse...", width=10,
                    command=lambda: output_var.set(filedialog.askdirectory())).pack(anchor="w", pady=(0, 10))
         
         ttk.Label(files_frame, text="Auto-save NPZ:", font=("TkDefaultFont", 10)).pack(anchor="w", pady=(5, 0))
-        autosave_var = tk.BooleanVar(value=True)
+        autosave_var = tk.BooleanVar(value=prefs.get("auto_save_npz", True))
         ttk.Checkbutton(files_frame, text="Enable auto-save", variable=autosave_var).pack(anchor="w", pady=(0, 10))
         
         # Buttons
@@ -2597,15 +2684,15 @@ class _UIBuilder:
         btn_frame.pack(fill=tk.X, pady=(0, 0))
         
         def save_prefs():
-            # TODO: Save preferences to config file
-            print("[Preferences] Saving:")
-            print(f"  Colormap: {cmap_var.get()}")
-            print(f"  Font size: {font_var.get()}")
-            print(f"  Exponents: {exp_var.get()}")
-            print(f"  Export format: {fmt_var.get()}")
-            print(f"  Output dir: {output_var.get()}")
-            print(f"  Auto-save: {autosave_var.get()}")
-            messagebox.showinfo("Preferences", "Settings saved. (Config file integration coming soon)")
+            cfg.update_section("preferences", {
+                "colormap": cmap_var.get(),
+                "font_size": font_var.get(),
+                "default_nexp": exp_var.get(),
+                "export_format": fmt_var.get(),
+                "output_directory": output_var.get(),
+                "auto_save_npz": autosave_var.get(),
+            })
+            print(f"[Preferences] Saved to {cfg._CONFIG_FILE if hasattr(cfg, '_CONFIG_FILE') else '~/.flimkit/config.yaml'}")
             pref_win.destroy()
         
         ttk.Button(btn_frame, text="Save", command=save_prefs).pack(side="right", padx=5)
@@ -2689,55 +2776,53 @@ Built with Python, Tkinter, NumPy, and SciPy.
     
     def _menu_view_error_logs(self):
         """View error logs."""
+        from flimkit.utils.crash_handler import build_export_report, get_log_dir
         import glob
-        log_dir = os.path.expanduser("~/.flimkit/logs")
+
+        log_dir = get_log_dir()
         log_files = glob.glob(os.path.join(log_dir, "*.log")) if os.path.exists(log_dir) else []
         if log_files:
-            latest_log = max(log_files, key=os.path.getctime)
             try:
-                with open(latest_log, 'r') as f:
-                    logs = f.read()
+                report = build_export_report(include_all_sessions=False)
                 from tkinter.scrolledtext import ScrolledText
                 win = tk.Toplevel(self.root)
-                win.title("Error Logs")
-                win.geometry("600x400")
+                win.title("Error Logs — Current Session")
+                win.geometry("700x500")
                 text_widget = ScrolledText(win, wrap=tk.WORD)
                 text_widget.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-                text_widget.insert(tk.END, logs)
+                text_widget.insert(tk.END, report)
                 text_widget.config(state=tk.DISABLED)
             except Exception as e:
                 messagebox.showerror("Error", f"Could not read log file: {e}")
         else:
             messagebox.showinfo("No Logs", "No error logs found.")
-    
-    
+
+
     def _menu_export_error_logs(self):
-        """Export error logs to file."""
-        from tkinter import filedialog
+        """Export error logs to file with system info."""
+        from flimkit.utils.crash_handler import build_export_report, get_log_dir
         import glob
-        
-        log_dir = os.path.expanduser("~/.flimkit/logs")
+
+        log_dir = get_log_dir()
         log_files = glob.glob(os.path.join(log_dir, "*.log")) if os.path.exists(log_dir) else []
-        
+
         if not log_files:
             messagebox.showwarning("No Logs", "No error logs found to export.")
             return
-        
+
         export_file = filedialog.asksaveasfilename(
-            title="Save Error Logs",
+            title="Save Error Report",
             defaultextension=".log",
             filetypes=[("Log files", "*.log"), ("Text files", "*.txt"), ("All files", "*.*")]
         )
-        
+
         if export_file:
             try:
-                with open(export_file, 'w') as out_f:
-                    for log_file in sorted(log_files):
-                        with open(log_file, 'r') as in_f:
-                            out_f.write(f"\n\n{'='*60}\n{log_file}\n{'='*60}\n")
-                            out_f.write(in_f.read())
-                messagebox.showinfo("Export Success", f"Error logs exported to:\n{export_file}")
-                print(f"[Menu] Error logs exported to: {export_file}")
+                report = build_export_report(include_all_sessions=True)
+                with open(export_file, 'w', encoding='utf-8') as out_f:
+                    out_f.write(report)
+                messagebox.showinfo("Export Success", f"Error report exported to:\n{export_file}")
+                print(f"[Menu] Error report exported to: {export_file}")
             except Exception as e:
                 messagebox.showerror("Export Error", f"Failed to export logs: {e}")
 
@@ -2842,6 +2927,10 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
     def _init_ui(self):
         """Build the entire user interface with left tab buttons and central content area."""
+        # Install Tk-level error handler for exceptions in event loop callbacks
+        from flimkit.utils.crash_handler import install_tk_error_handler
+        install_tk_error_handler(self.root)
+
         self._buf: list = []
         self._current_session_file = None  # Track current session file for auto-save
         self._current_npz_path = None  # For backward compatibility
@@ -3023,7 +3112,10 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._res.set_save_npz_callback(self._save_npz_quick)
 
         # Expert fit settings overrides (shared by FOV and stitch tabs)
-        self._expert_overrides: dict = {}
+        from flimkit.utils.config_manager import cfg as _cfg_mgr
+        _saved_expert = _cfg_mgr.get_section("expert")
+        _is_default = all(_saved_expert.get(k) == v for k, v in _EXPERT_DEFAULTS.items())
+        self._expert_overrides: dict = {} if _is_default else _saved_expert
 
         # Build form content for each form
         self._build_fov_tab()
@@ -3837,12 +3929,12 @@ Built with Python, Tkinter, NumPy, and SciPy.
                                     if model is not None and len(model) > 0:
                                         ax_decay.semilogy(time_ns, model, color="red", linewidth=2.0,
                                                         label="Fitted", alpha=0.8)
-                                    ax_decay.legend(fontsize=8, loc="upper right")
-                            ax_decay.set_title("Summed Decay (reloaded)", fontsize=10, fontweight="bold")
-                            ax_decay.set_xlabel("Time (ns)")
-                            ax_decay.set_ylabel("Photon Count")
+                                    ax_decay.legend(fontsize=8, loc="upper right", labelcolor='black')
+                            ax_decay.set_title("Summed Decay (reloaded)", fontsize=10, fontweight="bold", color='white')
+                            ax_decay.set_xlabel("Time (ns)", color='white')
+                            ax_decay.set_ylabel("Photon Count", color='white')
                             ax_decay.grid(True, alpha=0.3)
-                            ax_decay.tick_params(labelsize=8)
+                            ax_decay.tick_params(labelsize=8, colors='white')
 
                             # Update status
                             self._res._status.set("✓ Session restored — ready to export or re-fit")
@@ -3971,7 +4063,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
             self._fov_preview._canvas_mpl.draw_idle()
 
             # Store fit result for export/save buttons
-            self._res.set_fit_result(fit_result, output_dir, npz_path=str(session_file))
+            self._res.set_fit_result(fit_result, output_dir, npz_path=str(session_file),
+                                     scan_name=self._current_scan_stem())
 
             # Update status
             self._res._status.set("✓ Session restored — ready to export or re-fit")
@@ -4272,12 +4365,12 @@ Built with Python, Tkinter, NumPy, and SciPy.
                         if model is not None and len(model) > 0:
                             ax_decay.semilogy(time_ns, model, color="red", linewidth=2.0,
                                             label="Fitted", alpha=0.8)
-                        ax_decay.legend(fontsize=8, loc="upper right")
-                    ax_decay.set_title("Summed Decay", fontsize=10, fontweight="bold")
-                    ax_decay.set_xlabel("Time (ns)")
-                    ax_decay.set_ylabel("Photon Count")
+                        ax_decay.legend(fontsize=8, loc="upper right", labelcolor='black')
+                    ax_decay.set_title("Summed Decay", fontsize=10, fontweight="bold", color='white')
+                    ax_decay.set_xlabel("Time (ns)", color='white')
+                    ax_decay.set_ylabel("Photon Count", color='white')
                     ax_decay.grid(True, alpha=0.3)
-                    ax_decay.tick_params(labelsize=8)
+                    ax_decay.tick_params(labelsize=8, colors='white')
 
                     # Redraw region overlays
                     self._fov_preview._redraw_region_overlays()
@@ -4316,7 +4409,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
             
             # Store fit result for export (use NPZ directory as output dir)
             output_dir = str(Path(npz_path).parent)
-            self._res.set_fit_result(fit_result, output_dir, npz_path=npz_path)
+            self._res.set_fit_result(fit_result, output_dir, npz_path=npz_path,
+                                     scan_name=self._current_scan_stem())
             
             # Stay on the current form (no "results" form exists)
             if not suppress_popups:
@@ -4646,7 +4740,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     ax.set_xlabel('Time (ns)', fontsize=13, color='black')
                     ax.set_ylabel('Photon Count', fontsize=13, color='black')
                     ax.tick_params(colors='black')
-                    ax.legend(fontsize=12, loc='upper right', framealpha=0.9)
+                    ax.legend(fontsize=12, loc='upper right', framealpha=0.9, labelcolor='black')
                     ax.grid(True, alpha=0.3, color='gray')
                     
                     output_file = output_path / "summed_decay.png"
@@ -5114,7 +5208,12 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
     def _open_expert_settings(self):
         """Open the expert settings dialog and update banners accordingly."""
-        dlg = ExpertSettingsDialog(self.root, self._expert_overrides)
+        from flimkit.utils.config_manager import cfg
+        # Merge persisted config with in-memory overrides
+        saved = cfg.get_section("expert")
+        merged = dict(saved)
+        merged.update(self._expert_overrides)
+        dlg = ExpertSettingsDialog(self.root, merged)
         self.root.wait_window(dlg)
         if dlg.result is not None:
             # Check if all values match defaults → treat as "no overrides"
@@ -5125,6 +5224,13 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self._expert_overrides = {}
             else:
                 self._expert_overrides = dlg.result
+            # Persist to config.yaml
+            cfg.update_section("expert", dlg.result)
+            # Also save to project.json if a project is open
+            if hasattr(self, '_proj_browser') and self._proj_browser and self._proj_browser._project:
+                self._proj_browser._project.config["expert"] = dlg.result
+                self._proj_browser._project.save()
+                cfg.load_project_overrides(self._proj_browser._project.config)
             self._update_expert_banners()
 
     def _update_expert_banners(self):
@@ -5644,6 +5750,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
         self._last_loaded_ptu = ptu_path
         self._loading_ptu = True
+        self._add_to_recent(ptu_path, "file")
 
         def load():
             try:
@@ -5929,6 +6036,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     self._res.set_fit_result(
                         fit_result, str(a.output_dir),
                         npz_path=str(npz_path) if npz_path.exists() else None,
+                        scan_name=self._current_scan_stem(),
                     )
                     print(f"[on_done] Saved tile fit session → {npz_path}")
                     # Notify project browser: remember output dir, refresh indicators.
@@ -6029,7 +6137,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self._phasor_panel.load_session(result, min_photons=min_ph)
                 self._res.set_status("✓  Phasor session loaded.")
 
-            self._phasor_thread(_worker, _done, status="⏳  Loading session…")
+            self._phasor_thread(_worker, _done, status="  Loading session…")
 
         else:
             ptu = self.sv_ph_ptu.get().strip()
@@ -6064,9 +6172,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     "✓  Phasor data loaded — click the phasor to place cursors.")
 
             self._phasor_thread(_worker, _done,
-                                status="⏳  Loading PTU and computing phasors…")
+                                status="  Loading PTU and computing phasors…")
 
-    def _phasor_thread(self, worker_fn, done_cb, *, status="⏳  Working…"):
+    def _phasor_thread(self, worker_fn, done_cb, *, status="  Working…"):
         """Run worker_fn in a daemon thread; call done_cb(result) on the main thread.
         Only disables the phasor run button while running — the rest of the UI
         stays responsive (unlike _launch which locks all buttons).
@@ -6138,7 +6246,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 return
             self._phasor_panel.load_session(result, min_photons=min_ph)
             self._res.set_status("✓  Phasor session restored.")
-        self._phasor_thread(_worker, _done, status="⏳  Restoring phasor session…")
+        self._phasor_thread(_worker, _done, status="  Restoring phasor session…")
 
     def _run_build_machine_irf(self):
         src_dir = self.sv_mirf_src.get().strip()
@@ -6236,7 +6344,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 _on_done_override=None):
         self._buf.clear()
         self._set_buttons("disabled")
-        self._res.set_status("⏳  Running...")
+        self._res.set_status("  Running...")
         self._res._nb.select(0)
 
         # Create a progress window manager for sub-operations
@@ -6255,8 +6363,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
             orig_stdout, orig_stderr = sys.stdout, sys.stderr
             # Always redirect to UI's ScrolledText widget with thread-safe updates
             redir = _Redirect(self._res.log, self._buf, root=self.root)
+            redir_err = _Redirect(self._res.log, self._buf, root=self.root, is_stderr=True)
             sys.stdout = redir
-            sys.stderr = redir
+            sys.stderr = redir_err
             
             try:
                 # Call function with progress_callback if it supports it
@@ -6283,12 +6392,18 @@ Built with Python, Tkinter, NumPy, and SciPy.
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
-                self.root.after(0, lambda: self._res.set_status(f"✗  Error: {exc}"))
+                from flimkit.utils.crash_handler import log_exception
+                log_exception(f"_launch: {task_name}")
+                self.root.after(0, lambda e=exc: self._res.set_status(f"✗  Error: {e}"))
             finally:
                 if hasattr(redir, 'close'):
                     redir.close()
                 else:
                     redir.flush()
+                if hasattr(redir_err, 'close'):
+                    redir_err.close()
+                else:
+                    redir_err.flush()
                 sys.stdout = orig_stdout
                 sys.stderr = orig_stderr
                 self.root.after(0, lambda: self._set_buttons("normal"))
@@ -6341,7 +6456,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 print(f"[Info] Could not save ROI progress: {e}")
         
         # Store fit result with NPZ path so quick save knows where it is
-        self._res.set_fit_result(fit_result or {}, output_dir, npz_path=npz_file_path)
+        self._res.set_fit_result(fit_result or {}, output_dir, npz_path=npz_file_path,
+                                 scan_name=Path(ptu_path).stem if ptu_path else self._current_scan_stem())
 
         # Notify project browser so the session indicator (● / ○) refreshes
         # and the output prefix is remembered for next launch.
@@ -6483,6 +6599,10 @@ class FLIMKitGUIFallback(_UIBuilder):
 def launch_gui():
     global GUI_MODE
     GUI_MODE = True
+
+    # Install crash handler and session logging
+    from flimkit.utils.crash_handler import init_crash_handler
+    init_crash_handler()
 
     if HAS_TKMT:
         # Themed version: ThemedTKinterFrame creates its own root.

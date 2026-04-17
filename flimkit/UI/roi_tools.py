@@ -447,6 +447,15 @@ class RoiAnalysisPanel:
             self._refresh_region_list()
             self._status.set(f"Renamed to '{new_name}'")
     
+    def _get_fov_stem(self) -> str:
+        """Return the stem of the currently loaded PTU file, or empty string."""
+        if self.fov_preview and hasattr(self.fov_preview, '_ptu_path'):
+            p = self.fov_preview._ptu_path
+            if p:
+                from pathlib import Path
+                return Path(p).stem
+        return ""
+
     def _export_selected_region(self):
         """Export selected region as GeoJSON."""
         import json
@@ -471,8 +480,11 @@ class RoiAnalysisPanel:
             messagebox.showerror("Error", "Region not found")
             return
         
+        name = region.get("name", "")
+        init_name = f"{name}.geojson" if name else None
         geojson_file = filedialog.asksaveasfilename(
             title="Export Region as GeoJSON",
+            initialfile=init_name,
             defaultextension=".geojson",
             filetypes=[("GeoJSON files", "*.geojson"), ("JSON files", "*.json"), ("All files", "*.*")])
         if not geojson_file:
@@ -561,8 +573,11 @@ class RoiAnalysisPanel:
             messagebox.showwarning("No Data", "No regions to export.")
             return
         
+        fov_stem = self._get_fov_stem()
+        init_name = f"{fov_stem}_roi_data.csv" if fov_stem else "roi_data.csv"
         csv_file = filedialog.asksaveasfilename(
             title="Export ROI Data",
+            initialfile=init_name,
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if not csv_file:
@@ -614,8 +629,11 @@ class RoiAnalysisPanel:
             messagebox.showwarning("No Data", "No regions to export.")
             return
         
+        fov_stem = self._get_fov_stem()
+        init_name = f"{fov_stem}_all_rois.geojson" if fov_stem else "all_rois.geojson"
         geojson_file = filedialog.asksaveasfilename(
             title="Export ROI Data as GeoJSON",
+            initialfile=init_name,
             defaultextension=".geojson",
             filetypes=[("GeoJSON files", "*.geojson"), ("JSON files", "*.json"), ("All files", "*.*")])
         if not geojson_file:
