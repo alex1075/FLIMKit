@@ -1839,6 +1839,8 @@ class FOVPreviewPanel:
 
     def _on_draw_press(self, event):
         """Handle mouse press on image axes."""
+        if event.button != 1:
+            return  # Only left-click starts drawing; right-click is for ROI drag/pan
         if not event.inaxes or event.inaxes not in self._active_image_axes():
             return
         
