@@ -20,7 +20,8 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
                optimizer="de", n_restarts=8,
                de_popsize=15, de_maxiter=1000,
                workers=-1, polish=True,
-               cost_function="poisson") -> tuple[np.ndarray, dict]:
+               cost_function="poisson",
+               sigma_max=3.0) -> tuple[np.ndarray, dict]:
     """Fit summed FLIM decay via reconvolution.
 
     Parameters
@@ -29,6 +30,10 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
         ``'poisson'`` — Poisson deviance / C-statistic (recommended, default).
         ``'chi2'``    — Neyman chi-squared (legacy: weighted least-squares on
                         normalised decay).
+    sigma_max : float, optional
+        Upper bound for the IRF Gaussian broadening parameter σ (bins).
+        Only used when ``fit_sigma=True``.  Default 3.0 (full).
+        Set to 0.5 for the balanced “half-sigma” mode.
     """
 
     tau_min  = tau_min_ns * 1e-9
@@ -63,14 +68,15 @@ def fit_summed(decay, tcspc_res, n_bins, irf_prompt,
           f"{' (normalised)' if cost_function == 'chi2' else ' cts/bin'}"
           f", upper bound = {bg_upper:.3f} "
           f"({'free param' if fit_bg else 'fixed'})")
-    print(f"  σ broadening: {'free param' if fit_sigma else 'fixed at 0'}")
+    print(f"  σ broadening: {'free param (σ≤' + f'{sigma_max:.1f})' if fit_sigma else 'fixed at 0'}")
     print(f"  Fit window: bins {fit_start}–{fit_end} "
           f"({fit_start*tcspc_res*1e9:.2f}–{fit_end*tcspc_res*1e9:.2f} ns), "
           f"{fit_end-fit_start} bins")
 
     lo, hi  = _build_bounds(n_exp, tau_min, tau_max, decay_work.max(),
                              has_tail, fit_bg, fit_sigma,
-                             bg_init=bg_init, bg_upper=bg_upper)
+                             bg_init=bg_init, bg_upper=bg_upper,
+                             sigma_max=sigma_max)
     bounds  = list(zip(lo, hi))
 
     # Define residual / cost functions

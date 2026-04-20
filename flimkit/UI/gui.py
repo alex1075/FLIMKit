@@ -459,6 +459,8 @@ class IRFWidget:
     CHOICES = [
         ("Leica analytical model (XLSX)",                "irf_xlsx"),
         ("Machine IRF (.npy pre-built)",                 "machine_irf"),
+        ("Machine IRF + full σ broadening",               "machine_irf_sigma_full"),
+        ("Machine IRF + half σ broadening (σ≤0.5)",       "machine_irf_sigma_half"),
         ("Scatter PTU (measured IRF)",                   "file"),
         ("Estimate from decay – raw",                    "raw"),
         ("Estimate from decay – parametric",             "parametric"),
@@ -498,7 +500,7 @@ class IRFWidget:
         self._update()
 
     def _browse_irf_path(self):
-        if self.sv_method.get() == "machine_irf":
+        if self.sv_method.get().startswith("machine_irf"):
             _browse_file(self.sv_path, "Select machine IRF",
                          [("NumPy array", "*.npy"), ("All", "*.*")])
         else:
@@ -508,8 +510,8 @@ class IRFWidget:
     def _show_browse(self):
         method = self.sv_method.get()
         self._path_lbl.config(
-            text="Machine IRF (.npy) path" if method == "machine_irf" else "IRF / XLSX path")
-        if method == "machine_irf" and not self.sv_path.get().endswith(".npy"):
+            text="Machine IRF (.npy) path" if method.startswith("machine_irf") else "IRF / XLSX path")
+        if method.startswith("machine_irf") and not self.sv_path.get().endswith(".npy"):
             self.sv_path.set(self._machine_irf_default)
         self._path_lbl.grid()
         self._path_e.grid()
@@ -532,7 +534,7 @@ class IRFWidget:
         method = self.sv_method.get()
         if method == "irf_xlsx":
             self._show_note() if self.xlsx_var is not None else self._show_browse()
-        elif method in ("file", "machine_irf"):
+        elif method in ("file",) or method.startswith("machine_irf"):
             self._show_browse()
         else:
             self._hide_all()
@@ -547,8 +549,8 @@ class IRFWidget:
             xlsx = (self.xlsx_var.get().strip() if self.xlsx_var else None) \
                    or xlsx_fallback or path
             return dict(irf=None, irf_xlsx=xlsx, estimate_irf="none", no_xlsx_irf=False, machine_irf=None)
-        elif method == "machine_irf":
-            return dict(irf=None, irf_xlsx=None, estimate_irf="machine_irf", no_xlsx_irf=True, machine_irf=path)
+        elif method.startswith("machine_irf"):
+            return dict(irf=None, irf_xlsx=None, estimate_irf=method, no_xlsx_irf=True, machine_irf=path)
         elif method == "file":
             return dict(irf=path, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True, machine_irf=None)
         elif method in ("raw", "parametric"):
@@ -1486,12 +1488,13 @@ class FOVPreviewPanel:
         # Determine which axes to draw on
         target_axes = [ax for ax in (self._ax_flim, self._ax_img) if ax.get_visible()]
         
-        # Clear old patches
-        for patch in self._roi_patches.values():
-            try:
-                patch.remove()
-            except ValueError:
-                pass
+        # Clear old patches — _roi_patches maps region_id -> list of patches
+        for patches in self._roi_patches.values():
+            for patch in (patches if isinstance(patches, list) else [patches]):
+                try:
+                    patch.remove()
+                except (ValueError, NotImplementedError):
+                    pass
         self._roi_patches = {}
         
         # Draw all regions on visible axes
@@ -1502,6 +1505,7 @@ class FOVPreviewPanel:
             color = self._roi_manager.get_color(region_id)
             linewidth = 2.5 if region_id == self._roi_manager.get_selected_id() else 1.5
             
+            patches_for_region = []
             for ax in target_axes:
                 try:
                     if tool_type == 'rect':
@@ -1514,9 +1518,11 @@ class FOVPreviewPanel:
                         continue
                     
                     ax.add_patch(patch)
-                    self._roi_patches[region_id] = patch
+                    patches_for_region.append(patch)
                 except Exception as e:
                     print(f"[ROI] Could not draw region {region_id}: {e}")
+            if patches_for_region:
+                self._roi_patches[region_id] = patches_for_region
         
         self._canvas_mpl.draw_idle()
 
@@ -1566,7 +1572,7 @@ class FOVPreviewPanel:
         self._canvas_mpl.draw_idle()
 
     def _on_pan_press(self, event):
-        """Start panning on middle-click, right-click, or left-click in select mode."""
+        """Left-click pans the image; right-click drags the selected ROI."""
         if event.button == 1 and self._drawing_mode.get() != "select":
             return  # Left-click reserved for drawing in non-select modes
         ax = event.inaxes
@@ -1574,12 +1580,16 @@ class FOVPreviewPanel:
             return
         if event.xdata is None:
             return
-        # Left-click in select mode: check if clicking on an existing ROI first
-        if event.button == 1:
-            hit_id = self._hit_test_roi(event.xdata, event.ydata, ax)
-            if hit_id is not None:
-                self._start_roi_drag(hit_id, event.xdata, event.ydata)
+        # Right-click: drag the selected ROI (or hit-test under cursor)
+        if event.button == 3:
+            selected_id = self._roi_manager.get_selected_id()
+            # If no ROI selected, try to pick one under the cursor
+            if selected_id is None:
+                selected_id = self._hit_test_roi(event.xdata, event.ydata, ax)
+            if selected_id is not None:
+                self._start_roi_drag(selected_id, event.xdata, event.ydata)
                 return
+        # Left-click (or right-click that missed an ROI): pan the image
         self._pan_origin = (event.xdata, event.ydata, ax)
 
     def _on_pan_release(self, event):
@@ -1612,9 +1622,10 @@ class FOVPreviewPanel:
 
     def _hit_test_roi(self, x, y, ax):
         """Return the region_id of the ROI patch under (x, y), or None."""
-        for region_id, patch in self._roi_patches.items():
-            if patch.axes is ax and patch.contains_point(ax.transData.transform((x, y))):
-                return region_id
+        for region_id, patches in self._roi_patches.items():
+            for patch in (patches if isinstance(patches, list) else [patches]):
+                if patch.axes is ax and patch.contains_point(ax.transData.transform((x, y))):
+                    return region_id
         return None
 
     def _start_roi_drag(self, region_id, x, y):
@@ -1644,6 +1655,8 @@ class FOVPreviewPanel:
         """Complete ROI drag and persist changes."""
         self._roi_drag = None
         self._save_regions_update()
+        if self._roi_analysis_panel:
+            self._roi_analysis_panel._refresh_region_list()
 
     def _on_display_mode_changed(self):
         """Switch which image is shown in the main slot when decay is hidden."""
@@ -1810,10 +1823,15 @@ class FOVPreviewPanel:
         self._canvas_mpl.draw_idle()
 
     def _setup_drawing_events(self):
-        """Connect matplotlib event handlers to FLIM axes for drawin."""
-        self._canvas_mpl.mpl_connect('button_press_event', self._on_draw_press)
-        self._canvas_mpl.mpl_connect('motion_notify_event', self._on_draw_motion)
-        self._canvas_mpl.mpl_connect('button_release_event', self._on_draw_release)
+        """Connect matplotlib event handlers to FLIM axes for drawing."""
+        # Disconnect old handlers to prevent accumulation across layout rebuilds
+        for cid in getattr(self, '_draw_cids', []):
+            self._canvas_mpl.mpl_disconnect(cid)
+        self._draw_cids = [
+            self._canvas_mpl.mpl_connect('button_press_event', self._on_draw_press),
+            self._canvas_mpl.mpl_connect('motion_notify_event', self._on_draw_motion),
+            self._canvas_mpl.mpl_connect('button_release_event', self._on_draw_release),
+        ]
     
     def _active_image_axes(self):
         """Return the set of image axes that should accept drawing events."""

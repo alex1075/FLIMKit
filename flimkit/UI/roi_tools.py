@@ -394,7 +394,9 @@ class RoiAnalysisPanel:
         self._delete_selected_region()
     
     def _on_region_selection_change(self, event):
-        """Handle region selection change — highlight on FLIM image"""
+        """Handle region selection change — highlight on FLIM image."""
+        if getattr(self, '_refreshing', False):
+            return
         selected = self._tree.selection()
         if selected:
             item = selected[0]
@@ -840,64 +842,78 @@ class RoiAnalysisPanel:
         """Update region list display from RoiManager."""
         import tkinter as tk
         
-        # Clear tree
-        for item in self._tree.get_children():
-            self._tree.delete(item)
-        
-        if not self.fov_preview or not self.fov_preview._roi_manager:
-            return
-        
-        # Add regions
-        for region in self.fov_preview._roi_manager.get_all_regions():
-            region_id = region['id']
-            name = region['name']
-            tool_type = region['tool'].upper()
-            color = self.fov_preview._roi_manager.get_color(region_id)
+        self._refreshing = True
+        try:
+            # Remember current selection
+            selected_id = None
+            sel = self._tree.selection()
+            if sel:
+                selected_id = sel[0]
             
-            # Compute statistics if lifetime map available
-            tau_med = "—"
-            tau_stdev = "—"
-            photon_count = "—"
-            photon_stdev = "—"
+            # Clear tree
+            for item in self._tree.get_children():
+                self._tree.delete(item)
             
-            if self.fov_preview._lifetime_map is not None:
-                try:
-                    mask = self.fov_preview._roi_manager.compute_region_mask(
-                        region_id, self.fov_preview._lifetime_map.shape
-                    )
-                    if mask is not None:
-                        lifetime_in_region = self.fov_preview._lifetime_map[mask]
-                        valid = lifetime_in_region[~np.isnan(lifetime_in_region)]
-                        
-                        if valid.size > 0:
-                            tau_med_val = float(np.median(valid))
-                            tau_stdev_val = float(np.std(valid))
-                            photon_count_val = int(valid.size)
-                            photon_stdev_val = float(np.sqrt(photon_count_val))  # Poisson stdev
+            if not self.fov_preview or not self.fov_preview._roi_manager:
+                return
+            
+            # Add regions
+            for region in self.fov_preview._roi_manager.get_all_regions():
+                region_id = region['id']
+                name = region['name']
+                tool_type = region['tool'].upper()
+                color = self.fov_preview._roi_manager.get_color(region_id)
+                
+                # Compute statistics if lifetime map available
+                tau_med = "—"
+                tau_stdev = "—"
+                photon_count = "—"
+                photon_stdev = "—"
+                
+                if self.fov_preview._lifetime_map is not None:
+                    try:
+                        mask = self.fov_preview._roi_manager.compute_region_mask(
+                            region_id, self.fov_preview._lifetime_map.shape
+                        )
+                        if mask is not None:
+                            lifetime_in_region = self.fov_preview._lifetime_map[mask]
+                            valid = lifetime_in_region[~np.isnan(lifetime_in_region)]
                             
-                            tau_med = f"{tau_med_val:.2f}"
-                            tau_stdev = f"{tau_stdev_val:.2f}"
-                            photon_count = str(photon_count_val)
-                            photon_stdev = f"{photon_stdev_val:.2f}"
-                            
-                            # Store statistics back in region data
-                            region["statistics"] = {
-                                "tau_median": tau_med_val,
-                                "tau_stdev": tau_stdev_val,
-                                "photon_count": photon_count_val,
-                                "photon_stdev": photon_stdev_val
-                            }
-                except Exception as e:
-                    print(f"[ROI] Could not compute stats: {e}")
-            
-            # Add row with region_id as item ID (iid), not in values
-            values = (name, tool_type, tau_med, tau_stdev, photon_count, photon_stdev)
-            self._tree.insert("", "end", iid=str(region_id), values=values, tags=(f"color_{region_id}",))
-            
-            # Color the row by region
-            self._tree.tag_configure(f"color_{region_id}", foreground=color)
-            self._tree.update_idletasks()
-            
+                            if valid.size > 0:
+                                tau_med_val = float(np.median(valid))
+                                tau_stdev_val = float(np.std(valid))
+                                photon_count_val = int(valid.size)
+                                photon_stdev_val = float(np.sqrt(photon_count_val))  # Poisson stdev
+                                
+                                tau_med = f"{tau_med_val:.2f}"
+                                tau_stdev = f"{tau_stdev_val:.2f}"
+                                photon_count = str(photon_count_val)
+                                photon_stdev = f"{photon_stdev_val:.2f}"
+                                
+                                # Store statistics back in region data
+                                region["statistics"] = {
+                                    "tau_median": tau_med_val,
+                                    "tau_stdev": tau_stdev_val,
+                                    "photon_count": photon_count_val,
+                                    "photon_stdev": photon_stdev_val
+                                }
+                    except Exception as e:
+                        print(f"[ROI] Could not compute stats: {e}")
+                
+                # Add row with region_id as item ID (iid), not in values
+                values = (name, tool_type, tau_med, tau_stdev, photon_count, photon_stdev)
+                self._tree.insert("", "end", iid=str(region_id), values=values, tags=(f"color_{region_id}",))
+                
+                # Color the row by region
+                self._tree.tag_configure(f"color_{region_id}", foreground=color)
+                
+                # Restore selection if this was the previously selected item
+                if selected_id is not None and str(region_id) == selected_id:
+                    self._tree.selection_set(str(region_id))
+                
+                self._tree.update_idletasks()
+        finally:
+            self._refreshing = False
     def add_region_from_drawing(self, tool_type: str, coords: List[List[float]]):
         """Call this when a user finishes drawing a region"""
         if not self.fov_preview:

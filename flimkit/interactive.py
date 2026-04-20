@@ -10,7 +10,8 @@ tqdm.disable = True
 from .configs import (
     n_exp, Tau_min, Tau_max, D_mode, binning_factor, MIN_PHOTONS_PERPIX, Optimizer, lm_restarts, de_population, de_maxiter, n_workers, OUT_NAME, Estimate_IRF, IRF_BINS, IRF_FIT_WIDTH, IRF_FWHM, channels, config_message, INTENSITY_THRESHOLD,
     TAU_DISPLAY_MIN, TAU_DISPLAY_MAX, INTENSITY_DISPLAY_MIN, INTENSITY_DISPLAY_MAX,
-    MACHINE_IRF_DEFAULT_PATH, MACHINE_IRF_FIT_BG, MACHINE_IRF_FIT_SIGMA, MACHINE_IRF_FIT_TAIL)
+    MACHINE_IRF_DEFAULT_PATH, MACHINE_IRF_FIT_BG, MACHINE_IRF_FIT_SIGMA, MACHINE_IRF_FIT_TAIL,
+    MACHINE_IRF_SIGMA_MAX_FULL, MACHINE_IRF_SIGMA_MAX_HALF)
 from .PTU.reader import PTUFile
 from .PTU.stitch import stitch_flim_tiles, load_flim_for_fitting  
 from .utils.xml_utils import parse_xlif_tile_positions 
@@ -139,15 +140,17 @@ def stitch_and_fit_inquire():
     
     # IRF method
     print("\nIRF estimation options:")
-    print("  1. 'irf_xlsx'   - analytical Gaussian+tail fit from XLSX (recommended)")
-    print("  2. 'file'       - measured IRF image (scatter PTU)")
-    print("  3. 'machine_irf' - prebuilt machine IRF (.npy), peak-aligned to decay")
-    print("  4. 'raw'        - non-parametric IRF from raw decay")
-    print("  5. 'parametric' - fit Gaussian + exponential tail")
-    print("  6. 'gaussian'   - simple Gaussian IRF (fastest)")
+    print("  1. 'irf_xlsx'                - analytical Gaussian+tail fit from XLSX (recommended)")
+    print("  2. 'file'                    - measured IRF image (scatter PTU)")
+    print("  3. 'machine_irf'             - prebuilt machine IRF (.npy), peak-aligned to decay")
+    print("  4. 'machine_irf_sigma_full'  - machine IRF + full σ broadening (σ≤3.0)")
+    print("  5. 'machine_irf_sigma_half'  - machine IRF + half σ broadening (σ≤0.5, recommended)")
+    print("  6. 'raw'                     - non-parametric IRF from raw decay")
+    print("  7. 'parametric'              - fit Gaussian + exponential tail")
+    print("  8. 'gaussian'                - simple Gaussian IRF (fastest)")
     method_q = [inquirer.List('method',
                               message="Choose IRF estimation method",
-                              choices=['irf_xlsx', 'file', 'machine_irf', 'raw', 'parametric', 'gaussian'])]
+                              choices=['irf_xlsx', 'file', 'machine_irf', 'machine_irf_sigma_full', 'machine_irf_sigma_half', 'raw', 'parametric', 'gaussian'])]
     estimate_irf = inquirer.prompt(method_q)['method']
     
     irf_path = None
@@ -165,7 +168,7 @@ def stitch_and_fit_inquire():
             print("  Warning: IRF file not found, falling back to Gaussian")
             estimate_irf = 'gaussian'
             irf_path = None
-    elif estimate_irf == 'machine_irf':
+    elif estimate_irf == 'machine_irf' or estimate_irf.startswith('machine_irf_sigma'):
         _default_machine = str(MACHINE_IRF_DEFAULT_PATH)
         machine_irf_path = input(
             f"Enter path to machine IRF .npy (Enter for default: {_default_machine}): "
@@ -491,6 +494,8 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progres
     
     print(f"\nBuilding IRF (method: {args.estimate_irf})...")
     
+    sigma_max = MACHINE_IRF_SIGMA_MAX_FULL   # default; overridden by sigma variants
+    
     if args.irf is not None and Path(args.irf).exists():
         irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
         strategy = "scatter_ptu"
@@ -531,6 +536,27 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progres
         has_tail  = MACHINE_IRF_FIT_TAIL
         fit_sigma = MACHINE_IRF_FIT_SIGMA
         fit_bg    = MACHINE_IRF_FIT_BG
+        sigma_max = MACHINE_IRF_SIGMA_MAX_FULL
+        print(f"  IRF: {strategy}")
+
+    elif args.estimate_irf == "machine_irf_sigma_full":
+        irf_prompt, strategy = _load_machine_irf_prompt(
+            getattr(args, 'machine_irf', None), n_bins, decay_peak_bin)
+        has_tail  = MACHINE_IRF_FIT_TAIL
+        fit_sigma = True
+        fit_bg    = MACHINE_IRF_FIT_BG
+        sigma_max = MACHINE_IRF_SIGMA_MAX_FULL
+        strategy += " + σ≤{:.1f}".format(sigma_max)
+        print(f"  IRF: {strategy}")
+
+    elif args.estimate_irf == "machine_irf_sigma_half":
+        irf_prompt, strategy = _load_machine_irf_prompt(
+            getattr(args, 'machine_irf', None), n_bins, decay_peak_bin)
+        has_tail  = MACHINE_IRF_FIT_TAIL
+        fit_sigma = True
+        fit_bg    = MACHINE_IRF_FIT_BG
+        sigma_max = MACHINE_IRF_SIGMA_MAX_HALF
+        strategy += " + σ≤{:.1f}".format(sigma_max)
         print(f"  IRF: {strategy}")
 
     elif args.estimate_irf == "raw":
@@ -577,6 +603,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progres
         workers=args.workers,
         polish=not args.no_polish,
         cost_function=getattr(args, 'cost_function', 'poisson'),
+        sigma_max=sigma_max,
     )
     
     print_summary(global_summary, strategy, args.nexp)
@@ -680,19 +707,21 @@ def single_FOV_flim_fit_inquire():
         else:
             use_xlsx_irf = False
             print("\nIRF estimation options:")
-            print("  1. 'file'   - measured IRF image (scatter PTU)")
-            print("  2. 'machine_irf' - prebuilt machine IRF (.npy)")
-            print("  3. 'raw'    - non‑parametric IRF from raw decay")
-            print("  4. 'parametric' - fit Gaussian + exponential tail to rising edge")
-            print("  5. 'none'   - do not estimate IRF (not recommended)")
+            print("  1. 'file'                    - measured IRF image (scatter PTU)")
+            print("  2. 'machine_irf'             - prebuilt machine IRF (.npy)")
+            print("  3. 'machine_irf_sigma_full'  - machine IRF + full σ broadening (σ≤3.0)")
+            print("  4. 'machine_irf_sigma_half'  - machine IRF + half σ broadening (σ≤0.5)")
+            print("  5. 'raw'    - non‑parametric IRF from raw decay")
+            print("  6. 'parametric' - fit Gaussian + exponential tail to rising edge")
+            print("  7. 'none'   - do not estimate IRF (not recommended)")
             method_q = [inquirer.List('method',
                                       message="Choose IRF estimation method",
-                                      choices=['file', 'machine_irf', 'raw', 'parametric', 'none'])]
+                                      choices=['file', 'machine_irf', 'machine_irf_sigma_full', 'machine_irf_sigma_half', 'raw', 'parametric', 'none'])]
             estimate_irf = inquirer.prompt(method_q)['method']
             if estimate_irf == 'file':
                 irf_path = input("Enter path to IRF PTU file: ").strip()
                 machine_irf_path = None
-            elif estimate_irf == 'machine_irf':
+            elif estimate_irf == 'machine_irf' or estimate_irf.startswith('machine_irf_sigma'):
                 _default_machine = str(MACHINE_IRF_DEFAULT_PATH)
                 machine_irf_path = input(
                     f"Enter path to machine IRF .npy (Enter for default: {_default_machine}): "
@@ -708,12 +737,12 @@ def single_FOV_flim_fit_inquire():
         print("\nNo XLSX file – IRF must be estimated or provided separately.")
         method_q = [inquirer.List('method',
                                   message="Choose IRF estimation method",
-                                  choices=['file', 'machine_irf', 'raw', 'parametric', 'none'])]
+                                  choices=['file', 'machine_irf', 'machine_irf_sigma_full', 'machine_irf_sigma_half', 'raw', 'parametric', 'none'])]
         estimate_irf = inquirer.prompt(method_q)['method']
         if estimate_irf == 'file':
             irf_path = input("Enter path to IRF PTU file: ").strip()
             machine_irf_path = None
-        elif estimate_irf == 'machine_irf':
+        elif estimate_irf == 'machine_irf' or estimate_irf.startswith('machine_irf_sigma'):
             _default_machine = str(MACHINE_IRF_DEFAULT_PATH)
             machine_irf_path = input(
                 f"Enter path to machine IRF .npy (Enter for default: {_default_machine}): "
@@ -848,6 +877,8 @@ def _run_flim_fit(args, progress_callback=None, cancel_event=None, progress_wind
 
     print(f"\n[4] Building IRF")
 
+    sigma_max = MACHINE_IRF_SIGMA_MAX_FULL   # default; overridden by sigma variants
+
     if args.irf is not None:
         irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
         strategy   = "scatter_ptu"
@@ -889,6 +920,26 @@ def _run_flim_fit(args, progress_callback=None, cancel_event=None, progress_wind
         has_tail  = MACHINE_IRF_FIT_TAIL
         fit_sigma = MACHINE_IRF_FIT_SIGMA
         fit_bg    = MACHINE_IRF_FIT_BG
+        print(f"  IRF: {strategy}")
+
+    elif args.estimate_irf == "machine_irf_sigma_full":
+        irf_prompt, strategy = _load_machine_irf_prompt(
+            getattr(args, 'machine_irf', None), ptu.n_bins, decay_peak_bin)
+        has_tail  = MACHINE_IRF_FIT_TAIL
+        fit_sigma = True
+        fit_bg    = MACHINE_IRF_FIT_BG
+        sigma_max = MACHINE_IRF_SIGMA_MAX_FULL
+        strategy += " + σ≤{:.1f}".format(sigma_max)
+        print(f"  IRF: {strategy}")
+
+    elif args.estimate_irf == "machine_irf_sigma_half":
+        irf_prompt, strategy = _load_machine_irf_prompt(
+            getattr(args, 'machine_irf', None), ptu.n_bins, decay_peak_bin)
+        has_tail  = MACHINE_IRF_FIT_TAIL
+        fit_sigma = True
+        fit_bg    = MACHINE_IRF_FIT_BG
+        sigma_max = MACHINE_IRF_SIGMA_MAX_HALF
+        strategy += " + σ≤{:.1f}".format(sigma_max)
         print(f"  IRF: {strategy}")
 
     elif xlsx is not None and xlsx['irf_t'] is not None and not args.no_xlsx_irf:
@@ -938,6 +989,7 @@ def _run_flim_fit(args, progress_callback=None, cancel_event=None, progress_wind
             workers=args.workers,
             polish=not args.no_polish,
             cost_function=getattr(args, 'cost_function', 'poisson'),
+            sigma_max=sigma_max,
         )
 
     if args.mode in ("summed", "both"):
@@ -1156,18 +1208,20 @@ def tile_fit_inquire():
     print("\nFitting Parameters")
 
     print("\nIRF estimation options:")
-    print("  1. 'parametric' - fit Gaussian + exponential tail to rising edge (default)")
-    print("  2. 'raw'        - non-parametric IRF from raw decay")
-    print("  3. 'machine_irf' - prebuilt machine IRF (.npy), reused for all tiles")
-    print("  4. 'irf_xlsx_dir' - per-tile xlsx directory (fill in once format is known)")
+    print("  1. 'parametric'              - fit Gaussian + exponential tail to rising edge (default)")
+    print("  2. 'raw'                     - non-parametric IRF from raw decay")
+    print("  3. 'machine_irf'             - prebuilt machine IRF (.npy), reused for all tiles")
+    print("  4. 'machine_irf_sigma_full'  - machine IRF + full σ broadening (σ≤3.0)")
+    print("  5. 'machine_irf_sigma_half'  - machine IRF + half σ broadening (σ≤0.5, recommended)")
+    print("  6. 'irf_xlsx_dir'            - per-tile xlsx directory (fill in once format is known)")
     method_q = [inquirer.List('method',
                               message="Choose IRF method",
-                              choices=['parametric', 'raw', 'machine_irf', 'irf_xlsx_dir'])]
+                              choices=['parametric', 'raw', 'machine_irf', 'machine_irf_sigma_full', 'machine_irf_sigma_half', 'irf_xlsx_dir'])]
     estimate_irf = inquirer.prompt(method_q)['method']
 
     irf_xlsx_dir = None
     machine_irf_path = None
-    if estimate_irf == 'machine_irf':
+    if estimate_irf == 'machine_irf' or estimate_irf.startswith('machine_irf_sigma'):
         _default_machine = str(MACHINE_IRF_DEFAULT_PATH)
         machine_irf_path = input(
             f"Enter path to machine IRF .npy (Enter for default: {_default_machine}): "

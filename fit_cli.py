@@ -14,6 +14,7 @@ from flimkit.FLIM.fit_tools import find_irf_peak_bin
 from flimkit.image.tools import make_intensity_image, apply_intensity_threshold, pick_intensity_threshold
 from flimkit.utils.enhanced_outputs import save_weighted_tau_images, save_individual_tau_maps
 from flimkit.configs import *
+from flimkit.interactive import _load_machine_irf_prompt
 
 warnings.filterwarnings("ignore")
 
@@ -39,9 +40,14 @@ def single_FOV_flim_fit_cli():
                          "system-specific (not FOV-specific) so export once per "
                          "session and reuse across all PTU files. Independent of "
                          "--xlsx which is for overlay/comparison only.")
-    ap.add_argument("--estimate-irf", choices=["raw", "parametric", "none"],
+    ap.add_argument("--estimate-irf", choices=["raw", "parametric", "machine_irf", "machine_irf_sigma_full", "machine_irf_sigma_half", "none"],
                     default=Estimate_IRF,
-                    help="If no direct IRF provided, estimate from the decay rising edge. Options: 'raw' for a non-parametric IRF from the raw decay, 'parametric' to fit a Gaussian + exponential tail model to the rising edge, or 'none' to not estimate the IRF (e.g. if you have a separate IRF file or are using a system with a very narrow IRF that doesn't need to be accounted for).")
+                    help="IRF estimation method. 'machine_irf' uses prebuilt .npy. "
+                         "'machine_irf_sigma_full' adds full σ broadening (σ≤3.0). "
+                         "'machine_irf_sigma_half' adds capped broadening (σ≤0.5, recommended).")
+    ap.add_argument("--machine-irf", default=None,
+                    help="Path to machine IRF .npy file (default: built-in). "
+                         "Used with --estimate-irf machine_irf variants.")
     ap.add_argument("--irf-bins",      type=int,   default=IRF_BINS)
     ap.add_argument("--irf-fit-width", type=float, default=IRF_FIT_WIDTH)
     ap.add_argument("--irf-fwhm", type=float, default=IRF_FWHM,
@@ -155,6 +161,9 @@ def single_FOV_flim_fit_cli():
     #  Build IRF — sets has_tail, fit_sigma, fit_bg per path 
     print(f"\n[4] Building IRF")
 
+    sigma_max = MACHINE_IRF_SIGMA_MAX_FULL   # default; overridden by sigma variants
+
+
     if args.irf is not None:
         # Scatter PTU: IRF fully measured, no tail or sigma needed
         irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
@@ -211,7 +220,7 @@ def single_FOV_flim_fit_cli():
         fit_sigma = True
         fit_bg    = True
 
-    elif args.estimate_irf != "none":
+    elif args.estimate_irf not in ("none",) and not args.estimate_irf.startswith("machine_irf"):
         # Rising-edge estimation: tail and sigma still needed
         if args.estimate_irf == "raw":
             irf_prompt = estimate_irf_from_decay_raw(
@@ -226,6 +235,23 @@ def single_FOV_flim_fit_cli():
         fit_sigma = True
         fit_bg    = True
         print(f"  IRF: {strategy} + tail + σ as free params")
+
+    elif args.estimate_irf.startswith("machine_irf"):
+        irf_prompt, strategy = _load_machine_irf_prompt(
+            getattr(args, 'machine_irf', None), ptu.n_bins, decay_peak_bin)
+        has_tail  = MACHINE_IRF_FIT_TAIL
+        fit_bg    = MACHINE_IRF_FIT_BG
+        if args.estimate_irf == "machine_irf":
+            fit_sigma = MACHINE_IRF_FIT_SIGMA
+        elif args.estimate_irf == "machine_irf_sigma_full":
+            fit_sigma = True
+            sigma_max = MACHINE_IRF_SIGMA_MAX_FULL
+            strategy += " + σ≤{:.1f}".format(sigma_max)
+        elif args.estimate_irf == "machine_irf_sigma_half":
+            fit_sigma = True
+            sigma_max = MACHINE_IRF_SIGMA_MAX_HALF
+            strategy += " + σ≤{:.1f}".format(sigma_max)
+        print(f"  IRF: {strategy}")
 
     else:
         # Gaussian (paper equation): FWHM known, σ fixed at 0.
@@ -269,6 +295,7 @@ def single_FOV_flim_fit_cli():
             workers=args.workers,
             polish=not args.no_polish,
             cost_function=args.cost_function,
+            sigma_max=sigma_max,
         )
 
     if args.mode in ("summed", "both"):
@@ -357,9 +384,14 @@ def single_FOV_flim_fit_cli():
                          "system-specific (not FOV-specific) so export once per "
                          "session and reuse across all PTU files. Independent of "
                          "--xlsx which is for overlay/comparison only.")
-    ap.add_argument("--estimate-irf", choices=["raw", "parametric", "none"],
+    ap.add_argument("--estimate-irf", choices=["raw", "parametric", "machine_irf", "machine_irf_sigma_full", "machine_irf_sigma_half", "none"],
                     default=Estimate_IRF,
-                    help="If no direct IRF provided, estimate from the decay rising edge. Options: 'raw' for a non-parametric IRF from the raw decay, 'parametric' to fit a Gaussian + exponential tail model to the rising edge, or 'none' to not estimate the IRF (e.g. if you have a separate IRF file or are using a system with a very narrow IRF that doesn't need to be accounted for).")
+                    help="IRF estimation method. 'machine_irf' uses prebuilt .npy. "
+                         "'machine_irf_sigma_full' adds full σ broadening (σ≤3.0). "
+                         "'machine_irf_sigma_half' adds capped broadening (σ≤0.5, recommended).")
+    ap.add_argument("--machine-irf", default=None,
+                    help="Path to machine IRF .npy file (default: built-in). "
+                         "Used with --estimate-irf machine_irf variants.")
     ap.add_argument("--irf-bins",      type=int,   default=IRF_BINS)
     ap.add_argument("--irf-fit-width", type=float, default=IRF_FIT_WIDTH)
     ap.add_argument("--irf-fwhm", type=float, default=IRF_FWHM,
@@ -473,6 +505,9 @@ def single_FOV_flim_fit_cli():
     #  Build IRF — sets has_tail, fit_sigma, fit_bg per path 
     print(f"\n[4] Building IRF")
 
+    sigma_max = MACHINE_IRF_SIGMA_MAX_FULL   # default; overridden by sigma variants
+
+
     if args.irf is not None:
         # Scatter PTU: IRF fully measured, no tail or sigma needed
         irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
@@ -529,7 +564,7 @@ def single_FOV_flim_fit_cli():
         fit_sigma = True
         fit_bg    = True
 
-    elif args.estimate_irf != "none":
+    elif args.estimate_irf not in ("none",) and not args.estimate_irf.startswith("machine_irf"):
         # Rising-edge estimation: tail and sigma still needed
         if args.estimate_irf == "raw":
             irf_prompt = estimate_irf_from_decay_raw(
@@ -544,6 +579,23 @@ def single_FOV_flim_fit_cli():
         fit_sigma = True
         fit_bg    = True
         print(f"  IRF: {strategy} + tail + σ as free params")
+
+    elif args.estimate_irf.startswith("machine_irf"):
+        irf_prompt, strategy = _load_machine_irf_prompt(
+            getattr(args, 'machine_irf', None), ptu.n_bins, decay_peak_bin)
+        has_tail  = MACHINE_IRF_FIT_TAIL
+        fit_bg    = MACHINE_IRF_FIT_BG
+        if args.estimate_irf == "machine_irf":
+            fit_sigma = MACHINE_IRF_FIT_SIGMA
+        elif args.estimate_irf == "machine_irf_sigma_full":
+            fit_sigma = True
+            sigma_max = MACHINE_IRF_SIGMA_MAX_FULL
+            strategy += " + σ≤{:.1f}".format(sigma_max)
+        elif args.estimate_irf == "machine_irf_sigma_half":
+            fit_sigma = True
+            sigma_max = MACHINE_IRF_SIGMA_MAX_HALF
+            strategy += " + σ≤{:.1f}".format(sigma_max)
+        print(f"  IRF: {strategy}")
 
     else:
         # Gaussian (paper equation): FWHM known, σ fixed at 0.
@@ -587,6 +639,7 @@ def single_FOV_flim_fit_cli():
             workers=args.workers,
             polish=not args.no_polish,
             cost_function=args.cost_function,
+            sigma_max=sigma_max,
         )
 
     if args.mode in ("summed", "both"):

@@ -74,6 +74,8 @@ MACHINE_IRF_FIT_STRATEGY = "fixed"  # notebook-chosen default: fixed machine IRF
 MACHINE_IRF_FIT_BG = True
 MACHINE_IRF_FIT_SIGMA = False
 MACHINE_IRF_FIT_TAIL = False
+MACHINE_IRF_SIGMA_MAX_FULL = 3.0    # σ upper bound for "full sigma" mode (bins)
+MACHINE_IRF_SIGMA_MAX_HALF = 0.5    # σ upper bound for "half sigma" mode (bins)
 MACHINE_IRF_DE_POPULATION = 30
 MACHINE_IRF_DE_MAXITER = 5000
 

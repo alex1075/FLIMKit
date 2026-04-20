@@ -883,6 +883,7 @@ def fit_flim_tiles(
     from ..configs import (
         MACHINE_IRF_DEFAULT_PATH,
         MACHINE_IRF_FIT_BG, MACHINE_IRF_FIT_SIGMA, MACHINE_IRF_FIT_TAIL,
+        MACHINE_IRF_SIGMA_MAX_FULL, MACHINE_IRF_SIGMA_MAX_HALF,
         MIN_PHOTONS_PERPIX,
         Tau_min, Tau_max, n_exp as _cfg_nexp,
         Cost_function, Optimizer, lm_restarts, n_workers,
@@ -910,6 +911,14 @@ def fit_flim_tiles(
     fit_bg      = MACHINE_IRF_FIT_BG
     fit_sigma   = MACHINE_IRF_FIT_SIGMA
     has_tail    = MACHINE_IRF_FIT_TAIL
+    sigma_max   = MACHINE_IRF_SIGMA_MAX_FULL
+    estimate_irf = getattr(args, 'estimate_irf', 'machine_irf')
+    if estimate_irf == 'machine_irf_sigma_full':
+        fit_sigma = True
+        sigma_max = MACHINE_IRF_SIGMA_MAX_FULL
+    elif estimate_irf == 'machine_irf_sigma_half':
+        fit_sigma = True
+        sigma_max = MACHINE_IRF_SIGMA_MAX_HALF
     mach_path   = getattr(args, 'machine_irf',  str(MACHINE_IRF_DEFAULT_PATH))
 
     machine_irf, pi_machine = _load_machine_irf(mach_path)
@@ -1017,6 +1026,7 @@ def fit_flim_tiles(
         cost_function = cost_fn,
         n_restarts    = restarts,
         workers       = workers,
+        sigma_max     = sigma_max,
     )
     consensus_taus_ns = global_summary['taus_ns']
 
