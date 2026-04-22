@@ -409,3 +409,111 @@ def load_mock_ptu_file(ptu_path: Path):
         def summed_decay(self, channel=None):
             return self.ptu.summed_decay(channel)
     return _Wrapper(ptu)
+
+
+# ---------------------------------------------------------------------------
+# FRET phasor mock data
+# ---------------------------------------------------------------------------
+
+# Ground-truth FRET parameters used throughout the FRET test suite.
+MOCK_FRET_FREQ   = 80.0   # MHz  — laser repetition rate
+MOCK_FRET_TAU_D  = 4.0    # ns   — unquenched donor lifetime
+MOCK_FRET_TAU_A  = 3.0    # ns   — acceptor lifetime
+
+
+def fret_donor_phasor_truth(efficiency: float) -> Tuple[float, float]:
+    """Return the exact phasorpy FRET donor ``(G, S)`` for a given efficiency.
+
+    This is the ground truth that ``generate_fret_donor_image`` centres its
+    pixels on.  Tests can compare fit results directly against this value.
+    """
+    from phasorpy.lifetime import phasor_from_fret_donor
+    g, s = phasor_from_fret_donor(
+        MOCK_FRET_FREQ, MOCK_FRET_TAU_D,
+        fret_efficiency=efficiency,
+        unit_conversion=1e-3,
+    )
+    return float(g), float(s)
+
+
+def fret_acceptor_phasor_truth(efficiency: float) -> Tuple[float, float]:
+    """Return the exact phasorpy FRET acceptor ``(G, S)`` for a given efficiency."""
+    from phasorpy.lifetime import phasor_from_fret_acceptor
+    g, s = phasor_from_fret_acceptor(
+        MOCK_FRET_FREQ, MOCK_FRET_TAU_D, MOCK_FRET_TAU_A,
+        fret_efficiency=efficiency,
+        unit_conversion=1e-3,
+    )
+    return float(g), float(s)
+
+
+def generate_fret_donor_image(
+    efficiency: float,
+    shape: Tuple[int, int] = (8, 8),
+    noise: float = 0.005,
+    mean_photons: float = 100.0,
+    seed: int = 0,
+):
+    """Generate a synthetic calibrated donor-channel phasor image.
+
+    Each pixel is drawn from a Gaussian centred on the phasorpy FRET donor
+    model prediction for *efficiency*.  The ground-truth phasor coordinate
+    can be recovered with :func:`fret_donor_phasor_truth`.
+
+    Parameters
+    ----------
+    efficiency : float
+        FRET efficiency in [0, 1].
+    shape : tuple of int
+        Spatial shape ``(Y, X)`` of the output image.
+    noise : float
+        Std-dev of the per-pixel Gaussian noise (phasor units).
+    mean_photons : float
+        Uniform mean-photon value assigned to every pixel.
+    seed : int
+        NumPy random seed for reproducibility.
+
+    Returns
+    -------
+    FRETChannelData
+    """
+    from flimkit.phasor.fret import FRETChannelData
+    rng = np.random.default_rng(seed)
+    g0, s0 = fret_donor_phasor_truth(efficiency)
+    g = np.full(shape, g0) + rng.normal(0, noise, shape)
+    s = np.full(shape, s0) + rng.normal(0, noise, shape)
+    mean = np.full(shape, mean_photons)
+    return FRETChannelData(real_cal=g, imag_cal=s, mean=mean, frequency=MOCK_FRET_FREQ)
+
+
+def generate_fret_acceptor_image(
+    efficiency: float,
+    shape: Tuple[int, int] = (8, 8),
+    noise: float = 0.005,
+    mean_photons: float = 100.0,
+    seed: int = 1,
+):
+    """Generate a synthetic calibrated acceptor-channel phasor image.
+
+    Each pixel is drawn from a Gaussian centred on the phasorpy FRET acceptor
+    model prediction for *efficiency*.  The ground-truth phasor coordinate
+    can be recovered with :func:`fret_acceptor_phasor_truth`.
+
+    Parameters
+    ----------
+    efficiency : float
+        FRET efficiency in [0, 1].
+    shape, noise, mean_photons, seed
+        See :func:`generate_fret_donor_image`.
+
+    Returns
+    -------
+    FRETChannelData
+    """
+    from flimkit.phasor.fret import FRETChannelData
+    rng = np.random.default_rng(seed)
+    g0, s0 = fret_acceptor_phasor_truth(efficiency)
+    g = np.full(shape, g0) + rng.normal(0, noise, shape)
+    s = np.full(shape, s0) + rng.normal(0, noise, shape)
+    mean = np.full(shape, mean_photons)
+    return FRETChannelData(real_cal=g, imag_cal=s, mean=mean, frequency=MOCK_FRET_FREQ)
