@@ -170,8 +170,17 @@ def load_session(path: str) -> dict:
 
 # Pipeline: PTU → phasor → (optional) calibration
 
-def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
+def _process_ptu(ptu_path: str, irf_path: str | None = None, channel: int | None = None) -> dict:
     """Load a PTU file, compute phasors, optionally calibrate with IRF.
+
+    Parameters
+    ----------
+    ptu_path : str
+        Path to PTU file.
+    irf_path : str, optional
+        Path to IRF calibration file.
+    channel : int, optional
+        Detection channel to use. If None, will auto-detect or prompt user.
 
     Returns dict with ``real_cal``, ``imag_cal``, ``mean``, ``frequency``,
     and ``display_image`` (nsync-based intensity for correct spatial overlay).
@@ -182,7 +191,30 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
     from .phasor.signal import get_phasor_irf, calibrate_signal_with_irf
 
     print(f"Loading PTU file: {ptu_path}")
-    signal = signal_from_PTUFile(ptu_path, dtype=np.uint32, binning=4)
+    
+    # Detect available channels and prompt if needed
+    ptu_temp = PTUFile(str(ptu_path), verbose=False)
+    records = ptu_temp._load_records()
+    ch_raw, _, _ = ptu_temp._decode_picoharp_t3(records)
+    active_chs = sorted(np.unique(ch_raw[(ch_raw != 0xF) & (ch_raw >= 0)]).astype(int))
+    
+    if channel is None:
+        if len(active_chs) > 1:
+            import inquirer
+            ch_choice = inquirer.prompt([inquirer.List(
+                'ch', 
+                message=f'Multiple channels detected: {active_chs}. Which one to analyze?',
+                choices=[f'Channel {c}' for c in active_chs]
+            )])['ch']
+            channel = int(ch_choice.split()[-1])
+        elif len(active_chs) == 1:
+            channel = active_chs[0]
+            print(f"Auto-selected channel {channel} (only channel available)")
+        else:
+            raise ValueError("No photon channels found in PTU file")
+    
+    print(f"Using channel: {channel}")
+    signal = signal_from_PTUFile(ptu_path, dtype=np.uint32, binning=4, channel=channel)
     frequency = float(signal.attrs['frequency'])
 
     print(f"Computing phasors (frequency = {frequency:.2f} MHz) …")
@@ -191,7 +223,7 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None) -> dict:
     # Build a spatially-correct intensity image via raw_pixel_stack
     # (uses nsync timing → accurate pixel positions for the FOV overlay)
     ptu = PTUFile(str(ptu_path), verbose=False)
-    display_image = ptu.raw_pixel_stack(binning=4).sum(axis=-1)  # (Y, X)
+    display_image = ptu.raw_pixel_stack(channel=channel, binning=4).sum(axis=-1)  # (Y, X)
 
     if irf_path:
         from .phasor.signal import calibrate_signal_with_machine_irf
@@ -226,6 +258,7 @@ def launch_phasor(ptu_path: str | None = None,
                   machine_irf_path: str | None = None,
                   session_path: str | None = None,
                   *,
+                  channel: int | None = None,
                   min_photons: float = 0.01,
                   max_cursors: int = 6,
                   figsize: tuple[float, float] = (8, 5)) -> dict:
@@ -241,6 +274,9 @@ def launch_phasor(ptu_path: str | None = None,
         Path to the IRF Excel calibration file.
     session_path : str, optional
         Path to a previously saved *.npz* session to resume.
+    channel : int, optional
+        Detection channel to use. If None and multiple channels exist,
+        the user will be prompted to choose.
     min_photons, max_cursors, figsize
         Forwarded to :func:`~flimkit.phasor.interactive.phasor_cursor_tool`.
 
@@ -316,7 +352,7 @@ def launch_phasor(ptu_path: str | None = None,
         # machine_irf_path takes precedence as the calibration source
         # if no XLSX IRF is supplied
         effective_irf = irf_path or machine_irf_path
-        data = _process_ptu(ptu_path, effective_irf)
+        data = _process_ptu(ptu_path, effective_irf, channel=channel)
     _data = data          # capture for closure
 
     def _save_callback(state, params):

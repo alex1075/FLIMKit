@@ -9,9 +9,7 @@ from phasorpy.lifetime import phasor_to_apparent_lifetime
 from phasorpy.plot import PhasorPlot
 
 
-# ─────────────────────────────────────────────────────────────
 # Peak detection
-# ─────────────────────────────────────────────────────────────
 def find_phasor_peaks(
     real_cal: np.ndarray,
     imag_cal: np.ndarray,
@@ -115,9 +113,7 @@ def find_phasor_peaks(
     )
 
 
-# ─────────────────────────────────────────────────────────────
 # Pretty-print
-# ─────────────────────────────────────────────────────────────
 def print_peaks(peaks: dict) -> None:
     """Print a summary table of detected peaks."""
     n = peaks['n_peaks']
@@ -146,9 +142,7 @@ def print_peaks(peaks: dict) -> None:
                   f"τ_m = {peaks['tau_mod'][i]:.2f} ns")
 
 
-# ─────────────────────────────────────────────────────────────
 # Plotting
-# ─────────────────────────────────────────────────────────────
 def plot_phasor_peaks(
     peaks: dict,
     real_cal: np.ndarray,
@@ -184,13 +178,13 @@ def plot_phasor_peaks(
     pg, ps = peaks['peak_g'], peaks['peak_s']
     tp = peaks['tau_phase']
 
-    # ── Annotate an existing axes (e.g. the interactive phasor) ──
+    # Annotate an existing axes (e.g. the interactive phasor)
     if ax_phasor is not None:
         _annotate_peaks(ax_phasor, n, pg, ps, tp)
         ax_phasor.figure.canvas.draw_idle()
         return None
-
-    # ── Full standalone figure ───────────────────────────────
+ 
+    # Full standalone figure
     rc = np.asarray(real_cal).squeeze().astype(float)
     ic = np.asarray(imag_cal).squeeze().astype(float)
     mn = np.asarray(mean).squeeze().astype(float)

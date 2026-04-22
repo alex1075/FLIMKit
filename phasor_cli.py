@@ -23,6 +23,8 @@ def main():
                     help="Path to a .ptu file (skips the first prompt)")
     ap.add_argument("--irf", default=None,
                     help="Path to the IRF calibration Excel file")
+    ap.add_argument("--channel", type=int, default=None,
+                    help="Detection channel to use (skips channel selection if multiple exist)")
     ap.add_argument("--session", default=None,
                     help="Resume a previously saved .npz session")
     args = ap.parse_args()
@@ -32,6 +34,7 @@ def main():
         launch_phasor(
             ptu_path=args.ptu,
             irf_path=args.irf,
+            channel=args.channel,
             session_path=args.session,
         )
     else:

@@ -3796,9 +3796,15 @@ Built with Python, Tkinter, NumPy, and SciPy.
             # Extract all arrays from NPZ
             for key in data.files:
                 val = data[key]
-                # Convert object arrays back to lists if needed
-                if hasattr(val, 'dtype') and val.dtype == object:
-                    val = val.tolist()
+                # Convert numpy scalar types to Python equivalents
+                if isinstance(val, np.ndarray):
+                    if val.ndim == 0:
+                        # 0-d array (scalar) — extract with .item()
+                        val = val.item()
+                    elif val.dtype == object:
+                        # Object array — convert to list
+                        val = val.tolist()
+                    # else: keep as ndarray (image data, etc.)
                 loaded[key] = val
             
             print(f"✓ Loaded session from {session_path}")
