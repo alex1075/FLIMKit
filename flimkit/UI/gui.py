@@ -733,13 +733,14 @@ class FOVPreviewPanel:
         self._fig = Figure(figsize=(10, 8), dpi=100, facecolor="black")
         self._decay_visible = True  # Track decay panel visibility
         self._display_mode = "flim"  # "flim" or "intensity" — which image gets the main slot
-        # Initial layout: 2 rows, 3 cols
-        gs = GridSpec(2, 3, figure=self._fig, height_ratios=[1, 0.6], width_ratios=[1, 1, 0.05], hspace=0.3, wspace=0.15)
+        # Initial layout: 3 rows, 3 cols (images | decay | residuals)
+        gs = GridSpec(3, 3, figure=self._fig, height_ratios=[1, 0.6, 0.3], width_ratios=[1, 1, 0.05], hspace=0.38, wspace=0.15)
         
         self._ax_img = self._fig.add_subplot(gs[0, 0])    # Intensity (top-left)
         self._ax_flim = self._fig.add_subplot(gs[0, 1])   # FLIM (top-right)
         self._ax_cbar = self._fig.add_subplot(gs[0, 2])   # Colorbar (top-right, narrow)
-        self._ax_decay = self._fig.add_subplot(gs[1, :])  # Decay (bottom, full width)
+        self._ax_decay = self._fig.add_subplot(gs[1, :])  # Decay (full width)
+        self._ax_resid = self._fig.add_subplot(gs[2, :], sharex=self._ax_decay)  # Residuals (full width)
         for _ax in (self._ax_img, self._ax_flim):
             _ax.set_facecolor('black')
         self._ax_decay.set_facecolor('white')
@@ -747,6 +748,10 @@ class FOVPreviewPanel:
         self._ax_decay.xaxis.label.set_color('white')
         self._ax_decay.yaxis.label.set_color('white')
         self._ax_decay.title.set_color('white')
+        self._ax_resid.set_facecolor('white')
+        self._ax_resid.tick_params(colors='white')
+        self._ax_resid.xaxis.label.set_color('white')
+        self._ax_resid.yaxis.label.set_color('white')
         self._strip_image_axes(self._ax_img)
         self._strip_image_axes(self._ax_flim)
         
@@ -840,6 +845,7 @@ class FOVPreviewPanel:
         self._cached_decay_lines = []  # Persist decay data across layout rebuilds
         self._cached_decay_title = ""
         self._cached_decay_yscale = "log"
+        self._cached_resid_data = None  # (time_ns, resid) tuple for layout rebuilds
 
         # Connect scroll-wheel zoom on image axes
         self._setup_zoom()
@@ -889,6 +895,13 @@ class FOVPreviewPanel:
             self._ax_decay.set_ylabel("Photon Count", color='white')
             self._ax_decay.grid(True, alpha=0.3)
             self._ax_decay.tick_params(labelsize=8, colors='white')
+
+            # Clear residuals when loading a new FOV (no fit yet)
+            self._ax_resid.clear()
+            self._ax_resid.set_facecolor('white')
+            self._ax_resid.tick_params(labelsize=7, colors='white')
+            self._ax_resid.grid(True, alpha=0.3)
+            self._cached_resid_data = None
 
             # FIX 1: preserve drawn regions after PTU reload
             self._redraw_region_overlays()
@@ -1143,6 +1156,28 @@ class FOVPreviewPanel:
                 self._ax_decay.legend(fontsize=8, loc="upper right", labelcolor='black')
             self._ax_decay.grid(True, alpha=0.3)
             self._ax_decay.tick_params(labelsize=8, colors='white')
+
+            # --- Residuals panel ---
+            self._ax_resid.clear()
+            self._ax_resid.set_facecolor('white')
+            model_arr = global_summary.get('model')
+            if (decay is not None and len(decay) > 0
+                    and model_arr is not None
+                    and len(model_arr) == len(decay)):
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    resid = np.where(model_arr > 0,
+                                     (decay - model_arr) / np.sqrt(model_arr),
+                                     0.0)
+                self._cached_resid_data = (time_ns.copy(), resid)
+                self._ax_resid.plot(time_ns, resid, color='steelblue', linewidth=1.0)
+                self._ax_resid.axhline(0, color='red', linewidth=1.0,
+                                       linestyle='--', alpha=0.8)
+                self._ax_resid.set_ylabel("Resid. (σ)", fontsize=7, color='white')
+            else:
+                self._cached_resid_data = None
+            self._ax_resid.set_xlabel("Time (ns)", color='white')
+            self._ax_resid.tick_params(labelsize=7, colors='white')
+            self._ax_resid.grid(True, alpha=0.3)
 
             # Show control frame now that we have FLIM data
             self._ctrl_frame.grid()
@@ -1713,19 +1748,20 @@ class FOVPreviewPanel:
         decay_yscale = self._cached_decay_yscale
 
         # Remove old axes
-        for ax in (self._ax_img, self._ax_flim, self._ax_cbar, self._ax_decay):
+        for ax in (self._ax_img, self._ax_flim, self._ax_cbar, self._ax_decay, self._ax_resid):
             ax.remove()
 
         # Build new gridspec
         if self._decay_visible:
-            gs = GridSpec(2, 3, figure=self._fig,
-                          height_ratios=[1, 0.6],
+            gs = GridSpec(3, 3, figure=self._fig,
+                          height_ratios=[1, 0.6, 0.3],
                           width_ratios=[1, 1, 0.05],
-                          hspace=0.3, wspace=0.15)
+                          hspace=0.38, wspace=0.15)
             self._ax_img   = self._fig.add_subplot(gs[0, 0])
             self._ax_flim  = self._fig.add_subplot(gs[0, 1])
             self._ax_cbar  = self._fig.add_subplot(gs[0, 2])
             self._ax_decay = self._fig.add_subplot(gs[1, :])
+            self._ax_resid = self._fig.add_subplot(gs[2, :], sharex=self._ax_decay)
         else:
             if self._display_mode == 'intensity':
                 # Single large intensity image, no colorbar needed
@@ -1748,6 +1784,8 @@ class FOVPreviewPanel:
                 self._ax_img.set_visible(False)
             self._ax_decay = self._fig.add_axes([0, 0, 0.01, 0.01])
             self._ax_decay.set_visible(False)
+            self._ax_resid = self._fig.add_axes([0, 0, 0.01, 0.01])
+            self._ax_resid.set_visible(False)
 
         for _ax in (self._ax_img, self._ax_flim):
             _ax.set_facecolor('black')
@@ -1813,6 +1851,18 @@ class FOVPreviewPanel:
             self._ax_decay.set_facecolor('white')
             self._ax_decay.tick_params(labelsize=8, colors='white')
             self._ax_decay.grid(True, alpha=0.3)
+
+        # Re-populate residuals if visible
+        if self._decay_visible and self._cached_resid_data is not None:
+            t_r, res_r = self._cached_resid_data
+            self._ax_resid.set_facecolor('white')
+            self._ax_resid.plot(t_r, res_r, color='steelblue', linewidth=1.0)
+            self._ax_resid.axhline(0, color='red', linewidth=1.0,
+                                   linestyle='--', alpha=0.8)
+            self._ax_resid.set_ylabel("Resid. (σ)", fontsize=7, color='white')
+            self._ax_resid.set_xlabel("Time (ns)", color='white')
+            self._ax_resid.tick_params(labelsize=7, colors='white')
+            self._ax_resid.grid(True, alpha=0.3)
 
         # Re-draw ROI overlays on the new FLIM axes
         self._redraw_region_overlays()
@@ -5750,6 +5800,57 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._btn_ph.grid(row=4, column=0, pady=(6, 2), ipadx=16, ipady=3,
                           sticky="w")
 
+        # Find Peaks section
+        peaks_fr = _section(ctrl, "Find Peaks")
+        peaks_fr.grid(row=5, column=0, sticky="ew", pady=(6, 0))
+        peaks_fr.columnconfigure(1, weight=1)
+        ttk.Label(peaks_fr, text="Smooth σ:").grid(
+            row=0, column=0, sticky="w", **PAD)
+        self.sv_ph_pk_sigma = tk.StringVar(value="3.0")
+        ttk.Entry(peaks_fr, textvariable=self.sv_ph_pk_sigma, width=6).grid(
+            row=0, column=1, sticky="w", padx=4)
+        ttk.Label(peaks_fr, text="Threshold:").grid(
+            row=1, column=0, sticky="w", **PAD)
+        self.sv_ph_pk_thresh = tk.StringVar(value="0.10")
+        ttk.Entry(peaks_fr, textvariable=self.sv_ph_pk_thresh, width=6).grid(
+            row=1, column=1, sticky="w", padx=4)
+        ttk.Button(peaks_fr, text="🔍  Find Peaks",
+                   command=self._run_ph_find_peaks).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(4, 0), padx=8)
+
+        # FRET Analysis section
+        fret_fr = _section(ctrl, "FRET Analysis")
+        fret_fr.grid(row=6, column=0, sticky="ew", pady=(6, 0))
+        fret_fr.columnconfigure(1, weight=1)
+        ttk.Label(fret_fr, text="Donor τ (ns):").grid(
+            row=0, column=0, sticky="w", **PAD)
+        self.sv_ph_fret_taud = tk.StringVar(value="4.0")
+        ttk.Entry(fret_fr, textvariable=self.sv_ph_fret_taud, width=8).grid(
+            row=0, column=1, sticky="w", padx=4)
+        ttk.Label(fret_fr, text="Acceptor τ (ns):").grid(
+            row=1, column=0, sticky="w", **PAD)
+        self.sv_ph_fret_taua = tk.StringVar(value="")
+        ttk.Entry(fret_fr, textvariable=self.sv_ph_fret_taua, width=8).grid(
+            row=1, column=1, sticky="w", padx=4)
+        ttk.Label(fret_fr, text="(blank = donor-only)",
+                  foreground="grey").grid(
+            row=1, column=2, sticky="w", padx=2)
+        ttk.Label(fret_fr, text="Donor fretting:").grid(
+            row=2, column=0, sticky="w", **PAD)
+        self.sv_ph_fret_fretting = tk.StringVar(value="1.0")
+        ttk.Entry(fret_fr, textvariable=self.sv_ph_fret_fretting, width=8).grid(
+            row=2, column=1, sticky="w", padx=4)
+        _fret_btn_fr = ttk.Frame(fret_fr)
+        _fret_btn_fr.grid(row=3, column=0, columnspan=3,
+                          sticky="w", pady=(4, 0), padx=8)
+        ttk.Button(_fret_btn_fr, text="↔  Overlay Trajectory",
+                   command=self._run_ph_fret_overlay).pack(side="left", padx=(0, 4))
+        ttk.Button(_fret_btn_fr, text="Fit Donor FRET",
+                   command=self._run_ph_fit_fret).pack(side="left", padx=(0, 4))
+        ttk.Button(_fret_btn_fr, text="✕  Clear Overlay",
+                   command=lambda: self._phasor_panel.clear_fret_overlay()).pack(
+            side="left")
+
         # (PhasorViewPanel lives in the right FOV-preview panel — see _init_ui)
 
     def _ph_mode_changed(self):
@@ -5759,6 +5860,84 @@ Built with Python, Tkinter, NumPy, and SciPy.
         else:
             self._ph_new.grid_remove()
             self._ph_sess.grid()
+
+    def _run_ph_find_peaks(self):
+        """Run find_phasor_peaks on the current phasor panel data."""
+        panel = self._phasor_panel
+        if panel._real is None:
+            messagebox.showwarning("No data", "Load a PTU file first.")
+            return
+        try:
+            sigma  = float(self.sv_ph_pk_sigma.get() or 3.0)
+            thresh = float(self.sv_ph_pk_thresh.get() or 0.10)
+            min_ph = float(self.sv_ph_minph.get() or 0.01)
+        except ValueError:
+            messagebox.showerror("Invalid input",
+                                 "Sigma and threshold must be numeric.")
+            return
+        from flimkit.phasor.peaks import find_phasor_peaks, print_peaks
+        peaks = find_phasor_peaks(
+            panel._real, panel._imag, panel._mean, panel._freq,
+            min_photons=min_ph, sigma=sigma, threshold_frac=thresh)
+        print_peaks(peaks)
+        panel.overlay_peaks(peaks)
+        self._res.set_status(
+            f"✓  Found {peaks['n_peaks']} peak(s) in phasor histogram.")
+
+    def _run_ph_fret_overlay(self):
+        """Overlay a FRET trajectory on the current phasor panel."""
+        panel = self._phasor_panel
+        if panel._real is None:
+            messagebox.showwarning("No data", "Load a PTU file first.")
+            return
+        try:
+            tau_d    = float(self.sv_ph_fret_taud.get())
+            taua_str = self.sv_ph_fret_taua.get().strip()
+            tau_a    = float(taua_str) if taua_str else None
+            fretting = float(self.sv_ph_fret_fretting.get() or 1.0)
+        except ValueError:
+            messagebox.showerror("Invalid input", "Lifetimes must be numeric.")
+            return
+        from flimkit.phasor.fret import predict_fret_trajectory
+        traj = predict_fret_trajectory(
+            panel._freq, tau_d,
+            acceptor_lifetime=tau_a,
+            donor_fretting=fretting)
+        panel.overlay_fret_trajectory(traj)
+        label = f"τ_D={tau_d} ns"
+        if tau_a:
+            label += f", τ_A={tau_a} ns"
+        self._res.set_status(f"✓  FRET trajectory overlaid  ({label}).")
+
+    def _run_ph_fit_fret(self):
+        """Fit donor-channel FRET to the photon-weighted centroid."""
+        panel = self._phasor_panel
+        if panel._real is None:
+            messagebox.showwarning("No data", "Load a PTU file first.")
+            return
+        try:
+            tau_d    = float(self.sv_ph_fret_taud.get())
+            fretting = float(self.sv_ph_fret_fretting.get() or 1.0)
+            min_ph   = float(self.sv_ph_minph.get() or 0.01)
+        except ValueError:
+            messagebox.showerror("Invalid input", "Lifetimes must be numeric.")
+            return
+        from flimkit.phasor.fret import (
+            FRETChannelData, FRETModelParameters, fit_donor_fret)
+        donor  = FRETChannelData(
+            panel._real, panel._imag, panel._mean,
+            panel._freq, min_photons=min_ph)
+        params = FRETModelParameters(
+            donor_lifetime=tau_d,
+            donor_fretting=fretting)
+        try:
+            result = fit_donor_fret(donor, params)
+            result.print_summary()
+            self._res.set_status(
+                f"✓  FRET fit: E={result.fret_efficiency:.3f}  "
+                f"fretting={result.donor_fretting:.3f}")
+        except Exception as exc:
+            messagebox.showerror("FRET fit failed", str(exc))
 
     
     # FOV Preview auto-load

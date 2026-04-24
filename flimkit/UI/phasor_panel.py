@@ -11,7 +11,8 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
-from matplotlib.patches import Ellipse
+from matplotlib.patches import Ellipse, Polygon as MplPolygon
+from matplotlib.path import Path as MplPath
 
 # phasorpy v0.9 — all signatures verified
 from phasorpy.cursor import mask_from_elliptic_cursor, pseudo_color
@@ -59,6 +60,16 @@ class PhasorViewPanel:
         self._cursors: list = []                    # {center_g, center_s, color}
         self._cursor_artists: list = []
 
+        self._fret_trajectory: Optional[dict] = None  # last overlaid FRET traj
+        self._peak_results:    Optional[dict] = None  # last find-peaks result
+
+        self._mode_var = tk.StringVar(value='ellipse')  # 'ellipse' | 'poly'
+        self._poly_pts: list = []                       # in-progress polygon vertices [(g,s)]
+        self._poly_line: Optional[list] = None          # rubber-band artists
+
+        self._drag_idx:  Optional[int] = None           # cursor index being dragged
+        self._drag_last: tuple = (0.0, 0.0)             # last (g, s) during drag
+
 
         self._radius = tk.DoubleVar(value=0.05)
         self._ratio  = tk.DoubleVar(value=0.60)    # radius_minor = ratio × radius
@@ -86,23 +97,42 @@ class PhasorViewPanel:
                    command=self._on_clear).pack(side="left", padx=(0, 4))
         ttk.Button(ctrl, text="↩  Undo",
                    command=self._on_undo).pack(side="left", padx=(0, 8))
-        ttk.Button(ctrl, text="💾  Save session",
-                   command=self._on_save).pack(side="left", padx=(0, 20))
+        ttk.Button(ctrl, text="Save session",
+                   command=self._on_save).pack(side="left", padx=(0, 12))
 
-        ttk.Label(ctrl, text="Radius:").pack(side="left")
-        ttk.Scale(ctrl, variable=self._radius, from_=0.01, to=0.15,
-                  orient="horizontal", length=90,
+        # Drawing mode toggle
+        ttk.Separator(ctrl, orient="vertical").pack(
+            side="left", fill="y", padx=(0, 8))
+        ttk.Label(ctrl, text="Mode:").pack(side="left")
+        ttk.Radiobutton(ctrl, text="Ellipse", variable=self._mode_var,
+                        value='ellipse',
+                        command=self._on_mode_change).pack(
+            side="left", padx=(2, 2))
+        ttk.Radiobutton(ctrl, text="Polygon", variable=self._mode_var,
+                        value='poly',
+                        command=self._on_mode_change).pack(
+            side="left", padx=(0, 8))
+
+        # Ellipse-specific controls (hidden in polygon mode)
+        self._ellipse_ctrl_frame = ttk.Frame(ctrl)
+        self._ellipse_ctrl_frame.pack(side="left")
+        ttk.Label(self._ellipse_ctrl_frame, text="Radius:").pack(side="left")
+        ttk.Scale(self._ellipse_ctrl_frame, variable=self._radius,
+                  from_=0.01, to=0.15, orient="horizontal", length=90,
                   command=lambda _: self._on_param_change()).pack(
             side="left", padx=(2, 4))
-        self._radius_lbl = ttk.Label(ctrl, text="0.050", width=5)
+        self._radius_lbl = ttk.Label(self._ellipse_ctrl_frame,
+                                     text="0.050", width=5)
         self._radius_lbl.pack(side="left", padx=(0, 14))
 
-        ttk.Label(ctrl, text="Minor/major:").pack(side="left")
-        ttk.Scale(ctrl, variable=self._ratio, from_=0.10, to=1.00,
-                  orient="horizontal", length=70,
+        ttk.Label(self._ellipse_ctrl_frame, text="Minor/major:").pack(
+            side="left")
+        ttk.Scale(self._ellipse_ctrl_frame, variable=self._ratio,
+                  from_=0.10, to=1.00, orient="horizontal", length=70,
                   command=lambda _: self._on_param_change()).pack(
             side="left", padx=(2, 4))
-        self._ratio_lbl = ttk.Label(ctrl, text="0.60", width=4)
+        self._ratio_lbl = ttk.Label(self._ellipse_ctrl_frame,
+                                    text="0.60", width=4)
         self._ratio_lbl.pack(side="left")
 
         self._radius.trace_add("write", lambda *_: self._update_param_labels())
@@ -118,7 +148,7 @@ class PhasorViewPanel:
         fig_frame.columnconfigure(0, weight=1)
         fig_frame.rowconfigure(0, weight=1)
 
-        self._fig = Figure(figsize=(5, 7), dpi=100, facecolor="#f8f8f8")
+        self._fig = Figure(figsize=(5, 7), dpi=100, facecolor="black")
         gs = self._fig.add_gridspec(
             2, 1, height_ratios=[1, 1.8],
             hspace=0.38, left=0.10, right=0.95, top=0.95, bottom=0.07)
@@ -138,10 +168,13 @@ class PhasorViewPanel:
 
         self._cid = self._canvas.mpl_connect("button_press_event",
                                                self._on_click)
+        self._canvas.mpl_connect("motion_notify_event",   self._on_motion)
+        self._canvas.mpl_connect("button_release_event",  self._on_release)
+        self._canvas.mpl_connect("key_press_event",       self._on_key)
 
     def _draw_placeholder(self):
         for ax in (self._ax_img, self._ax_ph):
-            ax.set_facecolor("#e8e8e8")
+            ax.set_facecolor("black")
             ax.tick_params(left=False, bottom=False,
                            labelleft=False, labelbottom=False)
         self._ax_img.set_title(
@@ -190,10 +223,18 @@ class PhasorViewPanel:
             min_photons=min_photons,
         )
         for c in session.get('cursors', []):
-            self._cursors.append(dict(
-                center_g=float(c['center_g']),
-                center_s=float(c['center_s']),
-                color=c['color']))
+            if c.get('type') == 'poly':
+                self._cursors.append(dict(
+                    type='poly',
+                    vertices=[(float(v[0]), float(v[1]))
+                               for v in c['vertices']],
+                    color=c['color']))
+            else:
+                self._cursors.append(dict(
+                    type='ellipse',
+                    center_g=float(c['center_g']),
+                    center_s=float(c['center_s']),
+                    color=c['color']))
         p = session.get('params', {})
         if 'radius' in p:
             self._radius.set(float(p['radius']))
@@ -207,16 +248,24 @@ class PhasorViewPanel:
         """Return a dict compatible with phasor_launcher.save_session."""
         r  = self._radius.get()
         rm = r * self._ratio.get()
+        cursors = []
+        for c in self._cursors:
+            if c.get('type', 'ellipse') == 'poly':
+                cursors.append(dict(type='poly',
+                                    vertices=c['vertices'],
+                                    color=c['color']))
+            else:
+                cursors.append(dict(type='ellipse',
+                                    center_g=c['center_g'],
+                                    center_s=c['center_s'],
+                                    color=c['color']))
         return dict(
             real_cal=self._real,
             imag_cal=self._imag,
             mean=self._mean,
             frequency=self._freq,
             display_image=self._disp,
-            cursors=[dict(center_g=c['center_g'],
-                          center_s=c['center_s'],
-                          color=c['color'])
-                     for c in self._cursors],
+            cursors=cursors,
             params=dict(radius=r, radius_minor=rm, angle_mode='semicircle'),
         )
 
@@ -230,9 +279,12 @@ class PhasorViewPanel:
         # PhasorPlot sets up the semicircle, grid and axis limits in our axes
         pp = PhasorPlot(ax=self._ax_ph, frequency=self._freq)
         pp.hist2d(g, s, cmap='inferno', bins=256)
+        self._ax_ph.set_facecolor('black')
         self._ax_ph.set_title(
             f"Phasor  ({self._freq:.1f} MHz)  —  click to place cursor",
             fontsize=9)
+        self._redraw_fret_overlay()
+        self._redraw_peaks_overlay()
 
     def _redraw_cursors(self):
         """Remove old cursor artists and re-draw all current cursors."""
@@ -243,51 +295,79 @@ class PhasorViewPanel:
                 pass
         self._cursor_artists.clear()
 
-        if not self._cursors:
-            return
+        # In-progress rubber-band is gone after cla(); reset so _update_poly_artist
+        # re-creates it below.
+        if self._poly_line is not None:
+            for art in self._poly_line:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            self._poly_line = None
 
         r     = self._radius.get()
         r_min = r * self._ratio.get()
         ax    = self._ax_ph
 
         for i, cur in enumerate(self._cursors):
-            cg, cs, col = cur['center_g'], cur['center_s'], cur['color']
-            ang = float(np.degrees(np.arctan2(cs, cg - 0.5) + np.pi / 2.0))
+            col   = cur['color']
+            ctype = cur.get('type', 'ellipse')
 
-            ell = Ellipse((cg, cs), 2 * r, 2 * r_min,
-                          angle=ang, facecolor=col, alpha=0.18,
-                          edgecolor=col, linewidth=2,
-                          linestyle='--', zorder=8)
-            ax.add_patch(ell)
-            self._cursor_artists.append(ell)
+            if ctype == 'poly':
+                verts = cur['vertices']
+                poly_patch = MplPolygon(
+                    verts, closed=True,
+                    facecolor=col, alpha=0.18,
+                    edgecolor=col, linewidth=2,
+                    linestyle='--', zorder=8)
+                ax.add_patch(poly_patch)
+                self._cursor_artists.append(poly_patch)
+                cx = float(np.mean([v[0] for v in verts]))
+                cy = float(np.mean([v[1] for v in verts]))
+            else:
+                cg, cs = cur['center_g'], cur['center_s']
+                ang = float(np.degrees(np.arctan2(cs, cg - 0.5) + np.pi / 2.0))
+                ell = Ellipse((cg, cs), 2 * r, 2 * r_min,
+                              angle=ang, facecolor=col, alpha=0.18,
+                              edgecolor=col, linewidth=2,
+                              linestyle='--', zorder=8)
+                ax.add_patch(ell)
+                self._cursor_artists.append(ell)
+                cx, cy = cg, cs
 
-            (dot,) = ax.plot(cg, cs, 'o', color=col, ms=7, zorder=10)
+            (dot,) = ax.plot(cx, cy, 'o', color=col, ms=7, zorder=10)
             self._cursor_artists.append(dot)
-
-            txt = ax.text(cg + 0.015, cs + 0.015, f'C{i+1}',
+            txt = ax.text(cx + 0.015, cy + 0.015, f'C{i+1}',
                           color=col, fontsize=9, fontweight='bold', zorder=11)
             self._cursor_artists.append(txt)
 
-        # Semicircle-intersection tie-line for C1 + C2
+        # Semicircle-intersection tie-line (only when first two are both ellipse)
         if len(self._cursors) >= 2:
-            g0 = self._cursors[0]['center_g']
-            s0 = self._cursors[0]['center_s']
-            g1 = self._cursors[1]['center_g']
-            s1 = self._cursors[1]['center_s']
-            gi0, si0, gi1, si1 = phasor_semicircle_intersect(g0, s0, g1, s1)
-            if not np.isnan(float(gi0)):
-                (ln,)  = ax.plot([float(gi0), float(gi1)],
-                                 [float(si0), float(si1)],
-                                 'w-', lw=1.5, alpha=0.7, zorder=7)
-                (pt1,) = ax.plot(float(gi0), float(si0),
-                                 'g*', ms=11, zorder=12)
-                (pt2,) = ax.plot(float(gi1), float(si1),
-                                 'm*', ms=11, zorder=12)
-                self._cursor_artists.extend([ln, pt1, pt2])
+            c0 = self._cursors[0]
+            c1 = self._cursors[1]
+            if (c0.get('type', 'ellipse') == 'ellipse' and
+                    c1.get('type', 'ellipse') == 'ellipse'):
+                g0, s0 = c0['center_g'], c0['center_s']
+                g1, s1 = c1['center_g'], c1['center_s']
+                gi0, si0, gi1, si1 = phasor_semicircle_intersect(g0, s0, g1, s1)
+                if not np.isnan(float(gi0)):
+                    (ln,)  = ax.plot([float(gi0), float(gi1)],
+                                     [float(si0), float(si1)],
+                                     'w-', lw=1.5, alpha=0.7, zorder=7)
+                    (pt1,) = ax.plot(float(gi0), float(si0),
+                                     'g*', ms=11, zorder=12)
+                    (pt2,) = ax.plot(float(gi1), float(si1),
+                                     'm*', ms=11, zorder=12)
+                    self._cursor_artists.extend([ln, pt1, pt2])
+
+        # Re-draw in-progress polygon rubber-band after any axes clear
+        if self._poly_pts:
+            self._update_poly_artist()
 
     def _redraw_image(self, masks: Optional[np.ndarray]):
         """Update the intensity/overlay image panel."""
         self._ax_img.cla()
+        self._ax_img.set_facecolor('black')
         if self._disp is None:
             return
 
@@ -313,8 +393,64 @@ class PhasorViewPanel:
         self._ax_img.set_ylabel("Y (px)", fontsize=8)
         self._ax_img.tick_params(labelsize=7)
 
+    #  FRET trajectory overlay
+
+    def overlay_fret_trajectory(self, traj: dict) -> None:
+        """Overlay a FRET trajectory dict (from predict_fret_trajectory) on the phasor."""
+        self._fret_trajectory = traj
+        self._redraw_phasor()
+        self._redraw_cursors()
+        self._canvas.draw_idle()
+
+    def clear_fret_overlay(self) -> None:
+        """Remove any FRET trajectory and peaks overlay from the phasor."""
+        self._fret_trajectory = None
+        self._peak_results = None
+        self._redraw_phasor()
+        self._redraw_cursors()
+        self._canvas.draw_idle()
+
+    def _redraw_fret_overlay(self) -> None:
+        if self._fret_trajectory is None:
+            return
+        traj = self._fret_trajectory
+        dg = traj['donor_g']
+        ds = traj['donor_s']
+        self._ax_ph.plot(dg, ds, color='cyan', lw=2, alpha=0.85, zorder=6)
+        self._ax_ph.plot(dg[0],  ds[0],  'co', ms=7, zorder=7)
+        self._ax_ph.plot(dg[-1], ds[-1], 'c^', ms=7, zorder=7)
+        if traj.get('acceptor_g') is not None:
+            ag = traj['acceptor_g']
+            as_ = traj['acceptor_s']
+            self._ax_ph.plot(ag, as_, color='magenta', lw=2, alpha=0.85, zorder=6)
+            self._ax_ph.plot(ag[0],  as_[0],  'mo', ms=7, zorder=7)
+            self._ax_ph.plot(ag[-1], as_[-1], 'm^', ms=7, zorder=7)
+
+    #  Peaks overlay
+
+    def overlay_peaks(self, peaks: dict) -> None:
+        """Overlay detected phasor peaks on the phasor plot."""
+        self._peak_results = peaks
+        self._redraw_phasor()
+        self._redraw_cursors()
+        self._canvas.draw_idle()
+
+    def _redraw_peaks_overlay(self) -> None:
+        if self._peak_results is None:
+            return
+        peaks = self._peak_results
+        for i in range(peaks['n_peaks']):
+            g   = peaks['peak_g'][i]
+            s   = peaks['peak_s'][i]
+            tau = float(peaks['tau_phase'][i])
+            self._ax_ph.plot(g, s, 'y*', ms=14, zorder=15,
+                             markeredgecolor='k', markeredgewidth=0.5)
+            self._ax_ph.text(g + 0.015, s + 0.015, f'{tau:.1f} ns',
+                             color='yellow', fontsize=8,
+                             fontweight='bold', zorder=16)
+
     def _analyse(self):
-        """Compute elliptic masks, update image overlay, print per-cursor stats."""
+        """Compute per-cursor masks, update image overlay, print stats."""
         if self._real is None or not self._cursors:
             self._redraw_image(None)
             self._canvas.draw_idle()
@@ -324,22 +460,25 @@ class PhasorViewPanel:
         r_min = r * self._ratio.get()
         n     = len(self._cursors)
 
-        cg = np.array([c['center_g'] for c in self._cursors])
-        cs = np.array([c['center_s'] for c in self._cursors])
-
-        masks = mask_from_elliptic_cursor(
-            self._real, self._imag, cg, cs,
-            radius=r, radius_minor=r_min, angle='semicircle')
-
-        # Normalise: single cursor returns (Y, X), multiple returns (n, Y, X)
-        if masks.ndim == self._real.ndim:
-            masks = masks[np.newaxis]
-
-        masks = masks & self._valid[np.newaxis]
+        # Build per-cursor masks (ellipse or polygon)
+        mask_list = []
+        for cur in self._cursors:
+            if cur.get('type', 'ellipse') == 'poly':
+                m = self._mask_from_polygon(cur['vertices'])
+            else:
+                cg = np.array([cur['center_g']])
+                cs = np.array([cur['center_s']])
+                m = mask_from_elliptic_cursor(
+                    self._real, self._imag, cg, cs,
+                    radius=r, radius_minor=r_min, angle='semicircle')
+                if m.ndim > self._real.ndim:
+                    m = m[0]
+            mask_list.append(m & self._valid)
+        masks = np.stack(mask_list, axis=0)  # (n, Y, X)
 
         self._redraw_image(masks)
 
-        #Per-cursor τ_φ stats 
+        # Per-cursor τ_φ stats
         print(f"\n{'─' * 50}")
         for ci in range(n):
             m    = masks[ci]
@@ -356,19 +495,16 @@ class PhasorViewPanel:
                   f"{n_px} px  |  τ_φ = {lo:.2f}–{hi:.2f} ns  "
                   f"(median {med:.2f} ns)")
 
-        # Two-component decomposition C1 ↔ C2
-        if n >= 2:
-            g0 = self._cursors[0]['center_g']
-            s0 = self._cursors[0]['center_s']
-            g1 = self._cursors[1]['center_g']
-            s1 = self._cursors[1]['center_s']
+        # Two-component decomposition — only for the first two ellipse cursors
+        ellipse_curs = [c for c in self._cursors
+                        if c.get('type', 'ellipse') == 'ellipse']
+        if len(ellipse_curs) >= 2:
+            g0, s0 = ellipse_curs[0]['center_g'], ellipse_curs[0]['center_s']
+            g1, s1 = ellipse_curs[1]['center_g'], ellipse_curs[1]['center_s']
             gi0, si0, gi1, si1 = phasor_semicircle_intersect(g0, s0, g1, s1)
-
             if not np.isnan(float(gi0)):
-                # Pass Python floats → phasor_to_apparent_lifetime returns scalars
                 tau1 = _tau_phi_scalar(gi0, si0, self._freq)
                 tau2 = _tau_phi_scalar(gi1, si1, self._freq)
-
                 combined = np.any(masks, axis=0)
                 frac = phasor_component_fraction(
                     self._real[combined],
@@ -376,7 +512,7 @@ class PhasorViewPanel:
                     np.array([float(gi0), float(gi1)]),
                     np.array([float(si0), float(si1)]),
                 )
-                print(f"\n  ↳ 2-component (C1↔C2):")
+                print(f"\n  ↳ 2-component (C1↔C2 ellipse):")
                 print(f"     τ₁ = {tau1:.3f} ns  "
                       f"τ₂ = {tau2:.3f} ns  "
                       f"mean frac(C1) = {float(np.mean(frac)):.3f}")
@@ -384,28 +520,57 @@ class PhasorViewPanel:
         print(f"{'─' * 50}")
         self._canvas.draw_idle()
 
+    def _mask_from_polygon(self, vertices: list) -> np.ndarray:
+        """Boolean mask: True where (G, S) lies inside the polygon."""
+        verts = np.asarray(vertices, dtype=float)  # (N, 2) — columns: G, S
+        pts   = np.column_stack([self._real.ravel(), self._imag.ravel()])
+        inside = MplPath(verts).contains_points(pts)
+        return inside.reshape(self._real.shape)
+
     def _on_click(self, event):
         if self._real is None:
             return
-        if event.inaxes is not self._ax_ph:
+        if self._toolbar.mode != '':
             return
+
+        # Right-click in poly mode: close/cancel — handle before anything else
+        if event.button == 3 and self._mode_var.get() == 'poly':
+            self._on_click_poly(event)
+            return
+
         if event.button != 1:
             return
-        if self._toolbar.mode != '':        # zoom/pan tool active — don't place cursor
+        if event.inaxes is not self._ax_ph:
             return
         if event.xdata is None or event.ydata is None:
             return
+
+        # Drag an existing cursor (not while a polygon is being drawn)
+        if not self._poly_pts:
+            hit = self._hit_test(event.xdata, event.ydata)
+            if hit is not None:
+                self._drag_idx  = hit
+                self._drag_last = (event.xdata, event.ydata)
+                self._status_var.set(f"Dragging C{hit + 1} — release to drop.")
+                return
+
+        # No hit → create new cursor
+        if self._mode_var.get() == 'poly':
+            self._on_click_poly(event)
+        else:
+            self._on_click_ellipse(event)
+
+    def _on_click_ellipse(self, event):
         if len(self._cursors) >= self.max_cursors:
             self._status_var.set(
                 f"Max {self.max_cursors} cursors — clear or undo first.")
             return
-
         idx = len(self._cursors) % len(_COLORS)
         self._cursors.append(dict(
+            type='ellipse',
             center_g=event.xdata,
             center_s=event.ydata,
             color=_COLORS[idx]))
-
         self._redraw_cursors()
         self._analyse()
         self._notify_change()
@@ -413,10 +578,204 @@ class PhasorViewPanel:
             f"{len(self._cursors)} cursor(s)  |  "
             f"G={event.xdata:.4f}  S={event.ydata:.4f}")
 
+    def _on_click_poly(self, event):
+        if event.button == 3:  # right-click → close or cancel
+            if len(self._poly_pts) >= 3:
+                self._commit_polygon()
+            elif self._poly_pts:
+                self._cancel_polygon()
+            return
+        if event.button != 1:
+            return
+        if event.inaxes is not self._ax_ph:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        if not self._poly_pts and len(self._cursors) >= self.max_cursors:
+            self._status_var.set(
+                f"Max {self.max_cursors} cursors — clear or undo first.")
+            return
+        self._poly_pts.append((event.xdata, event.ydata))
+        self._update_poly_artist()
+        n = len(self._poly_pts)
+        self._status_var.set(
+            f"Polygon: {n} vert{'ex' if n == 1 else 'ices'}  "
+            f"— right-click or Enter to close (need ≥ 3)")
+
+    def _on_motion(self, event):
+        # Drag in progress — handle even if cursor drifts outside axes
+        if self._drag_idx is not None:
+            if event.inaxes is self._ax_ph and event.xdata is not None:
+                self._do_drag(event.xdata, event.ydata)
+            return
+
+        # Hover cursor: show 'move' icon when over an existing region
+        if (event.inaxes is self._ax_ph and event.xdata is not None
+                and not self._poly_pts):
+            hit = self._hit_test(event.xdata, event.ydata)
+            self._canvas.get_tk_widget().configure(
+                cursor='fleur' if hit is not None else '')
+
+        # Rubber-band preview while drawing a polygon
+        if not self._poly_pts:
+            return
+        if event.inaxes is not self._ax_ph:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        self._update_poly_artist(live_pt=(event.xdata, event.ydata))
+        self._canvas.draw_idle()
+
+    def _on_release(self, event):
+        """Mouse-button release: commit drag and recompute masks."""
+        if self._drag_idx is None:
+            return
+        idx = self._drag_idx
+        # Apply the final position before clearing drag state
+        if event.inaxes is self._ax_ph and event.xdata is not None:
+            self._do_drag(event.xdata, event.ydata)
+        self._drag_idx = None
+        self._canvas.get_tk_widget().configure(cursor='')
+        self._redraw_phasor()
+        self._redraw_cursors()
+        self._analyse()
+        self._notify_change()
+        self._status_var.set(
+            f"C{idx + 1} moved.  {len(self._cursors)} cursor(s) active.")
+
+    def _do_drag(self, g: float, s: float):
+        """Translate the cursor under drag by the delta from last event."""
+        dx = g - self._drag_last[0]
+        dy = s - self._drag_last[1]
+        cur = self._cursors[self._drag_idx]
+        if cur.get('type', 'ellipse') == 'poly':
+            cur['vertices'] = [(v[0] + dx, v[1] + dy)
+                               for v in cur['vertices']]
+        else:
+            cur['center_g'] += dx
+            cur['center_s'] += dy
+        self._drag_last = (g, s)
+        self._redraw_cursors()
+        self._canvas.draw_idle()
+
+    def _hit_test(self, g: float, s: float) -> Optional[int]:
+        """Return index of the cursor that contains or is near (g, s), else None."""
+        r = self._radius.get()
+        for i, cur in enumerate(self._cursors):
+            if cur.get('type', 'ellipse') == 'poly':
+                verts = np.asarray(cur['vertices'], dtype=float)
+                if MplPath(verts).contains_point((g, s)):
+                    return i
+            else:
+                tol = max(r * 1.2, 0.04)
+                if np.hypot(g - cur['center_g'], s - cur['center_s']) < tol:
+                    return i
+        return None
+
+    def _on_key(self, event):
+        if event.key == 'escape':
+            self._cancel_polygon()
+        elif event.key in ('enter', 'return'):
+            if len(self._poly_pts) >= 3:
+                self._commit_polygon()
+
+    def _on_mode_change(self):
+        if self._mode_var.get() == 'poly':
+            self._ellipse_ctrl_frame.pack_forget()
+            self._status_var.set(
+                "Polygon mode: left-click to add vertices, "
+                "right-click or Enter to close (need ≥ 3), Esc to cancel.")
+        else:
+            self._cancel_polygon()
+            self._ellipse_ctrl_frame.pack(side='left')
+            self._status_var.set("Ellipse mode: click phasor to place cursor.")
+
+    def _update_poly_artist(self, live_pt=None):
+        """Redraw the in-progress polygon rubber-band on the phasor axes."""
+        if self._poly_line is not None:
+            for art in self._poly_line:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            self._poly_line = None
+        pts = list(self._poly_pts)
+        if live_pt is not None:
+            pts = pts + [live_pt]
+        if not pts:
+            return
+        idx = len(self._cursors) % len(_COLORS)
+        col = _COLORS[idx]
+        artists = []
+        if len(pts) >= 2:
+            xs = [p[0] for p in pts] + [pts[0][0]]
+            ys = [p[1] for p in pts] + [pts[0][1]]
+            (line,) = self._ax_ph.plot(xs, ys, color=col, lw=1.5,
+                                        linestyle='--', alpha=0.85, zorder=9)
+            artists.append(line)
+        for p in self._poly_pts:
+            (dot,) = self._ax_ph.plot(p[0], p[1], 'o', color=col,
+                                       ms=4, zorder=10)
+            artists.append(dot)
+        if live_pt is not None:
+            (tip,) = self._ax_ph.plot(live_pt[0], live_pt[1], '+',
+                                       color=col, ms=8, zorder=10)
+            artists.append(tip)
+        self._poly_line = artists
+
+    def _commit_polygon(self):
+        """Close the in-progress polygon and register it as a cursor."""
+        if len(self._poly_pts) < 3:
+            return
+        if self._poly_line is not None:
+            for art in self._poly_line:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            self._poly_line = None
+        idx = len(self._cursors) % len(_COLORS)
+        self._cursors.append(dict(
+            type='poly',
+            vertices=list(self._poly_pts),
+            color=_COLORS[idx]))
+        self._poly_pts.clear()
+        self._redraw_cursors()
+        self._analyse()
+        self._notify_change()
+        n = len(self._cursors)
+        self._status_var.set(
+            f"{n} region(s)  |  polygon C{n} committed. "
+            f"Left-click to start another.")
+
+    def _cancel_polygon(self):
+        """Discard the in-progress polygon without committing."""
+        if self._poly_line is not None:
+            for art in self._poly_line:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            self._poly_line = None
+        self._poly_pts.clear()
+        self._canvas.draw_idle()
+        self._status_var.set(
+            "Polygon cancelled. Left-click to start a new one.")
+
     def _on_clear(self):
         if self._real is None:
             return
         self._cursors.clear()
+        self._fret_trajectory = None
+        self._peak_results = None
+        self._poly_pts.clear()
+        if self._poly_line is not None:
+            for art in self._poly_line:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            self._poly_line = None
         self._redraw_phasor()          # also clears cursor artists
         self._redraw_image(masks=None)
         self._canvas.draw_idle()
@@ -424,7 +783,28 @@ class PhasorViewPanel:
         self._status_var.set("Cleared.  Click phasor to place cursors.")
 
     def _on_undo(self):
-        if self._real is None or not self._cursors:
+        if self._real is None:
+            return
+        # If polygon in progress, undo the last vertex first
+        if self._poly_pts:
+            self._poly_pts.pop()
+            if self._poly_pts:
+                self._update_poly_artist()
+            else:
+                if self._poly_line is not None:
+                    for art in self._poly_line:
+                        try:
+                            art.remove()
+                        except Exception:
+                            pass
+                    self._poly_line = None
+            self._canvas.draw_idle()
+            n = len(self._poly_pts)
+            self._status_var.set(
+                f"Polygon: {n} vert{'ex' if n == 1 else 'ices'}  "
+                f"(vertex removed).")
+            return
+        if not self._cursors:
             return
         self._cursors.pop()
         self._redraw_phasor()

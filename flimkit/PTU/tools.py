@@ -292,6 +292,7 @@ def signal_from_PTUFile(
         arr5d = PTUArray5D(ptu, binning=binning)
         # arr5d.array has shape (T, Y, X, C, H)  dtype uint32
         data = arr5d.array.copy()
+        _active_channels = arr5d.active_channels  # hardware IDs in array-index order
     else:
         # Point-mode: build (1, 1, 1, C, H) from summed decays per channel
         records = ptu._load_records()
@@ -302,6 +303,7 @@ def signal_from_PTUFile(
             hists.append(ptu.summed_decay(channel=int(c)))
         # stack to (C, H), then expand to (T=1, Y=1, X=1, C, H)
         data = np.stack(hists, axis=0)[np.newaxis, np.newaxis, np.newaxis, :, :]
+        _active_channels = active_chs  # hardware IDs in array-index order
 
     #dtype 
     if dtype is None:
@@ -323,10 +325,19 @@ def signal_from_PTUFile(
         if channel < 0:
             data = data.sum(axis=3, keepdims=keepdims)
         else:
+            # _active_channels[i] is the hardware ID stored at array index i.
+            # Translate the hardware channel ID to its 0-based array index.
+            ch_positions = np.where(_active_channels == channel)[0]
+            if len(ch_positions) == 0:
+                raise ValueError(
+                    f"Channel {channel} not found in PTU file. "
+                    f"Available hardware channels: {_active_channels.tolist()}"
+                )
+            channel_idx = int(ch_positions[0])
             if keepdims:
-                data = data[:, :, :, channel : channel + 1]
+                data = data[:, :, :, channel_idx : channel_idx + 1]
             else:
-                data = data[:, :, :, channel]
+                data = data[:, :, :, channel_idx]
             # after removing C, H was axis 4 → now axis 3
 
     #frame selection (T axis = 0) 
