@@ -125,7 +125,7 @@ def save_session(path: str, *,
         save_kw['display_image'] = np.asarray(display_image)
 
     np.savez_compressed(path, **save_kw)
-    print(f"✅  Session saved → {path}  ({n} cursor(s))")
+    print(f"Session saved → {path}  ({n} cursor(s))")
 
 
 def load_session(path: str) -> dict:

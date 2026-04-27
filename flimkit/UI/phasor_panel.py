@@ -854,6 +854,6 @@ class PhasorViewPanel:
                 params=sd['params'],
                 display_image=sd.get('display_image'),
             )
-            self._status_var.set(f"✓ Session saved → {Path(path).name}")
+            self._status_var.set(f"Session saved → {Path(path).name}")
         except Exception as exc:
             messagebox.showerror("Save failed", str(exc))

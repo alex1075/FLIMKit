@@ -458,7 +458,7 @@ def phasor_cursor_tool(
             path = input("Save image path [phasor_plot.png]: ").strip() or 'phasor_plot.png'
         if path:
             state['fig'].savefig(path, dpi=300, bbox_inches='tight')
-            print(f"✅  Figure exported → {path}")
+            print(f"Figure exported → {path}")
 
     # Peak detection on the live phasor
     _peak_artists: list = []          # track markers for toggle/clear
