@@ -170,6 +170,70 @@ def load_session(path: str) -> dict:
 
 # Pipeline: PTU → phasor → (optional) calibration
 
+def get_ptu_active_channels(ptu_path: str) -> list[int]:
+    """Return the sorted list of photon channels present in a PTU file."""
+    from .PTU.reader import PTUFile
+
+    ptu = PTUFile(str(ptu_path), verbose=False)
+    records = ptu._load_records()
+    ch_raw, _, _ = ptu._decode_picoharp_t3(records)
+    active_channels = np.unique(ch_raw[(ch_raw != 0xF) & (ch_raw >= 0)]).astype(int)
+    return sorted(int(channel) for channel in active_channels)
+
+
+def _prompt_ptu_channel(active_channels: list[int]) -> int:
+    """Prompt for a PTU channel via the CLI inquirer flow."""
+    import inquirer
+
+    answer = inquirer.prompt([inquirer.List(
+        'channel',
+        message=(
+            f'Multiple channels detected: {active_channels}. '
+            'Which one should be used for phasor analysis?'
+        ),
+        choices=[f'Channel {channel}' for channel in active_channels],
+    )])
+    if not answer or 'channel' not in answer:
+        raise ValueError('No channel selected for phasor analysis')
+    return int(str(answer['channel']).split()[-1])
+
+
+def resolve_ptu_channel(
+    ptu_path: str,
+    channel: int | None = None,
+    *,
+    prompt_fn=None,
+) -> int:
+    """Resolve which PTU channel to use, prompting if required."""
+    active_channels = get_ptu_active_channels(ptu_path)
+    if not active_channels:
+        raise ValueError('No photon channels found in PTU file')
+
+    if channel is not None:
+        selected_channel = int(channel)
+        if selected_channel not in active_channels:
+            raise ValueError(
+                f'Channel {selected_channel} is not present in PTU file. '
+                f'Available channels: {active_channels}'
+            )
+        return selected_channel
+
+    if len(active_channels) == 1:
+        selected_channel = active_channels[0]
+        print(f'Auto-selected channel {selected_channel} (only channel available)')
+        return selected_channel
+
+    if prompt_fn is None:
+        prompt_fn = _prompt_ptu_channel
+
+    selected_channel = int(prompt_fn(active_channels))
+    if selected_channel not in active_channels:
+        raise ValueError(
+            f'Channel {selected_channel} is not present in PTU file. '
+            f'Available channels: {active_channels}'
+        )
+    return selected_channel
+
 def _process_ptu(ptu_path: str, irf_path: str | None = None, channel: int | None = None) -> dict:
     """Load a PTU file, compute phasors, optionally calibrate with IRF.
 
@@ -191,28 +255,8 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None, channel: int | None
     from .phasor.signal import get_phasor_irf, calibrate_signal_with_irf
 
     print(f"Loading PTU file: {ptu_path}")
-    
-    # Detect available channels and prompt if needed
-    ptu_temp = PTUFile(str(ptu_path), verbose=False)
-    records = ptu_temp._load_records()
-    ch_raw, _, _ = ptu_temp._decode_picoharp_t3(records)
-    active_chs = sorted(np.unique(ch_raw[(ch_raw != 0xF) & (ch_raw >= 0)]).astype(int))
-    
-    if channel is None:
-        if len(active_chs) > 1:
-            import inquirer
-            ch_choice = inquirer.prompt([inquirer.List(
-                'ch', 
-                message=f'Multiple channels detected: {active_chs}. Which one to analyze?',
-                choices=[f'Channel {c}' for c in active_chs]
-            )])['ch']
-            channel = int(ch_choice.split()[-1])
-        elif len(active_chs) == 1:
-            channel = active_chs[0]
-            print(f"Auto-selected channel {channel} (only channel available)")
-        else:
-            raise ValueError("No photon channels found in PTU file")
-    
+    channel = resolve_ptu_channel(ptu_path, channel=channel)
+
     print(f"Using channel: {channel}")
     signal = signal_from_PTUFile(ptu_path, dtype=np.uint32, binning=4, channel=channel)
     frequency = float(signal.attrs['frequency'])
@@ -246,6 +290,7 @@ def _process_ptu(ptu_path: str, irf_path: str | None = None, channel: int | None
         imag_cal=np.asarray(imag_cal),
         mean=np.asarray(mean),
         frequency=frequency,
+        channel=channel,
         display_image=np.asarray(display_image, dtype=float),
     )
 

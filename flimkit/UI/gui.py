@@ -10,7 +10,7 @@ import inspect
 import threading
 import argparse
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 import os
 import sys
 from pathlib import Path
@@ -6351,13 +6351,22 @@ Built with Python, Tkinter, NumPy, and SciPy.
                                      "Please select a valid PTU file.")
                 return
 
+            try:
+                channel = self._resolve_phasor_channel(ptu)
+            except Exception as exc:
+                messagebox.showerror("Phasor error", str(exc), parent=self.root)
+                return
+            if channel is None:
+                self._res.set_status("  Phasor load cancelled.")
+                return
+
             xlsx_irf = self.sv_ph_irf.get().strip() or None
             mach_irf = self.sv_ph_mirf.get().strip() or None
             irf_path = xlsx_irf or mach_irf
 
             def _worker():
                 from flimkit.phasor_launcher import _process_ptu
-                return _process_ptu(ptu, irf_path=irf_path)
+                return _process_ptu(ptu, irf_path=irf_path, channel=channel)
 
             def _done(result):
                 if isinstance(result, Exception):
@@ -6374,10 +6383,52 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 # Auto-save phasor session next to the PTU file
                 self._auto_save_phasor(ptu)
                 self._res.set_status(
-                    "✓  Phasor data loaded — click the phasor to place cursors.")
+                    f"✓  Phasor data loaded from channel {channel} — click the phasor to place cursors.")
 
             self._phasor_thread(_worker, _done,
                                 status="  Loading PTU and computing phasors…")
+
+    def _resolve_phasor_channel(self, ptu_path: str) -> Optional[int]:
+        """Return the selected phasor-analysis channel for a PTU file."""
+        from flimkit.phasor_launcher import get_ptu_active_channels
+
+        active_channels = get_ptu_active_channels(ptu_path)
+        if not active_channels:
+            raise ValueError("No photon channels found in PTU file")
+        if len(active_channels) == 1:
+            return active_channels[0]
+        return self._prompt_phasor_channel(ptu_path, active_channels)
+
+    def _prompt_phasor_channel(
+        self,
+        ptu_path: str,
+        active_channels: list[int],
+    ) -> Optional[int]:
+        """Prompt the GUI user to choose which PTU channel to analyze."""
+        available = ", ".join(str(channel) for channel in active_channels)
+        prompt = (
+            f"Multiple photon channels were detected in:\n{Path(ptu_path).name}\n\n"
+            f"Available channels: {available}\n\n"
+            "Enter the channel to use for phasor analysis:"
+        )
+        while True:
+            selected = simpledialog.askinteger(
+                "Select PTU Channel",
+                prompt,
+                parent=self.root,
+                minvalue=min(active_channels),
+                maxvalue=max(active_channels),
+            )
+            if selected is None:
+                return None
+            if selected in active_channels:
+                return selected
+            messagebox.showerror(
+                "Invalid channel",
+                f"Channel {selected} is not present in this PTU file.\n\n"
+                f"Available channels: {available}",
+                parent=self.root,
+            )
 
     def _phasor_thread(self, worker_fn, done_cb, *, status="  Working…"):
         """Run worker_fn in a daemon thread; call done_cb(result) on the main thread.
