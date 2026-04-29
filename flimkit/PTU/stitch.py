@@ -1096,6 +1096,8 @@ def fit_flim_tiles(
                 global_popt = popt_for_px,
                 n_exp       = n_exp_,
                 min_photons = min_photons,
+                tau_min_ns  = tau_min_ns,
+                tau_max_ns  = tau_max_ns,
             )
             del stack
 

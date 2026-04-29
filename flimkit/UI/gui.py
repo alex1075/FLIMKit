@@ -559,8 +559,7 @@ class IRFWidget:
             return dict(irf=None, irf_xlsx=None, estimate_irf="none", no_xlsx_irf=True, machine_irf=None)
 
 
-# ── Expert Settings Dialog ──────────────────────────────────────────
-
+# Expert Settings Dialog 
 # Default expert settings (mirrors configs.py)
 _EXPERT_DEFAULTS = {
     "binning_factor": 1,
@@ -606,7 +605,7 @@ class ExpertSettingsDialog(tk.Toplevel):
         f = ttk.Frame(self, padding=12)
         f.pack(fill="both", expand=True)
 
-        # ── Optimizer ────────────────────────────────
+        # Optimizer 
         ttk.Label(f, text="Optimizer:").grid(row=row, column=0, sticky="w", **PAD)
         self._sv_optimizer = tk.StringVar(value=vals["optimizer"])
         opt_frame = ttk.Frame(f)
@@ -616,7 +615,7 @@ class ExpertSettingsDialog(tk.Toplevel):
         ttk.Radiobutton(opt_frame, text="Levenberg-Marquardt (LM)",
                         variable=self._sv_optimizer, value="lm_multistart").pack(side="left")
 
-        # ── DE settings ─────────────────────────────
+        # DE settings
         row += 1
         ttk.Label(f, text="DE population:").grid(row=row, column=0, sticky="w", **PAD)
         self._sv_de_pop = tk.StringVar(value=str(vals["de_population"]))
@@ -625,33 +624,33 @@ class ExpertSettingsDialog(tk.Toplevel):
         self._sv_de_maxiter = tk.StringVar(value=str(vals["de_maxiter"]))
         ttk.Entry(f, textvariable=self._sv_de_maxiter, width=8).grid(row=row, column=3, sticky="w", **PAD)
 
-        # ── LM settings ─────────────────────────────
+        # LM settings
         row += 1
         ttk.Label(f, text="LM random restarts:").grid(row=row, column=0, sticky="w", **PAD)
         self._sv_lm_restarts = tk.StringVar(value=str(vals["lm_restarts"]))
         ttk.Entry(f, textvariable=self._sv_lm_restarts, width=8).grid(row=row, column=1, sticky="w", **PAD)
 
-        # ── Binning ──────────────────────────────────
+        # Binning
         row += 1
         ttk.Label(f, text="Spatial binning (NxN):").grid(row=row, column=0, sticky="w", **PAD)
         self._sv_binning = tk.StringVar(value=str(vals["binning_factor"]))
         ttk.Entry(f, textvariable=self._sv_binning, width=8).grid(row=row, column=1, sticky="w", **PAD)
         ttk.Label(f, text="(1 = no binning)", foreground="grey").grid(row=row, column=2, columnspan=2, sticky="w", **PAD)
 
-        # ── Workers ──────────────────────────────────
+        # Workers
         row += 1
         ttk.Label(f, text="CPU workers:").grid(row=row, column=0, sticky="w", **PAD)
         self._sv_workers = tk.StringVar(value=str(vals["n_workers"]))
         ttk.Entry(f, textvariable=self._sv_workers, width=8).grid(row=row, column=1, sticky="w", **PAD)
         ttk.Label(f, text="(-1 = all cores)", foreground="grey").grid(row=row, column=2, columnspan=2, sticky="w", **PAD)
 
-        # ── Min photons ──────────────────────────────
+        # Min photons
         row += 1
         ttk.Label(f, text="Min photons/pixel:").grid(row=row, column=0, sticky="w", **PAD)
         self._sv_min_ph = tk.StringVar(value=str(vals["min_photons"]))
         ttk.Entry(f, textvariable=self._sv_min_ph, width=8).grid(row=row, column=1, sticky="w", **PAD)
 
-        # ── Cost function ────────────────────────────
+        # Cost function
         row += 1
         ttk.Label(f, text="Cost function:").grid(row=row, column=0, sticky="w", **PAD)
         self._sv_cost = tk.StringVar(value=vals["cost_function"])
@@ -662,14 +661,14 @@ class ExpertSettingsDialog(tk.Toplevel):
         ttk.Radiobutton(cf_frame, text="Chi² (legacy)",
                         variable=self._sv_cost, value="chi2").pack(side="left")
 
-        # ── Channels ─────────────────────────────────
+        # Channels
         row += 1
         ttk.Label(f, text="Channel filter:").grid(row=row, column=0, sticky="w", **PAD)
         self._sv_channels = tk.StringVar(value=str(vals.get("channels", "") or ""))
         ttk.Entry(f, textvariable=self._sv_channels, width=12).grid(row=row, column=1, sticky="w", **PAD)
         ttk.Label(f, text="(blank = all channels)", foreground="grey").grid(row=row, column=2, columnspan=2, sticky="w", **PAD)
 
-        # ── Buttons ──────────────────────────────────
+        # Buttons
         row += 1
         btn_frame = ttk.Frame(f)
         btn_frame.grid(row=row, column=0, columnspan=4, pady=(12, 0))
@@ -1653,7 +1652,7 @@ class FOVPreviewPanel:
         ax.set_ylim(ylim[0] + dy, ylim[1] + dy)
         self._canvas_mpl.draw_idle()
 
-    # ── ROI hit-testing and dragging ──────────────────────────────
+    # ROI hit-testing and dragging 
 
     def _hit_test_roi(self, x, y, ax):
         """Return the region_id of the ROI patch under (x, y), or None."""
@@ -2471,7 +2470,7 @@ class _UIBuilder:
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
         
-        # ===== FILE MENU =====
+        # FILE MENU 
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
         
@@ -2505,7 +2504,7 @@ class _UIBuilder:
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
         
-        # ===== EDIT MENU =====
+        # EDIT MENU 
         edit_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=edit_menu)
         
@@ -2518,14 +2517,14 @@ class _UIBuilder:
         self.root.bind("<Control-z>", lambda e: self._menu_undo())
         self.root.bind("<Control-Shift-Z>", lambda e: self._menu_redo())
         
-        # ===== TOOLS MENU =====
+        # TOOLS MENU 
         tools_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         
         tools_menu.add_command(label="Machine IRF Builder", command=self._menu_irf_builder)
         tools_menu.add_command(label="Batch Processing", command=self._menu_batch_processing)
         
-        # ===== HELP MENU =====
+        # HELP MENU
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
         
@@ -2708,7 +2707,7 @@ class _UIBuilder:
         note = ttk.Notebook(main_frame)
         note.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        # === Display Tab ===
+        # Display Tab
         disp_frame = ttk.Frame(note, padding=10)
         note.add(disp_frame, text="Display")
         
@@ -2721,7 +2720,7 @@ class _UIBuilder:
         font_var = tk.IntVar(value=prefs.get("font_size", 9))
         ttk.Spinbox(disp_frame, from_=8, to=14, textvariable=font_var, width=10).pack(anchor="w", pady=(0, 10))
         
-        # === Analysis Tab ===
+        # Analysis Tab
         anal_frame = ttk.Frame(note, padding=10)
         note.add(anal_frame, text="Analysis")
         
@@ -2734,7 +2733,7 @@ class _UIBuilder:
         ttk.Combobox(anal_frame, textvariable=fmt_var, 
                      values=["CSV", "Excel", "NumPy"], state="readonly").pack(anchor="w", pady=(0, 10))
         
-        # === Files Tab ===
+        # Files Tab
         files_frame = ttk.Frame(note, padding=10)
         note.add(files_frame, text="Files")
         
@@ -2768,7 +2767,7 @@ class _UIBuilder:
         ttk.Button(btn_frame, text="Save", command=save_prefs).pack(side="right", padx=5)
         ttk.Button(btn_frame, text="Cancel", command=pref_win.destroy).pack(side="right", padx=5)
     
-    # ===== EDIT MENU CALLBACKS =====
+    # EDIT MENU CALLBACKS
     def _menu_undo(self):
         """Undo last action."""
         print("[Menu] Undo")
@@ -2799,14 +2798,13 @@ class _UIBuilder:
             messagebox.showinfo("Reset Complete", "Analysis cleared.")
             print("[Menu] Reset complete.")
     
-    # ===== TOOLS MENU CALLBACKS =====
+    # TOOLS MENU CALLBACKS
     def _menu_irf_builder(self):
         """Open Machine IRF Builder in separate window."""
         print("[Menu] Machine IRF Builder")
         # Switch to IRF form view
         if hasattr(self, '_switch_form'):
             self._switch_form("irf")
-        # TODO: (Optional) Open as separate window in future
     
     def _menu_batch_processing(self):
         """Switch to batch processing view."""
@@ -2815,7 +2813,7 @@ class _UIBuilder:
         if hasattr(self, '_switch_form'):
             self._switch_form("batch")
     
-    # ===== HELP MENU CALLBACKS =====
+    # HELP MENU CALLBACKS
     def _menu_about(self):
         """Show about dialog."""
         from flimkit._version import __version__
@@ -3365,11 +3363,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self._stitch_tabs.grid_remove()
                 if "phasor" in self._form_inner_frames:
                     self._form_inner_frames["phasor"][0].grid_remove()
-
-                # Restore the FOV ROI-analysis panel connection.
-                # Switching to stitch mode overwrites _roi_analysis_panel on the
-                # preview with _stitch_roi_panel; we must put it back so that FOV
-                # drawing / analysis callbacks reach the visible panel.
                 if hasattr(self, '_roi_analysis_panel'):
                     self._fov_preview._roi_analysis_panel = self._roi_analysis_panel
                 
@@ -3560,7 +3553,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 "thr_fov_val":    self.sv_thr_fov.get() if hasattr(self, 'sv_thr_fov') else "5",
                 "cell_mask":      self.bv_cell.get() if hasattr(self, 'bv_cell') else False,
 
-                # ── Stitch / tile-fit specific ──────────────────────────────
+                # Stitch / tile-fit specific
                 "xlif_file":      self.sv_xlif.get()    if hasattr(self, 'sv_xlif')    else "",
                 "ptu_dir":        self.sv_ptu_dir.get() if hasattr(self, 'sv_ptu_dir') else "",
                 "out_st":         self.sv_out_st.get()  if hasattr(self, 'sv_out_st')  else "",
@@ -3591,8 +3584,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
     def _restore_form_state(self, state: dict):
         """Restore all form field values from captured state dict."""
         try:
-            # Restore input files (skip PTU/XLIF—they're mode-specific and
-            # should come fresh from project browser or user input, not old state)
             # if "ptu_file" in state and hasattr(self, 'sv_ptu'):
             #     self.sv_ptu.set(state["ptu_file"])
             # if "xlsx_file" in state and hasattr(self, 'sv_xlsx'):
@@ -3633,7 +3624,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
             if "threshold" in state and hasattr(self, 'sv_int_threshold'):
                 self.sv_int_threshold.set(state["threshold"])
             
-            # ── Stitch-form fields ────────────────────────────────────────────
+            # Stitch-form fields
             # Skip xlif_file and ptu_dir—they're mode-specific and should come
             # fresh from project browser, not from old state
             # if "xlif_file" in state and hasattr(self, 'sv_xlif'):
@@ -3681,7 +3672,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 self.bv_perpix.set(state["bv_perpix"])
                 self._perpix_toggled()     # show/hide _pxf
 
-            # ── Stitch-form fields ───────────────────────────────────────
+            # Stitch-form fields
             # Skip xlif_file and ptu_dir—they're mode-specific
             # if "xlif_file"     in state and hasattr(self, 'sv_xlif'):          self.sv_xlif.set(state["xlif_file"])
             # if "ptu_dir"       in state and hasattr(self, 'sv_ptu_dir'):        self.sv_ptu_dir.set(state["ptu_dir"])
@@ -3928,10 +3919,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     # Display summary
                     if rows:
                         self._res.populate_summary(rows)
-                    
-                    # BUG 1 FIX: restore drawn regions unconditionally.
-                    # fov_regions is saved even when no fit has been run yet,
-                    # so we must not gate it on the map keys.
                     if "fov_regions" in session_data:
                         try:
                             import json as _json_roi
@@ -3954,8 +3941,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
                         if isinstance(intensity, np.ndarray):
                             self._fov_preview._intensity_map = intensity
                         if isinstance(lifetime, np.ndarray):
-                            self._fov_preview._lifetime_map = lifetime
-                        
+                            self._fov_preview._lifetime_map = lifetime                     
                         # Restore color scale
                         if "fov_color_scale" in session_data:
                             try:
@@ -3966,16 +3952,10 @@ Built with Python, Tkinter, NumPy, and SciPy.
                                 self._fov_preview._flim_color_scale = json.loads(cs)
                             except:
                                 pass
-
                         if "fov_n_exp" in session_data:
                             n_exp = session_data["fov_n_exp"]
                             if isinstance(n_exp, (np.integer, int)):
                                 self._fov_preview._n_exp = int(n_exp)
-
-                        # BUG 2 FIX: render the FLIM image now that maps, colour
-                        # scale, n_exp, and regions are all restored.
-                        # _update_flim_display calls _redraw_region_overlays() at
-                        # its end, so patches appear on top of the rendered image.
                         try:
                             self._fov_preview._update_flim_display()
                         except Exception as _e:
@@ -4391,7 +4371,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     ax_img.set_xlabel("X (pixels)")
                     ax_img.set_ylabel("Y (pixels)")
 
-                    # — FLIM image (FIX: use Colormap object so set_bad works) —
                     cs = self._fov_preview._flim_color_scale
                     scaled = flim_display.apply_color_scale(
                         lifetime,
@@ -4419,7 +4398,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
                         cbar.set_ticks(ticks)
                         cbar.set_ticklabels([f"{vmin_cb + t*(vmax_cb - vmin_cb):.2f}" for t in ticks], fontsize=7)
 
-                    # — Decay + model + IRF (FIX: draw into FOV preview, not non-existent _res._ax_decay) —
                     ax_decay = self._fov_preview._ax_decay
                     ax_decay.clear()
                     decay    = fit_result.get("decay")
@@ -4459,20 +4437,13 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 print(f"[Load] Could not redraw FOV preview: {e}")
                 traceback.print_exc()
 
-            # — FIX: restore form state —
             if "form_state_json" in fit_result:
                 try:
                     fs = fit_result["form_state_json"]
                     if isinstance(fs, np.ndarray): fs = fs.item()
                     if isinstance(fs, bytes): fs = fs.decode()
                     form_state = json.loads(fs)
-                    # Pre-arm the guard so sv_ptu.set() inside _restore_form_state
-                    # doesn't re-trigger load_fov and wipe the FLIM we just drew.
-                    # FIX 2: always arm the guard so sv_ptu.set() inside
-                    # _restore_form_state does not re-trigger load_fov.
                     ptu_in_session = form_state.get("ptu_file", "").strip()
-                    # If session has no ptu path, keep the current sv_ptu value
-                    # so the trace guard still returns early.
                     self._last_loaded_ptu = (
                         ptu_in_session
                         if ptu_in_session
@@ -4883,7 +4854,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
         fov_um = img_w_px * pixel_size_um
         target = fov_um * 0.20  # aim for ~20 % of width
 
-        # Pick the largest "nice" value ≤ target
         nice = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
         bar_um = nice[0]
         for n in nice:
@@ -4931,10 +4901,8 @@ Built with Python, Tkinter, NumPy, and SciPy.
         try:
             from pathlib import Path
             import shutil
-            
             # Find the existing NPZ file that was saved after fitting
             npz_source = None
-            
             # If we have ptu_path, look for the NPZ next to it
             if ptu_path:
                 base_path = Path(ptu_path)
@@ -5024,7 +4992,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
         # ttk.Radiobutton(radio_frame, text="Per‑pixel", variable=self.sv_mode_fov,
         #                 value="perPixel").pack(side="left", padx=2)
 
-        # Optional explanatory text for "Summed"
         ttk.Label(mode_row, text="(fast = no FLIM image)",
                   foreground="grey").pack(side="left", padx=(10, 0))
 
@@ -5361,9 +5328,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
             window_id = outer._window_id
 
             def _refresh():
-                # inner.update() (not update_idletasks) forces Tkinter to finish
-                # all geometry passes so winfo_reqheight() is accurate for any
-                # newly shown/hidden child widgets (e.g. _pxf, _fit_frame).
                 try:
                     inner.update()
                 except Exception:
@@ -5379,9 +5343,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
                 cw = canvas.winfo_width()
                 if cw > 1:
                     canvas.itemconfigure(window_id, width=cw)
-
-            # Two-pass: after_idle lets grid() commit, then 80 ms absorbs any
-            # deferred relayouts inside notebook tabs.
             self.root.after_idle(lambda: self.root.after(80, _refresh))
         except Exception as e:
             print(f"[Scrollbar] {form_id}: {e}")
@@ -6087,9 +6048,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
         a.no_polish     = False
         a.channel       = cfg["channels"]
         _out_raw = self.sv_out_fov.get().strip() or cfg["OUT_NAME"]
-        # If the prefix has no directory component, anchor it to the PTU's
-        # parent so output files are never written to a read-only CWD
-        # (which happens inside a frozen .app bundle).
         if Path(_out_raw).parent == Path("."):
             a.out = str(Path(ptu).parent / _out_raw)
         else:
@@ -6098,7 +6056,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
         a.cell_mask     = self.bv_cell.get()
         a.intensity_threshold = _thresh(self.bv_thr_fov, self.sv_thr_fov)
 
-        # Apply expert overrides (if any)
         self._apply_expert_overrides(a)
 
         out_dir = str(Path(a.out).parent)
@@ -6168,11 +6125,9 @@ Built with Python, Tkinter, NumPy, and SciPy.
         a.save_int_weighted      = self.bv_save_int_weighted.get()
         a.save_amp_weighted      = self.bv_save_amp_weighted.get()
 
-        # Apply expert overrides (if any)
         self._apply_expert_overrides(a)
 
         if pipeline == "tile_fit":
-            # Per-tile: each tile gets its own fit; per-pixel forced; no per-tile plots
             a.mode         = "both"
             a.no_plots     = True
             a.cell_mask    = False
@@ -6208,11 +6163,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
                         rows = extracted_rows
                         print(f"[on_done] Extracted {len(extracted_rows)} summary rows from global_summary")
                 
-                # Display the assembled lifetime image from tile fit output directory.
-                # load_stitched_roi reads the TIFFs saved by save_assembled_maps /
-                # make_lifetime_image.  display_fit_results then overlays the pooled
-                # decay, IRF and fitted model on _ax_decay (which load_stitched_roi
-                # never touches).
                 try:
                     self._fov_preview.load_stitched_roi(a.output_dir)
                     print(f"[on_done] Loaded stitched ROI from {a.output_dir}")
@@ -6220,21 +6170,12 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     print(f"[Warning] Could not load stitched image: {e}")
 
                 try:
-                    # ptu_path=None is fine: display_fit_results falls back to
-                    # canvas['intensity'] for the image and uses decay/time_ns from
-                    # the fit_result dict for the decay panel.
                     self._fov_preview.display_fit_results(None, fit_result)
                     print(f"[on_done] Displayed fit results (decay + FLIM) from fit_result")
                 except Exception as e:
                     import traceback
                     print(f"[Warning] Could not display fit results: {e}")
                     traceback.print_exc()
-                
-                # Save tile fit results to NPZ via _save_roi_progress.
-                # That method (used by the FOV pipeline) iterates fit_result.items(),
-                # saves all numpy arrays directly, and hoists arrays out of nested
-                # dicts such as 'canvas'.  This correctly captures decay, irf_prompt,
-                # time_ns and every per-pixel canvas array (tau1, tau_mean_amp, etc.).
                 try:
                     self._save_roi_progress(str(a.output_dir), fit_result, rows or [])
                     npz_path = Path(a.output_dir) / "roi_session.npz"
@@ -6248,11 +6189,6 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     if hasattr(self, '_proj_browser'):
                         xlif_stem = Path(a.xlif).stem if hasattr(a, 'xlif') else None
                         if xlif_stem:
-                            # a.output_dir is the roi-specific dir  (e.g. /project/output/R_2).
-                            # ScanRecord.session_path appends roi_clean to out_st, so we must
-                            # store the PARENT (base output dir) here, not the roi-specific dir.
-                            # Storing the roi-specific dir causes double-nesting and makes
-                            # has_session always False, keeping the indicator stuck at ○.
                             self._proj_browser.on_fit_done(
                                 xlif_stem,
                                 out_st   = str(Path(a.output_dir).parent),
@@ -6262,22 +6198,18 @@ Built with Python, Tkinter, NumPy, and SciPy.
                     import traceback
                     print(f"[Warning] Could not save NPZ: {e}")
                     traceback.print_exc()
-                
-                # Refresh ROI Analysis panel
                 try:
                     if hasattr(self, '_stitch_roi_panel'):
                         self._stitch_roi_panel._refresh_region_list()
                 except:
                     pass
             else:
-                # For stitch_only and stitch_fit, load the stitched ROI
                 print(f"[on_done] Executing stitch branch (load_stitched_roi)")
                 try:
                     self._fov_preview.load_stitched_roi(a.output_dir)
                 except Exception as e:
                     print(f"Warning: Could not load stitched image: {e}")
             
-            # Populate summary table
             if rows:
                 print(f"[on_done] Populating summary with {len(rows)} rows")
                 self._res.populate_summary(rows)
@@ -6602,11 +6534,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
         self._set_buttons("disabled")
         self._res.set_status("  Running...")
         self._res._nb.select(0)
-
-        # Create a progress window manager for sub-operations
         win_manager = ProgressWindowManager(self.root)
-        
-        # Create main progress window
         win = ProgressWindow(self.root, task_name=task_name)
         cancel_event = win.cancelled
 
@@ -6617,24 +6545,20 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
         def _worker():
             orig_stdout, orig_stderr = sys.stdout, sys.stderr
-            # Always redirect to UI's ScrolledText widget with thread-safe updates
             redir = _Redirect(self._res.log, self._buf, root=self.root)
             redir_err = _Redirect(self._res.log, self._buf, root=self.root, is_stderr=True)
             sys.stdout = redir
             sys.stderr = redir_err
             
             try:
-                # Call function with progress_callback if it supports it
                 sig = inspect.signature(fn)
                 if 'progress_callback' in sig.parameters or 'cancel_event' in sig.parameters:
-                    # Pass window manager for sub-operations
                     if 'progress_window_manager' in sig.parameters:
                         result = fn(progress_callback=progress_callback, cancel_event=cancel_event, 
                                    progress_window_manager=win_manager)
                     else:
                         result = fn(progress_callback=progress_callback, cancel_event=cancel_event)
                 else:
-                    # Function doesn't support callbacks, call normally
                     result = fn()
                 
                 self.root.after(0, lambda: win.close())
@@ -6668,35 +6592,23 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
     def _on_done(self, rows, output_dir, fit_result=None, ptu_path=None):
         self._res.set_status("✓  Finished.")
-        
-        # Priority 1: Extract summary from fit_result dict (most reliable)
         if fit_result is not None:
             global_summary = fit_result.get('global_summary')
             global_popt = fit_result.get('global_popt')
-            
-            # If fit_result has summary data, use it (overrides log parsing)
             if global_summary is not None:
                 extracted_rows = self._extract_summary_rows(global_summary, global_popt)
                 if extracted_rows:
                     rows = extracted_rows
-        
-        # Populate summary table with whatever rows we have
         if rows:
             self._res.populate_summary(rows)
-        
-        # Update FOV preview with fit results (works for both single-FOV and tile fitting)
         if fit_result is not None:
             try:
                 self._fov_preview.display_fit_results(ptu_path, fit_result)
-                # Refresh ROI Analysis panel 
                 if hasattr(self, '_roi_analysis_panel'):
                     self._roi_analysis_panel._refresh_region_list()
             except Exception as e:
                 import traceback
                 traceback.print_exc()
-        
-        # NPZ is saved automatically after fit completes (silently)
-        # but can also be explicitly saved to a different location via "Save NPZ" button
         npz_file_path = None
         if ptu_path or output_dir:
             try:
@@ -6735,7 +6647,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
 
         rows = []
 
-        #  Schema A: fit_summed / fit_per_pixel (single-FOV fit) ─
+        # Schema A: fit_summed / fit_per_pixel (single-FOV fit)
         taus  = global_summary.get('taus_ns', [])
         amps  = global_summary.get('amps',    [])
         fracs = global_summary.get('fractions', [])
@@ -6761,7 +6673,7 @@ Built with Python, Tkinter, NumPy, and SciPy.
             if v is not None:
                 rows.append((label, f"{v:.4f}", "ns"))
 
-        #  Schema B: derive_global_tau (stitch / tile-fit pipeline) 
+        # Schema B: derive_global_tau (stitch / tile-fit pipeline) 
         tau_global = global_summary.get('tau_mean_amp_global_ns')
         if tau_global is not None:
             rows.append(("τ_mean amp-wtd (global)", f"{tau_global:.4f}", "ns"))
@@ -6833,12 +6745,7 @@ if HAS_TKMT:
             self.root = self.master
             self.root.minsize(760, 700)
             self._init_ui()
-            # Skip TKMT's makeResizable — it sets weight=1 on every row,
-            # overriding our weight=0 on the toolbar/separator rows.
             self.run(cleanresize=False)
-
-
-# Fallback version (plain Tk, optional drag‑and‑drop)
 
 class FLIMKitGUIFallback(_UIBuilder):
     def __init__(self, root):
@@ -6848,24 +6755,17 @@ class FLIMKitGUIFallback(_UIBuilder):
         self._init_ui()
         self.root.mainloop()
 
-
-
-# Entry point – choose themed or fallback
-
 def launch_gui():
     global GUI_MODE
     GUI_MODE = True
-
-    # Install crash handler and session logging
     from flimkit.utils.crash_handler import init_crash_handler
     init_crash_handler()
 
     if HAS_TKMT:
-        # Themed version: ThemedTKinterFrame creates its own root.
         app = FLIMKitGUIThemed(theme="sun-valley", mode="dark")
     else:
-        # Fallback: create a plain Tk root (optionally with drag‑and‑drop)
         if HAS_DND:
+            # Doesnt work anyway but at least it won't crash on import and allows drag-and-drop in the file dialogs (sometimes)
             from tkinterdnd2 import Tk
             root = Tk()
         else:

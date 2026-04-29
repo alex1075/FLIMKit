@@ -497,7 +497,7 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progres
     sigma_max = MACHINE_IRF_SIGMA_MAX_FULL   # default; overridden by sigma variants
     
     if args.irf is not None and Path(args.irf).exists():
-        irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
+        irf_prompt = irf_from_scatter_ptu(args.irf, ptu, channel=args.channel)
         strategy = "scatter_ptu"
         has_tail = False
         fit_sigma = False
@@ -649,6 +649,8 @@ def _run_stitch_and_fit(args, progress_callback=None, cancel_event=None, progres
             irf_prompt, has_tail, fit_bg, fit_sigma,
             global_popt, args.nexp,
             min_photons=args.min_photons,
+            tau_min_ns=args.tau_min,
+            tau_max_ns=args.tau_max,
             progress_callback=perpixel_progress_cb,
         )
         
@@ -880,7 +882,7 @@ def _run_flim_fit(args, progress_callback=None, cancel_event=None, progress_wind
     sigma_max = MACHINE_IRF_SIGMA_MAX_FULL   # default; overridden by sigma variants
 
     if args.irf is not None:
-        irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
+        irf_prompt = irf_from_scatter_ptu(args.irf, ptu, channel=args.channel)
         strategy   = "scatter_ptu"
         has_tail   = False
         fit_sigma  = False
@@ -1034,6 +1036,8 @@ def _run_flim_fit(args, progress_callback=None, cancel_event=None, progress_wind
             irf_prompt, has_tail, fit_bg, fit_sigma,
             global_popt, args.nexp,
             min_photons=args.min_photons,
+            tau_min_ns=args.tau_min,
+            tau_max_ns=args.tau_max,
             progress_callback=perpixel_progress_cb,
         )
 

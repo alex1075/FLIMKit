@@ -314,6 +314,7 @@ def fit_per_pixel(stack, tcspc_res, n_bins, irf_prompt,
                   has_tail, fit_bg, fit_sigma,
                   global_popt, n_exp,
                   min_photons=MIN_PHOTONS_PERPIX,
+                  tau_min_ns=None, tau_max_ns=None,
                   progress_callback=None) -> dict:
     ny, nx, _ = stack.shape
 
@@ -346,56 +347,131 @@ def fit_per_pixel(stack, tcspc_res, n_bins, irf_prompt,
     for i in range(n_exp):
         maps[f"alpha_{i+1}"] = np.full((ny, nx), np.nan)
         maps[f"frac_{i+1}"]  = np.full((ny, nx), np.nan)
-        # Fixed tau (constant across all pixels) for component analysis
-        maps[f"tau_{i+1}"]   = np.full((ny, nx), taus_fixed[i] * 1e9)  # in ns
+        maps[f"tau_{i+1}"] = (np.full((ny, nx), np.nan)
+                              if n_exp == 1
+                              else np.full((ny, nx), taus_fixed[i] * 1e9))
         # Alias for save_weighted_tau_images compatibility
         maps[f"a{i+1}"]      = maps[f"alpha_{i+1}"]
 
     fitted = skipped = 0
-    # print(f"  Per-pixel fitting: {ny}×{nx}={ny*nx} pixels "
-    #       f"(τ fixed, amplitudes + bg free) …")
     t0 = time.time()
 
-    # Always disable tqdm – progress is shown via progress windows instead
-    for yi in tqdm(range(ny), desc='  Per-pixel rows', disable=True):
-        if progress_callback is not None:
-            progress_callback(yi, ny)
-        for xi in range(nx):
-            decay_px = stack[yi, xi, :]
-            if decay_px.sum() < min_photons:
-                skipped += 1
+    if n_exp == 1:
+        # Single-exponential: fit τ per pixel via log-τ grid scan
+        # With only one component, NNLS amplitude-only fitting stamps the
+        # global τ onto every pixel (fracs_px = [1.0] → tau_mean = tau_global).
+        # Instead, scan a fine log-τ grid using the globally-fixed IRF and
+        # pick the τ that minimises the scalar NNLS residual for each pixel.
+
+        _lo = (tau_min_ns if tau_min_ns is not None
+               else max(taus_fixed[0] * 1e9 / 20.0, 0.05)) * 1e-9
+        _hi = (tau_max_ns if tau_max_ns is not None
+               else min(taus_fixed[0] * 1e9 * 20.0, 45.0)) * 1e-9
+
+        _N_GRID = 200
+        tau_grid = np.logspace(np.log10(_lo), np.log10(_hi), _N_GRID)
+
+        # Pre-compute IRF-convolved exponentials for every grid τ
+        _irf_fft_g = np.fft.fft(irf_fixed)
+        basis_grid = np.array([
+            np.real(np.fft.ifft(
+                np.fft.fft(np.exp(-t_axis / max(tau, 1e-15))) * _irf_fft_g))
+            for tau in tau_grid
+        ])  # (N_GRID, n_bins)
+
+        # Precompute ||basis_grid[j]||² for the fast scalar NNLS formula
+        bb_grid = np.maximum((basis_grid ** 2).sum(axis=1), 1e-20)  # (N_GRID,)
+
+        for yi in tqdm(range(ny), desc='  Per-pixel rows', disable=True):
+            if progress_callback is not None:
+                progress_callback(yi, ny)
+
+            decay_row = stack[yi, :, :].astype(float)  # (nx, n_bins)
+            ph_counts = decay_row.sum(axis=1)           # (nx,)
+            valid_xi  = np.where(ph_counts >= min_photons)[0]
+            skipped  += nx - len(valid_xi)
+
+            if len(valid_xi) == 0:
                 continue
 
-            bg_px   = estimate_bg(decay_px, int(np.argmax(decay_px)))
-            data_corr = np.maximum(decay_px - bg_px, 0.0)
-            amps_px, _ = nnls(A, data_corr)
+            dv = decay_row[valid_xi]  # (n_valid, n_bins)
 
-            model_px = A @ amps_px + bg_px
-            resid    = decay_px - model_px
-            chi2_px  = float(np.sum(resid**2 / np.maximum(model_px, 1.0)))
-            dof_px   = max(n_bins - n_exp, 1)
+            # Per-pixel background estimates (vectorised bg estimation)
+            peak_b_v = np.argmax(dv, axis=1)  # (n_valid,)
+            bg_v = np.array([estimate_bg(dv[k], int(peak_b_v[k]))
+                             for k in range(len(valid_xi))])
+            dc_v = np.maximum(dv - bg_v[:, np.newaxis], 0.0)  # (n_valid, n_bins)
 
-            amp_sum = amps_px.sum()
-            if amp_sum <= 0:
-                skipped += 1
-                continue
+            # Vectorised grid scan across all valid pixels in this row
+            # bd[i,j] = basis_grid[j,:] · dc_v[i,:]
+            bd     = dc_v @ basis_grid.T              # (n_valid, N_GRID)
+            amps_g = np.maximum(bd / bb_grid, 0.0)   # (n_valid, N_GRID)
+            dc_sq  = (dc_v ** 2).sum(axis=1)         # (n_valid,)
+            # cost[i,j] = ||dc_v[i]||² - max(bd[i,j],0)² / ||basis[j]||²
+            # Minimising cost ↔ maximising the projection bd²/||b||²
+            costs  = dc_sq[:, np.newaxis] - np.maximum(bd, 0.0) ** 2 / bb_grid
+            best_g = np.argmin(costs, axis=1)                          # (n_valid,)
+            tau_v  = tau_grid[best_g]                                  # (n_valid,) s
+            amp_v  = amps_g[np.arange(len(valid_xi)), best_g]         # (n_valid,)
 
-            fracs_px = amps_px / amp_sum
-            taus_ns  = taus_fixed * 1e9
-            tau_amp  = float(np.dot(fracs_px, taus_ns))
-            denom    = np.dot(amps_px, taus_ns)
-            tau_int  = float(np.dot(amps_px, taus_ns**2) / denom) \
-                       if denom > 0 else np.nan
+            good = amp_v > 0
+            skipped += int((~good).sum())
 
-            maps["tau_mean_int"][yi, xi] = tau_int
-            maps["tau_mean_amp"][yi, xi] = tau_amp
-            maps["chi2_r"][yi, xi]       = chi2_px / dof_px
-            for i in range(n_exp):
-                maps[f"alpha_{i+1}"][yi, xi] = amps_px[i]
-                maps[f"frac_{i+1}"][yi, xi]  = fracs_px[i]
-            fitted += 1
+            for k, xi in enumerate(valid_xi):
+                if not good[k]:
+                    continue
+                tau_ns = float(tau_v[k] * 1e9)
+                maps["tau_1"][yi, xi]        = tau_ns
+                maps["tau_mean_amp"][yi, xi] = tau_ns
+                maps["tau_mean_int"][yi, xi] = tau_ns
+                maps["alpha_1"][yi, xi]      = float(amp_v[k])
+                maps["frac_1"][yi, xi]       = 1.0
+                # Reduced chi² using the nearest grid basis vector
+                best_b   = basis_grid[best_g[k]]
+                model_px = float(amp_v[k]) * best_b + bg_v[k]
+                resid    = dv[k] - model_px
+                chi2_px  = float(np.sum(resid ** 2 / np.maximum(model_px, 1.0)))
+                maps["chi2_r"][yi, xi] = chi2_px / max(n_bins - 2, 1)
+                fitted += 1
+
+    else:
+        for yi in tqdm(range(ny), desc='  Per-pixel rows', disable=True):
+            if progress_callback is not None:
+                progress_callback(yi, ny)
+            for xi in range(nx):
+                decay_px = stack[yi, xi, :]
+                if decay_px.sum() < min_photons:
+                    skipped += 1
+                    continue
+
+                bg_px   = estimate_bg(decay_px, int(np.argmax(decay_px)))
+                data_corr = np.maximum(decay_px - bg_px, 0.0)
+                amps_px, _ = nnls(A, data_corr)
+
+                model_px = A @ amps_px + bg_px
+                resid    = decay_px - model_px
+                chi2_px  = float(np.sum(resid**2 / np.maximum(model_px, 1.0)))
+                dof_px   = max(n_bins - n_exp, 1)
+
+                amp_sum = amps_px.sum()
+                if amp_sum <= 0:
+                    skipped += 1
+                    continue
+
+                fracs_px = amps_px / amp_sum
+                taus_ns  = taus_fixed * 1e9
+                tau_amp  = float(np.dot(fracs_px, taus_ns))
+                denom    = np.dot(amps_px, taus_ns)
+                tau_int  = float(np.dot(amps_px, taus_ns**2) / denom) \
+                           if denom > 0 else np.nan
+
+                maps["tau_mean_int"][yi, xi] = tau_int
+                maps["tau_mean_amp"][yi, xi] = tau_amp
+                maps["chi2_r"][yi, xi]       = chi2_px / dof_px
+                for i in range(n_exp):
+                    maps[f"alpha_{i+1}"][yi, xi] = amps_px[i]
+                    maps[f"frac_{i+1}"][yi, xi]  = fracs_px[i]
+                fitted += 1
 
     elapsed = time.time() - t0
-    # print(f"  Fitted: {fitted}/{ny*nx}  |  Skipped (<{min_photons} ph): {skipped}  "
-    #       f"|  {elapsed:.1f}s")
     return maps

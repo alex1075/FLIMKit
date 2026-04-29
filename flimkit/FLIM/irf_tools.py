@@ -230,10 +230,20 @@ def gaussian_irf_from_fwhm(n_bins: int,
     irf = np.exp(-(t - t0)**2 * 4.0 * np.log(2) / fwhm_ns**2)
     return irf / irf.sum()
 
-def irf_from_scatter_ptu(path: str, ptu_ref: PTUFile) -> np.ndarray:
-    """Load a scatter/reflection PTU as measured IRF. Returns normalised array."""
+def irf_from_scatter_ptu(path: str, ptu_ref: PTUFile,
+                         channel: int | None = None) -> np.ndarray:
+    """Load a scatter/reflection PTU as measured IRF. Returns normalised array.
+
+    Parameters
+    ----------
+    channel : int or None
+        Detector channel to use from the scatter PTU.  Pass the same channel
+        used for the sample data so that the IRF and sample decay come from
+        the same detector.  If None (default) the most-populated channel is
+        auto-selected.
+    """
     scatter = PTUFile(path, verbose=False)
-    decay   = scatter.summed_decay()
+    decay   = scatter.summed_decay(channel=channel)
     decay   = decay[:ptu_ref.n_bins]
     s       = decay.sum()
     if s == 0:
@@ -417,13 +427,6 @@ def reconstruct_irf_from_decay(decay: np.ndarray,
     start_idx = peak_idx
     while start_idx > 0 and decay[start_idx - 1] > threshold:
         start_idx -= 1
-
-    # Post-peak cut 
-    # In Leica exports the IRF has explicit zeros after the cut; in raw PTU
-    # data the fluorescence tail never reaches zero.  Use a bounded search:
-    # include up to max_bap bins, but stop early if the *bin-to-bin drop
-    # rate* flattens out (transition from steep IRF fall to gradual
-    # fluorescence decay).
     cut_idx = peak_idx
     prev_val = peak_val
     for i in range(1, max_bap + 1):
@@ -617,11 +620,9 @@ def compare_irfs(irf_estimated:  np.ndarray,
         s = irf_raw.sum()
         if s > 0:
             irf_xlsx_embedded = irf_raw / s
-
     if irf_xlsx_embedded is None:
         print("  IRF comparison skipped — no xlsx IRF available.")
         return None
-
     # Normalise both to unit area
     est = irf_estimated / irf_estimated.sum()
     ref = irf_xlsx_embedded / irf_xlsx_embedded.sum()

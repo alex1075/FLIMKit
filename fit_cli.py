@@ -166,7 +166,7 @@ def single_FOV_flim_fit_cli():
 
     if args.irf is not None:
         # Scatter PTU: IRF fully measured, no tail or sigma needed
-        irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
+        irf_prompt = irf_from_scatter_ptu(args.irf, ptu, channel=args.channel)
         strategy   = "scatter_ptu"
         has_tail   = False
         fit_sigma  = False
@@ -339,6 +339,8 @@ def single_FOV_flim_fit_cli():
             irf_prompt, has_tail, fit_bg, fit_sigma,
             global_popt, args.nexp,
             min_photons=args.min_photons,
+            tau_min_ns=args.tau_min,
+            tau_max_ns=args.tau_max,
         )
 
         # Save weighted tau and intensity images
@@ -510,7 +512,7 @@ def single_FOV_flim_fit_cli():
 
     if args.irf is not None:
         # Scatter PTU: IRF fully measured, no tail or sigma needed
-        irf_prompt = irf_from_scatter_ptu(args.irf, ptu)
+        irf_prompt = irf_from_scatter_ptu(args.irf, ptu, channel=args.channel)
         strategy   = "scatter_ptu"
         has_tail   = False
         fit_sigma  = False
@@ -683,6 +685,8 @@ def single_FOV_flim_fit_cli():
             irf_prompt, has_tail, fit_bg, fit_sigma,
             global_popt, args.nexp,
             min_photons=args.min_photons,
+            tau_min_ns=args.tau_min,
+            tau_max_ns=args.tau_max,
         )
 
         # Save weighted tau and intensity images
